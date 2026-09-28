@@ -1,0 +1,370 @@
+// The hub owns state transitions. Everything that changes an item, a question
+// or the journal goes through here so the UI stays in sync and every human
+// decision lands in the journal (and from there, in memory).
+
+import type {
+  AgentReport, CalendarEvent, Effect, Item, ItemKind, ItemStatus, Job, JournalEntry, Question,
+  QuestionOption, ServerEvent, Snapshot, SyncState,
+} from "../shared/types.ts";
+import { config, memoryOn } from "./config.ts";
+import { newId, nowIso, type Store } from "./db.ts";
+
+type Listener = (e: ServerEvent) => void;
+
+export interface Dispatcher {
+  dispatch(itemId: string, action: import("../shared/types.ts").ActionKind, note?: string): Promise<Job | undefined>;
+  scheduleFromWords(itemId: string, words: string): Promise<void>;
+}
+
+export class Hub {
+  private listeners = new Set<Listener>();
+  dispatcher?: Dispatcher;
+
+  constructor(readonly store: Store) {}
+
+  // ── pub/sub ────────────────────────────────────────────────────────────
+  subscribe(fn: Listener) {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+  emit(e: ServerEvent) {
+    for (const fn of this.listeners) {
+      try {
+        fn(e);
+      } catch {}
+    }
+  }
+  toast(text: string, tone: "good" | "warn" | "info" = "info") {
+    this.emit({ type: "toast", data: { text, tone } });
+  }
+
+  snapshot(): Snapshot {
+    const cutoff = Date.now() - 3 * 86400_000;
+    return {
+      items: this.store.items().filter((i) => !(["done", "dropped"].includes(i.status) && Date.parse(i.updatedAt) < cutoff)),
+      questions: this.store.questions("open"),
+      jobs: this.store.jobs(40),
+      events: this.todayEvents(),
+      journal: this.store.journal(120),
+      sync: this.store.syncStates(),
+      config: {
+        port: config.port,
+        cmux: Boolean(config.cmux.bin),
+        memory: memoryOn(),
+        model: config.pi.model || "pi default",
+        workHours: config.sweeps.workHours,
+        owner: { name: config.owner.name, aliases: config.owner.aliases, speechLang: config.owner.speechLang },
+        journalPath: config.memory.journalPath,
+        labels: { tracker: config.labels.tracker, chat: config.labels.chat, wiki: config.writing.wiki.name, site: config.writing.site.name },
+      },
+    };
+  }
+
+  todayEvents(now = new Date()): CalendarEvent[] {
+    const day = now.toDateString();
+    return this.store.events().filter((e) => new Date(e.start).toDateString() === day);
+  }
+
+  // ── items ──────────────────────────────────────────────────────────────
+  createItem(input: Partial<Item> & { title: string }): Item {
+    // Dedupe on source key: re-imports and repeated agent reports update in place.
+    const existing = input.source?.key ? this.store.itemBySourceKey(input.source.key) : undefined;
+    if (existing) return this.updateItem(existing.id, input, { quiet: true });
+    const now = nowIso();
+    const item: Item = {
+      id: newId("it"),
+      kind: (input.kind ?? "task") as ItemKind,
+      status: input.status ?? "inbox",
+      title: input.title.trim(),
+      detail: input.detail,
+      project: input.project,
+      people: input.people,
+      source: input.source ?? { type: "manual" },
+      scheduledFor: input.scheduledFor,
+      when: input.when,
+      links: input.links,
+      confidence: input.confidence,
+      signals: input.signals,
+      post: input.post,
+      confirmedAt: input.confirmedAt,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.store.putItem(item);
+    this.emit({ type: "item", data: item });
+    return item;
+  }
+
+  updateItem(id: string, patch: Partial<Item>, opts: { quiet?: boolean } = {}): Item {
+    const cur = this.store.item(id);
+    if (!cur) throw new Error(`no item ${id}`);
+    const next: Item = {
+      ...cur,
+      ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)),
+      id: cur.id,
+      // Don't let a re-import clobber a status the owner already set.
+      status: opts.quiet && cur.confirmedAt ? cur.status : patch.status ?? cur.status,
+      source: { ...cur.source, ...(patch.source ?? {}) },
+      createdAt: cur.createdAt,
+      updatedAt: nowIso(),
+    };
+    this.store.putItem(next);
+    this.emit({ type: "item", data: next });
+    return next;
+  }
+
+  /** A human-driven change. Records confirmation + journal. */
+  setStatus(id: string, status: ItemStatus, note?: string, who: JournalEntry["who"] = "you") {
+    const item = this.updateItem(id, { status, confirmedAt: who === "you" ? nowIso() : undefined });
+    this.journal(`${label(status)}: ${item.title}${note ? ` — ${note}` : ""}`, { itemId: id, who });
+    // Anything open about this item is now moot.
+    if (["done", "dropped"].includes(status)) this.closeQuestionsFor(id, `item ${status}`);
+    return item;
+  }
+
+  schedule(id: string, at: string, labelText: string) {
+    const item = this.updateItem(id, { status: "scheduled", scheduledFor: at, when: labelText, confirmedAt: nowIso() });
+    this.journal(`Scheduled ${labelText}: ${item.title}`, { itemId: id });
+    return item;
+  }
+
+  // ── questions ──────────────────────────────────────────────────────────
+  ask(q: Omit<Question, "id" | "status" | "createdAt"> & { cooldownMin?: number }): Question | undefined {
+    if (this.store.openQuestionByKey(q.key)) return undefined;
+    if (q.cooldownMin) {
+      const last = this.store.lastAnswered(q.key);
+      if (last?.answeredAt && Date.now() - Date.parse(last.answeredAt) < q.cooldownMin * 60_000) return undefined;
+    }
+    const { cooldownMin: _c, ...rest } = q;
+    const question: Question = { ...rest, id: newId("q"), status: "open", createdAt: nowIso() };
+    this.store.putQuestion(question);
+    this.emit({ type: "question", data: question });
+    return question;
+  }
+
+  closeQuestionsFor(itemId: string, reason: string) {
+    for (const q of this.store.questions("open").filter((q) => q.itemId === itemId)) {
+      q.status = "expired";
+      q.answer = reason;
+      q.answeredAt = nowIso();
+      this.store.putQuestion(q);
+      this.emit({ type: "question", data: q });
+    }
+  }
+
+  expireQuestion(id: string, reason = "expired") {
+    const q = this.store.question(id);
+    if (!q || q.status !== "open") return;
+    q.status = "expired";
+    q.answer = reason;
+    q.answeredAt = nowIso();
+    this.store.putQuestion(q);
+    this.emit({ type: "question", data: q });
+  }
+
+  async answer(questionId: string, optionId: string, note?: string) {
+    const q = this.store.question(questionId);
+    if (!q || q.status !== "open") throw new Error("question not open");
+    const opt = q.options.find((o) => o.id === optionId);
+    if (!opt) throw new Error("no such option");
+    q.status = "answered";
+    q.answer = opt.label + (note ? ` — ${note}` : "");
+    q.answeredAt = nowIso();
+    this.store.putQuestion(q);
+    this.emit({ type: "question", data: q });
+    await this.applyEffect(opt.effect, q, opt, note);
+    return q;
+  }
+
+  async applyEffect(effect: Effect, q: Question | undefined, opt: QuestionOption | undefined, note?: string) {
+    let itemId = q?.itemId;
+    // Meeting questions have no item until the owner wants something done about them.
+    if (!itemId && q?.eventId && effect.type === "dispatch") {
+      const ev = this.store.events().find((e) => e.id === q.eventId);
+      if (ev) {
+        itemId = this.createItem({
+          title: `Prep: ${ev.title}`,
+          kind: "meeting",
+          status: "doing",
+          people: ev.attendees,
+          detail: `${new Date(ev.start).toTimeString().slice(0, 5)}–${new Date(ev.end).toTimeString().slice(0, 5)}${ev.url ? ` · ${ev.url}` : ""}`,
+          source: { type: "calendar", label: ev.title, key: `cal:prep:${ev.id}`, url: ev.url },
+        }).id;
+      }
+    }
+    switch (effect.type) {
+      case "status":
+        if (itemId) this.setStatus(itemId, effect.status, note ?? effect.note);
+        else this.journal(`${q?.prompt} → ${opt?.label}${note ? ` — ${note}` : ""}`);
+        break;
+      case "schedule":
+        if (itemId) this.schedule(itemId, effect.at, effect.label);
+        break;
+      case "snooze":
+        if (q) this.reopen(q, effect.minutes);
+        break;
+      case "dispatch":
+        if (itemId && this.dispatcher) {
+          this.journal(`Dispatched ${effect.action}: ${this.store.item(itemId)?.title}`, { itemId });
+          await this.dispatcher.dispatch(itemId, effect.action, note);
+        }
+        break;
+      case "when":
+        if (itemId && note?.trim() && this.dispatcher) {
+          // Parsing takes a few seconds; the answer is recorded now, the time lands when it's resolved.
+          void this.dispatcher.scheduleFromWords(itemId, note.trim()).catch((e) => this.toast(`Couldn't schedule: ${e.message}`, "warn"));
+        } else if (q) {
+          this.reopen(q, 0);
+          this.toast("Say or type when, then pick it again.", "warn");
+        }
+        break;
+      case "open":
+        openLocal(effect.url);
+        if (effect.keep && q) this.reopen(q, 0);
+        else if (q && !itemId) this.journal(`${q.prompt} → ${opt?.label}${note ? ` — ${note}` : ""}`);
+        break;
+      case "noop":
+        if (q && !itemId) this.journal(`${q.prompt} → ${opt?.label}${note ? ` — ${note}` : ""}`);
+        break;
+      case "multi":
+        for (const e of effect.effects) await this.applyEffect(e, q, opt, note);
+        break;
+    }
+  }
+
+  /** Put the same question back, now or later. */
+  private reopen(q: Question, minutes: number) {
+    const again: Question = {
+      ...q,
+      id: newId("q"),
+      status: "open",
+      answer: undefined,
+      answeredAt: undefined,
+      notBefore: minutes ? new Date(Date.now() + minutes * 60_000).toISOString() : q.notBefore,
+      createdAt: minutes ? nowIso() : q.createdAt,
+    };
+    this.store.putQuestion(again);
+    this.emit({ type: "question", data: again });
+  }
+
+  // ── journal ────────────────────────────────────────────────────────────
+  journal(text: string, opts: { itemId?: string; who?: JournalEntry["who"] } = {}) {
+    const e: JournalEntry = {
+      id: newId("j"),
+      at: nowIso(),
+      itemId: opts.itemId,
+      who: opts.who ?? "you",
+      text,
+      synced: false,
+    };
+    this.store.putJournal(e);
+    this.emit({ type: "journal", data: e });
+    return e;
+  }
+
+  // ── jobs & sync ────────────────────────────────────────────────────────
+  putJob(job: Job) {
+    this.store.putJob(job);
+    this.emit({ type: "job", data: job });
+    return job;
+  }
+
+  putSync(s: SyncState) {
+    this.store.putSync(s);
+    this.emit({ type: "sync", data: s });
+  }
+
+  setEvents(events: CalendarEvent[]) {
+    const day = new Date().toISOString().slice(0, 10);
+    this.store.replaceEvents(day, events);
+    this.emit({ type: "events", data: this.todayEvents() });
+  }
+
+  // ── agent reports ──────────────────────────────────────────────────────
+  ingestReport(r: AgentReport, fallbackSource: Item["source"]["type"] = "agent") {
+    const job = r.jobId ? this.store.job(r.jobId) : undefined;
+    const created: Item[] = [];
+    for (const raw of r.items ?? []) {
+      const status = (raw.status as ItemStatus | undefined) ?? "inbox";
+      created.push(
+        this.createItem({
+          ...raw,
+          status,
+          source: { type: fallbackSource, label: job?.title, ...(raw.source ?? {}) },
+        }),
+      );
+    }
+    for (const u of r.updates ?? []) {
+      if (!this.store.item(u.id)) continue;
+      const { id, note, ...patch } = u;
+      this.updateItem(id, patch as Partial<Item>);
+      if (note || patch.status) this.journal(`${patch.status ? label(patch.status) + ": " : ""}${this.store.item(id)!.title}${note ? ` — ${note}` : ""}`, { itemId: id, who: "agent" });
+    }
+    for (const q of r.questions ?? []) {
+      const opts = q.options?.length ? q.options : ["Yes", "No"];
+      const itemId = q.itemId && this.store.item(q.itemId) ? q.itemId : job?.itemId;
+      this.ask({
+        kind: "open",
+        badge: job ? "Agent asks" : undefined,
+        itemId,
+        prompt: q.prompt,
+        context: q.context,
+        priority: q.priority ?? 72,
+        key: `agent:${hash(q.prompt)}`,
+        options: opts.map((o, i) => {
+          const label = typeof o === "string" ? o : o.label;
+          const effect = typeof o === "string" ? (itemId ? effectFromLabel(o) : { type: "noop" as const }) : o.action ? { type: "dispatch" as const, action: o.action } : o.status ? { type: "status" as const, status: o.status } : { type: "noop" as const };
+          return { id: `o${i}`, label, tone: i === 0 ? "primary" : effect.type === "status" && effect.status === "dropped" ? "danger" : effect.type === "status" && effect.status === "done" ? "good" : "quiet", effect };
+        }),
+      });
+    }
+    for (const line of r.journal ?? []) this.journal(line, { who: "agent" });
+    if (r.events) this.setEvents(r.events);
+    if (job) {
+      const tail = r.summary ? [...job.tail, `✓ ${r.summary}`].slice(-12) : job.tail;
+      this.putJob({ ...job, summary: r.summary ?? job.summary, tail, reported: true });
+    }
+    return { created: created.map((i) => i.id) };
+  }
+}
+
+/** Only local app schemes, web links and markdown/text files; never arbitrary files or commands. */
+export function openLocal(url: string) {
+  const ok = /^(obsidian|https?):\/\//.test(url) || /^file:\/\/\/.+\.(md|markdown|txt)$/i.test(url);
+  if (!ok) return;
+  try {
+    Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" });
+  } catch {}
+}
+
+export function label(s: ItemStatus) {
+  return {
+    inbox: "Captured",
+    proposed: "Proposed",
+    today: "Committed today",
+    scheduled: "Scheduled",
+    doing: "Started",
+    waiting: "Waiting",
+    done: "Done",
+    dropped: "Dropped",
+  }[s];
+}
+
+/** Agents write options in English. Map the obvious ones to real effects. */
+export function effectFromLabel(label: string): Effect {
+  const l = label.toLowerCase();
+  if (/\b(drop|kill|reject|not mine|close it out)\b/.test(l)) return { type: "status", status: "dropped" };
+  if (/\b(mark done|done|closed?|resolved|shipped)\b/.test(l) && !/not done/.test(l)) return { type: "status", status: "done" };
+  if (/\bwait/.test(l)) return { type: "status", status: "waiting" };
+  if (/\btoday\b/.test(l)) return { type: "status", status: "today" };
+  if (/\b(file|create|open) (a |the )?(ticket|jira)/.test(l)) return { type: "dispatch", action: "ticket" };
+  if (/\b(reply|chase|message|ping)\b/.test(l)) return { type: "dispatch", action: "reply" };
+  if (/\bkeep( it)? open\b|\bstill open\b/.test(l)) return { type: "status", status: "proposed" };
+  return { type: "noop" };
+}
+
+export function hash(s: string) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}

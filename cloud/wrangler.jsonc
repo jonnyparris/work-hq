@@ -1,0 +1,17 @@
+// Work HQ cloud — NOT DEPLOYED. Scaffold for the always-on half (see docs/ARCHITECTURE.md).
+{
+  "name": "work-hq-cloud",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "HQ", "class_name": "WorkHQ" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkHQ"] }],
+  "vars": {
+    "OWNER_ID": "me",
+    "NOTIFY_WEBHOOK_URL": "https://example.com/your-chat-webhook"
+  }
+  // secrets: SYNC_TOKEN (shared with the local server), NOTIFY_WEBHOOK_TOKEN (optional)
+  // Put an auth layer (e.g. Cloudflare Access) in front before deploying.
+}

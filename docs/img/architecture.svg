@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" width="1000" height="560" role="img" aria-label="Architecture: browser UI, one Bun server, pi agents, memory">
+  <defs>
+    <style>
+      .t{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter",system-ui,sans-serif}
+      .m{font-family:"SF Mono",ui-monospace,Menlo,monospace}
+      .box{fill:rgba(255,255,255,.035);stroke:rgba(255,255,255,.12)}
+      .flow{fill:none;stroke-width:2;stroke-dasharray:5 9;animation:dash 1s linear infinite}
+      .rev{animation-direction:reverse}
+      @keyframes dash{to{stroke-dashoffset:-14}}
+      .h{font-size:17px;font-weight:700;fill:#ebe8e1}
+      .s{font-size:12.5px;fill:#a19d94}
+      .l{font-size:11.5px;fill:#6a675f}
+    </style>
+  </defs>
+  <rect width="1000" height="560" rx="22" fill="#0a0b0e"/>
+  <g class="t">
+    <!-- browser -->
+    <rect x="250" y="28" width="500" height="84" rx="16" class="box" stroke="rgba(242,193,78,.4)"/>
+    <text x="500" y="60" text-anchor="middle" class="h">Browser · localhost:7717</text>
+    <text x="500" y="84" text-anchor="middle" class="s">Focus question · Board · Timeline · Agents · Journal · ⌘K · 🍍 listener</text>
+
+    <!-- ws / http -->
+    <path d="M430 112 V 170" class="flow" stroke="#f2c14e"/>
+    <path d="M570 112 V 170" class="flow rev" stroke="#7cc4ff"/>
+    <text x="420" y="146" text-anchor="end" class="l">WebSocket push</text>
+    <text x="580" y="146" class="l">HTTP: answer · say · dispatch</text>
+
+    <!-- server -->
+    <rect x="150" y="170" width="700" height="170" rx="18" class="box"/>
+    <text x="180" y="202" class="h">Bun server — one process</text>
+    <g transform="translate(180 220)">
+      <rect width="150" height="96" rx="12" fill="rgba(242,193,78,.08)" stroke="rgba(242,193,78,.3)"/>
+      <text x="75" y="30" text-anchor="middle" class="h" style="font-size:15px">Prompter</text>
+      <text x="75" y="52" text-anchor="middle" class="s">plain rules:</text>
+      <text x="75" y="70" text-anchor="middle" class="s">what to ask now</text>
+    </g>
+    <g transform="translate(345 220)">
+      <rect width="150" height="96" rx="12" fill="rgba(123,216,143,.08)" stroke="rgba(123,216,143,.3)"/>
+      <text x="75" y="30" text-anchor="middle" class="h" style="font-size:15px">Hub</text>
+      <text x="75" y="52" text-anchor="middle" class="s">state changes,</text>
+      <text x="75" y="70" text-anchor="middle" class="s">journal, SQLite</text>
+    </g>
+    <g transform="translate(510 220)">
+      <rect width="150" height="96" rx="12" fill="rgba(182,156,255,.08)" stroke="rgba(182,156,255,.3)"/>
+      <text x="75" y="30" text-anchor="middle" class="h" style="font-size:15px">Scheduler</text>
+      <text x="75" y="52" text-anchor="middle" class="s">ticks, sweeps,</text>
+      <text x="75" y="70" text-anchor="middle" class="s">memory sync</text>
+    </g>
+    <g transform="translate(675 220)">
+      <rect width="150" height="96" rx="12" fill="rgba(124,196,255,.08)" stroke="rgba(124,196,255,.3)"/>
+      <text x="75" y="30" text-anchor="middle" class="h" style="font-size:15px">Agents</text>
+      <text x="75" y="52" text-anchor="middle" class="s">the only place</text>
+      <text x="75" y="70" text-anchor="middle" class="s">pi is spawned</text>
+    </g>
+
+    <!-- downstream flows -->
+    <path d="M270 340 V 420" class="flow rev" stroke="#7bd88f"/>
+    <path d="M520 340 V 420" class="flow" stroke="#b69cff"/>
+    <path d="M770 340 V 420" class="flow" stroke="#7cc4ff"/>
+    <path d="M840 420 C 900 380, 900 300, 850 290" class="flow rev" stroke="#7cc4ff"/>
+    <text x="905" y="372" class="l m">whq report</text>
+
+    <g transform="translate(150 420)">
+      <rect width="240" height="110" rx="16" class="box"/>
+      <text x="120" y="32" text-anchor="middle" class="h">Memory MCP</text>
+      <text x="120" y="56" text-anchor="middle" class="s">to-dos + proposals in</text>
+      <text x="120" y="76" text-anchor="middle" class="s">journal out · optional</text>
+      <text x="120" y="98" text-anchor="middle" class="l m">memory.url</text>
+    </g>
+    <g transform="translate(400 420)">
+      <rect width="240" height="110" rx="16" class="box"/>
+      <text x="120" y="32" text-anchor="middle" class="h">pi, headless</text>
+      <text x="120" y="56" text-anchor="middle" class="s">calendar · transcripts · posts</text>
+      <text x="120" y="76" text-anchor="middle" class="s">triage · read-only, JSON out</text>
+      <text x="120" y="98" text-anchor="middle" class="l m">pi -p --mode json</text>
+    </g>
+    <g transform="translate(650 420)">
+      <rect width="200" height="110" rx="16" class="box" stroke="rgba(124,196,255,.4)"/>
+      <text x="100" y="32" text-anchor="middle" class="h">pi, in cmux</text>
+      <text x="100" y="56" text-anchor="middle" class="s">tickets · replies · prep</text>
+      <text x="100" y="76" text-anchor="middle" class="s">you watch + nudge</text>
+      <text x="100" y="98" text-anchor="middle" class="l m">status beacon</text>
+    </g>
+  </g>
+</svg>

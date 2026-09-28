@@ -1,0 +1,21 @@
+#!/bin/bash
+# whq — tiny client for Work HQ, used by dispatched pi sessions.
+#
+#   whq report <jobId>        # JSON report on stdin → POST /api/agent/report
+#   whq say "<text>"          # talk to Work HQ like the command bar does
+#   whq pineapple "<text>"    # capture an action (🍍) from any terminal
+#   whq sync <memory|journal|calendar|transcripts>
+set -euo pipefail
+URL="${WORK_HQ_URL:-http://127.0.0.1:7717}"
+cmd="${1:-}"; shift || true
+post() { curl -sS -X POST "$URL$1" -H 'content-type: application/json' --data-binary @-; echo; }
+jstr() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
+case "$cmd" in
+  report)
+    job="${1:?usage: whq report <jobId> < report.json}"
+    python3 -c 'import json,sys; d=json.load(sys.stdin); d["jobId"]=sys.argv[1]; print(json.dumps(d))' "$job" | post /api/agent/report ;;
+  say)       echo "{\"text\": $(jstr "$*")}" | post /api/say ;;
+  pineapple) echo "{\"text\": $(jstr "$*"), \"mode\": \"pineapple\"}" | post /api/say ;;
+  sync)      echo '{}' | post "/api/sync/${1:?name}" ;;
+  *) sed -n '2,8p' "$0"; exit 2 ;;
+esac

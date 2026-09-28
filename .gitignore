@@ -1,0 +1,8 @@
+node_modules/
+*.db
+*.db-*
+.env
+.DS_Store
+/data/
+work-hq.config.json
+/prompts.local/

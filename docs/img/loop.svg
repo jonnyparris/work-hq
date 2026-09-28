@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 460" width="1000" height="460" role="img" aria-label="The loop: notice, ask, dispatch, report, remember">
+  <defs>
+    <style>
+      .t{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter",system-ui,sans-serif}
+      .node{fill-opacity:.06;stroke-opacity:.25;animation:lit 10s infinite}
+      .n2{animation-delay:2s}.n3{animation-delay:4s}.n4{animation-delay:6s}.n5{animation-delay:8s}
+      @keyframes lit{0%,18%{stroke-opacity:1;fill-opacity:.2}24%,100%{stroke-opacity:.25;fill-opacity:.06}}
+      .flow{stroke-dasharray:6 10;animation:dash 1.2s linear infinite}
+      @keyframes dash{to{stroke-dashoffset:-16}}
+    </style>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6"/></filter>
+  </defs>
+  <rect width="1000" height="460" rx="22" fill="#0a0b0e"/>
+
+  <!-- orbit -->
+  <path id="orbit" d="M500 70 C 760 70, 900 150, 900 230 C 900 330, 760 390, 500 390 C 240 390, 100 330, 100 230 C 100 150, 240 70, 500 70 Z"
+        fill="none" stroke="rgba(255,255,255,.12)" stroke-width="2" class="flow"/>
+  <circle r="9" fill="#f2c14e" filter="url(#soft)"><animateMotion dur="10s" repeatCount="indefinite" rotate="auto"><mpath href="#orbit"/></animateMotion></circle>
+  <circle r="5" fill="#fff3cf"><animateMotion dur="10s" repeatCount="indefinite"><mpath href="#orbit"/></animateMotion></circle>
+
+  <g class="t" text-anchor="middle">
+    <!-- 1 notice (top) -->
+    <g transform="translate(500 70)">
+      <rect x="-120" y="-40" width="240" height="80" rx="16" fill="#0a0b0e"/>
+      <rect x="-120" y="-40" width="240" height="80" rx="16" fill="#f2c14e" stroke="#f2c14e" stroke-width="2" class="node n1"/>
+      <text y="-8" font-size="20" font-weight="700" fill="#ebe8e1">① Notice</text>
+      <text y="18" font-size="13" fill="#a19d94">calendar · transcripts · notes · 🍍</text>
+    </g>
+    <!-- 2 ask (right) -->
+    <g transform="translate(860 190)">
+      <rect x="-110" y="-40" width="220" height="80" rx="16" fill="#0a0b0e"/>
+      <rect x="-110" y="-40" width="220" height="80" rx="16" fill="#ff7a6b" stroke="#ff7a6b" stroke-width="2" class="node n2"/>
+      <text y="-8" font-size="20" font-weight="700" fill="#ebe8e1">② Ask</text>
+      <text y="18" font-size="13" fill="#a19d94">one question · keys 1–9</text>
+    </g>
+    <!-- 3 dispatch (bottom right) -->
+    <g transform="translate(680 390)">
+      <rect x="-120" y="-40" width="240" height="80" rx="16" fill="#0a0b0e"/>
+      <rect x="-120" y="-40" width="240" height="80" rx="16" fill="#7cc4ff" stroke="#7cc4ff" stroke-width="2" class="node n3"/>
+      <text y="-8" font-size="20" font-weight="700" fill="#ebe8e1">③ Dispatch</text>
+      <text y="18" font-size="13" fill="#a19d94">a pi agent you can watch</text>
+    </g>
+    <!-- 4 report (bottom left) -->
+    <g transform="translate(320 390)">
+      <rect x="-120" y="-40" width="240" height="80" rx="16" fill="#0a0b0e"/>
+      <rect x="-120" y="-40" width="240" height="80" rx="16" fill="#b69cff" stroke="#b69cff" stroke-width="2" class="node n4"/>
+      <text y="-8" font-size="20" font-weight="700" fill="#ebe8e1">④ Report</text>
+      <text y="18" font-size="13" fill="#a19d94">bin/whq report → links, status</text>
+    </g>
+    <!-- 5 remember (left) -->
+    <g transform="translate(140 190)">
+      <rect x="-110" y="-40" width="220" height="80" rx="16" fill="#0a0b0e"/>
+      <rect x="-110" y="-40" width="220" height="80" rx="16" fill="#7bd88f" stroke="#7bd88f" stroke-width="2" class="node n5"/>
+      <text y="-8" font-size="20" font-weight="700" fill="#ebe8e1">⑤ Remember</text>
+      <text y="18" font-size="13" fill="#a19d94">journal → memory</text>
+    </g>
+
+    <!-- centre -->
+    <text x="500" y="214" font-size="15" fill="#6a675f" letter-spacing="2">EVERY DECISION IS</text>
+    <text x="500" y="250" font-size="30" font-weight="700" fill="#ebe8e1">written down</text>
+    <text x="500" y="280" font-size="14" fill="#a19d94">so tomorrow's briefing starts from the truth</text>
+  </g>
+</svg>

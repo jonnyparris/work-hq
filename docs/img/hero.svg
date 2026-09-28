@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 380" width="1200" height="380" role="img" aria-label="Work HQ: one question at a time, then an agent does the work">
+  <defs>
+    <radialGradient id="glowA" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(80 -40) scale(700 420)">
+      <stop offset="0" stop-color="#f2c14e" stop-opacity=".16"/><stop offset="1" stop-color="#f2c14e" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowB" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(1180 420) scale(600 380)">
+      <stop offset="0" stop-color="#7cc4ff" stop-opacity=".12"/><stop offset="1" stop-color="#7cc4ff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a1813"/><stop offset="1" stop-color="#121217"/>
+    </linearGradient>
+    <style>
+      .t{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter",system-ui,sans-serif}
+      .m{font-family:"SF Mono",ui-monospace,Menlo,monospace}
+      .q{opacity:0;animation:cycle 12s infinite}
+      .q2{animation-delay:4s}.q3{animation-delay:8s}
+      @keyframes cycle{0%{opacity:0;transform:translateY(8px)}3%,30%{opacity:1;transform:none}33%,100%{opacity:0;transform:translateY(-6px)}}
+      .pick{animation:pick 4s infinite}
+      @keyframes pick{0%,55%{fill:#f2c14e}60%{fill:#fff3cf}65%,100%{fill:#f2c14e}}
+      .pulse{animation:pulse 2s ease-in-out infinite}
+      @keyframes pulse{0%,100%{opacity:.9}50%{opacity:.35}}
+      .dot{animation:blink 1.4s infinite}
+      @keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+    </style>
+  </defs>
+  <rect width="1200" height="380" rx="24" fill="#0a0b0e"/>
+  <rect width="1200" height="380" rx="24" fill="url(#glowA)"/>
+  <rect width="1200" height="380" rx="24" fill="url(#glowB)"/>
+
+  <!-- wordmark -->
+  <g class="t">
+    <rect x="68" y="58" width="28" height="28" rx="8" fill="#f2c14e" transform="rotate(45 82 72)" class="pulse"/>
+    <text x="118" y="84" font-size="36" font-weight="700" fill="#ebe8e1">Work HQ</text>
+    <text x="68" y="150" font-size="44" font-weight="700" fill="#ebe8e1">One question at a time.</text>
+    <text x="68" y="202" font-size="44" font-weight="700" fill="#f2c14e">Then an agent does the work.</text>
+    <text x="68" y="252" font-size="19" fill="#a19d94">A local dashboard that watches your calendar, meetings and notes,</text>
+    <text x="68" y="280" font-size="19" fill="#a19d94">asks when it matters, and sends pi agents you can watch.</text>
+    <g font-size="14" fill="#6a675f">
+      <rect x="68" y="310" width="98" height="30" rx="15" fill="rgba(255,255,255,.05)" stroke="rgba(255,255,255,.1)"/>
+      <text x="117" y="330" text-anchor="middle" fill="#a19d94">Bun + React</text>
+      <rect x="176" y="310" width="78" height="30" rx="15" fill="rgba(255,255,255,.05)" stroke="rgba(255,255,255,.1)"/>
+      <text x="215" y="330" text-anchor="middle" fill="#a19d94">pi agents</text>
+      <rect x="264" y="310" width="96" height="30" rx="15" fill="rgba(255,255,255,.05)" stroke="rgba(255,255,255,.1)"/>
+      <text x="312" y="330" text-anchor="middle" fill="#a19d94">local-first</text>
+      <rect x="370" y="310" width="150" height="30" rx="15" fill="rgba(242,193,78,.12)" stroke="rgba(242,193,78,.35)"/>
+      <text x="445" y="330" text-anchor="middle" fill="#f2c14e">say 🍍 to capture</text>
+    </g>
+  </g>
+
+  <!-- rotating focus question card -->
+  <g transform="translate(700 70)">
+    <rect width="440" height="240" rx="18" fill="url(#card)" stroke="rgba(242,193,78,.35)"/>
+    <g class="t">
+      <g class="q q1">
+        <rect x="24" y="24" width="108" height="26" rx="13" fill="rgba(255,122,107,.14)"/>
+        <text x="78" y="42" text-anchor="middle" font-size="12" font-weight="700" letter-spacing="1.5" fill="#ff7a6b">IT'S TIME</text>
+        <text x="24" y="90" font-size="22" font-weight="700" fill="#ebe8e1">Reply to Mei about the</text>
+        <text x="24" y="118" font-size="22" font-weight="700" fill="#ebe8e1">incident timeline</text>
+        <text x="24" y="146" font-size="14" fill="#a19d94">You said: after standup.</text>
+        <rect x="24" y="172" width="170" height="40" rx="10" class="pick"/>
+        <text x="109" y="198" text-anchor="middle" font-size="15" font-weight="600" fill="#1a1508">1  Draft + send reply</text>
+        <rect x="204" y="172" width="104" height="40" rx="10" fill="none" stroke="rgba(255,255,255,.14)"/>
+        <text x="256" y="198" text-anchor="middle" font-size="15" fill="#ebe8e1">2  I'm on it</text>
+        <rect x="318" y="172" width="98" height="40" rx="10" fill="none" stroke="rgba(123,216,143,.4)"/>
+        <text x="367" y="198" text-anchor="middle" font-size="15" fill="#7bd88f">3  Done</text>
+      </g>
+      <g class="q q2">
+        <rect x="24" y="24" width="118" height="26" rx="13" fill="rgba(242,193,78,.14)"/>
+        <text x="83" y="42" text-anchor="middle" font-size="12" font-weight="700" letter-spacing="1.5" fill="#f2c14e">🍍 CAPTURED</text>
+        <text x="24" y="90" font-size="22" font-weight="700" fill="#ebe8e1">Send Jordan the capacity</text>
+        <text x="24" y="118" font-size="22" font-weight="700" fill="#ebe8e1">numbers for Q4</text>
+        <text x="24" y="146" font-size="14" fill="#a19d94">“I'll get you the numbers by Thursday — pineapple.”</text>
+        <rect x="24" y="172" width="150" height="40" rx="10" class="pick"/>
+        <text x="99" y="198" text-anchor="middle" font-size="15" font-weight="600" fill="#1a1508">1  Draft the email</text>
+        <rect x="184" y="172" width="118" height="40" rx="10" fill="none" stroke="rgba(255,255,255,.14)"/>
+        <text x="243" y="198" text-anchor="middle" font-size="15" fill="#ebe8e1">2  Mine, today</text>
+        <rect x="312" y="172" width="104" height="40" rx="10" fill="none" stroke="rgba(255,122,107,.4)"/>
+        <text x="364" y="198" text-anchor="middle" font-size="15" fill="#ff7a6b">3  Not mine</text>
+      </g>
+      <g class="q q3">
+        <rect x="24" y="24" width="130" height="26" rx="13" fill="rgba(124,196,255,.14)"/>
+        <text x="89" y="42" text-anchor="middle" font-size="12" font-weight="700" letter-spacing="1.5" fill="#7cc4ff">MEETING SOON</text>
+        <text x="24" y="90" font-size="22" font-weight="700" fill="#ebe8e1">1-1 Sam in 15 min.</text>
+        <text x="24" y="118" font-size="22" font-weight="700" fill="#ebe8e1">Want a brief?</text>
+        <text x="24" y="146" font-size="14" fill="#a19d94">Last 1-1: 2 open items, 1 unanswered thread.</text>
+        <rect x="24" y="172" width="140" height="40" rx="10" class="pick"/>
+        <text x="94" y="198" text-anchor="middle" font-size="15" font-weight="600" fill="#1a1508">1  Prep a brief</text>
+        <rect x="174" y="172" width="112" height="40" rx="10" fill="none" stroke="rgba(255,255,255,.14)"/>
+        <text x="230" y="198" text-anchor="middle" font-size="15" fill="#ebe8e1">2  I'm ready</text>
+        <rect x="296" y="172" width="120" height="40" rx="10" fill="none" stroke="rgba(255,255,255,.14)"/>
+        <text x="356" y="198" text-anchor="middle" font-size="15" fill="#ebe8e1">3  Skip it</text>
+      </g>
+    </g>
+    <circle cx="414" cy="37" r="5" fill="#7bd88f" class="dot"/>
+  </g>
+</svg>

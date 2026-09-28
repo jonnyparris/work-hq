@@ -1,0 +1,79 @@
+// Work HQ config. Copy to ./work-hq.config.json or ~/.config/work-hq/config.json
+// (or point WORK_HQ_CONFIG at it). Every key is optional; delete what you don't need.
+// Comments and trailing commas are fine. Paths may start with ~ ; relative paths resolve next to this file.
+// Check what got picked up with:  bin/work-hq config
+{
+  // Who the dashboard works for. Goes into every prompt.
+  "owner": {
+    "name": "Alex",
+    "role": "Engineering Manager",
+    "company": "Acme",
+    "location": "Lisbon",
+    "timezone": "Europe/Lisbon",          // defaults to the system timezone
+    "aliases": ["alex", "alex.kim"],      // "me" in attendee lists (hidden in the UI)
+    "speechLang": "en-GB"                 // dictation + 🍍 listener
+  },
+
+  "server": { "port": 7717 },
+
+  // Where agents run (their cwd) and where scratch files go: your notes vault, agent home, or ~.
+  "workspace": {
+    "dir": "~/notes",
+    "scratchDir": "~/notes/scratch",
+    "obsidianVault": "notes"               // set if workspace.dir is an Obsidian vault; drafts then open in Obsidian
+  },
+
+  // Optional. An MCP server exposing read / write / list / search over markdown files
+  // (e.g. agent-memory-mcp). Without it, Work HQ runs fine; it just can't import to-dos or save the journal.
+  "memory": {
+    "url": "https://memory.example.com/mcp",
+    "tokenFile": "~/.config/work-hq/memory-token",   // or "token": "…" (keep it out of git), or WORK_HQ_MEMORY_TOKEN
+    "todosPath": "memory/workload/active-todos.md",   // markdown checkboxes under ## headings
+    "proposalsDir": "memory/workload/plans",          // dated *-improvement-proposals.md; newest is read
+    "journalPath": "memory/workload/work-hq-journal.md",
+    "importEveryMin": 30,
+    "flushEveryMin": 5
+  },
+
+  // pi is the only thing that talks to a model. Empty model = pi's default.
+  "pi": {
+    "bin": "~/.local/bin/pi",
+    "model": "",
+    "triageThinking": "low",
+    "sweepThinking": "medium",
+    // Extra env for headless (read-only) sweeps, e.g. to pre-approve MCP reads in a permissions extension.
+    "headlessEnv": {}
+  },
+
+  // Background sweeps. Only run on weekdays inside work hours.
+  "sweeps": {
+    "dayStart": 8,
+    "dayEnd": 19,
+    "calendarEveryMin": 120,
+    "transcriptsEveryMin": 30,
+    "postsEveryDays": 7,                  // writing scout; 0 = off
+    "disabled": []                         // any of "calendar", "transcripts", "posts"
+  },
+
+  // Ticket prefixes / keywords that tag items with a project badge.
+  "projects": [
+    { "key": "PAY", "match": "payments|checkout" },
+    { "key": "INFRA" }
+  ],
+
+  // Words used in prompts and the UI.
+  "labels": { "tracker": "Linear", "chat": "Slack" },
+
+  // Blog-post scouting and drafting. Leave site.postsDir out if you don't have a public site.
+  "writing": {
+    "wiki": { "name": "Confluence", "draftsDir": "~/notes/scratch/blog-drafts" },
+    "site": { "name": "alex.dev", "postsDir": "~/dev/alex.dev/src/content/posts", "repoDir": "~/dev/alex.dev" }
+  },
+
+  // Your company's tools and conventions go here: copy any file from ./prompts into this folder and edit it.
+  // Missing files fall back to the defaults.
+  "promptsDir": "~/.config/work-hq/prompts",
+
+  // Corporate TLS proxy? Root CA bundle, exported to bun and every pi it starts.
+  "tls": { "caFile": "~/certs/corp-root.pem" }
+}

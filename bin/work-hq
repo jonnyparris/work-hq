@@ -1,0 +1,69 @@
+#!/bin/bash
+# work-hq — run Work HQ, or install it as a login agent.
+#
+#   bin/work-hq              run in the foreground (http://localhost:7717)
+#   bin/work-hq install      launchd agent: starts at login, restarts on crash
+#   bin/work-hq uninstall
+#   bin/work-hq open         open the dashboard
+#   bin/work-hq logs         tail the log
+#   bin/work-hq config       print the resolved config (which file, every value, secrets masked)
+#   bin/work-hq demo         run a sandbox with made-up data on :7718 (no config, no memory, no sweeps)
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LABEL="${WORK_HQ_LAUNCHD_LABEL:-work-hq.dashboard}"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+LOG="$HOME/Library/Logs/work-hq.log"
+BUN="${BUN:-$(command -v bun || echo "$HOME/.bun/bin/bun")}"
+export PATH="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+cfg() { (cd "$ROOT" && "$BUN" src/cli/config.ts "$1" 2>/dev/null) || true; }
+PORT="${WORK_HQ_PORT:-$(cfg port)}"; PORT="${PORT:-7717}"
+
+run() {
+  # Corporate TLS proxy? tls.caFile in the config; exported before bun starts so its own fetches trust it.
+  local ca; ca="$(cfg caFile)"
+  if [[ -n "$ca" ]]; then
+    export NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-$ca}" SSL_CERT_FILE="${SSL_CERT_FILE:-$ca}" REQUESTS_CA_BUNDLE="${REQUESTS_CA_BUNDLE:-$ca}"
+  fi
+  export NODE_ENV="${NODE_ENV:-production}"
+  cd "$ROOT"
+  [[ -d node_modules ]] || "$BUN" install --frozen-lockfile
+  exec "$BUN" src/server/index.ts
+}
+
+case "${1:-run}" in
+  run) run ;;
+  install)
+    mkdir -p "$(dirname "$PLIST")" "$(dirname "$LOG")"
+    cat > "$PLIST" <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key><array><string>$ROOT/bin/work-hq</string><string>run</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>15</integer>
+  <key>StandardOutPath</key><string>$LOG</string>
+  <key>StandardErrorPath</key><string>$LOG</string>
+  <key>EnvironmentVariables</key><dict><key>HOME</key><string>$HOME</string></dict>
+</dict></plist>
+PL
+    # Retire any other launch agent that runs this same checkout (e.g. an older label).
+    for other in "$HOME"/Library/LaunchAgents/*.plist; do
+      [[ "$other" == "$PLIST" ]] && continue
+      if grep -q "<string>$ROOT/bin/work-hq</string>" "$other" 2>/dev/null; then
+        launchctl bootout "gui/$(id -u)" "$other" 2>/dev/null || true; rm -f "$other"; echo "retired $(basename "$other")"
+      fi
+    done
+    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$PLIST"
+    echo "installed → http://localhost:$PORT  (log: $LOG)" ;;
+  uninstall)
+    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+    rm -f "$PLIST"; echo "uninstalled" ;;
+  open) open "http://localhost:$PORT" ;;
+  logs) tail -f "$LOG" ;;
+  config) cd "$ROOT" && exec "$BUN" src/cli/config.ts ;;
+  demo) cd "$ROOT" && exec "$BUN" src/cli/demo.ts ;;
+  *) sed -n '2,10p' "$0"; exit 2 ;;
+esac

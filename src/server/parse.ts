@@ -1,0 +1,180 @@
+// Turn the memory markdown that reflections write into structured items.
+// Pure functions; no I/O. Tested in test/parse.test.ts.
+
+import type { ItemKind } from "../shared/types.ts";
+
+export interface ParsedItem {
+  key: string;
+  kind: ItemKind;
+  title: string;
+  detail: string;
+  section: string;
+  project?: string;
+  links: string[];
+  /** Signals the prompter uses to decide what to ask. */
+  flags: {
+    stateUnknown: boolean;
+    killDate?: string; // YYYY-MM-DD
+    dueDate?: string; // YYYY-MM-DD
+    lowConfidence: boolean;
+    pineapple: boolean;
+  };
+}
+
+const SKIP_SECTIONS = /recently resolved|queue rules|completed|archive/i;
+const TICKET_KEY = /\b([A-Z][A-Z0-9]{1,9}-\d{1,6})\b/g;
+const MD_LINK = /\[([^\]]*)\]\((https?:[^)\s]+)\)/g;
+
+export function slug(s: string) {
+  return s
+    .toLowerCase()
+    .replace(/\[[^\]]*\]\([^)]*\)/g, (m) => m.replace(/\(.*\)/, ""))
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
+/** Strip markdown noise for display: links → text, bold/code markers removed. */
+export function plain(s: string) {
+  return s
+    .replace(MD_LINK, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function titleOf(body: string): { title: string; rest: string } {
+  const bold = /^\*\*(.+?)\*\*[.:]?\s*(.*)$/s.exec(body);
+  if (bold) {
+    const title = plain(bold[1]!).replace(/[.:]$/, "");
+    const rest = bold[2]!.trim().replace(/^[—–-]\s*/, "");
+    // A bare ticket key says nothing on its own — borrow the first clause of the body.
+    if (/^[A-Z][A-Z0-9]+-\d+$/.test(title) && rest) {
+      const clause = plain(rest).split(/[;.,(]\s?|\s[—–]\s/)[0]!.trim().slice(0, 70);
+      return { title: `${title} · ${clause}`, rest };
+    }
+    return { title, rest };
+  }
+  // "[KEY](url) — explanation" or plain sentence: cut at the first dash or sentence end.
+  const cut = body.search(/\s[—–-]\s|(?<=[a-z)])\.\s/);
+  const head = cut > 0 && cut < 160 ? body.slice(0, cut) : body.slice(0, 120);
+  return { title: plain(head), rest: body.slice(head.length).replace(/^\s*[—–.-]\s*/, "").trim() };
+}
+
+export interface ProjectRule {
+  key: string;
+  match?: string;
+}
+
+/** A ticket prefix that's a known project wins; then the first project whose `match` regex hits. */
+export function projectOf(text: string, projects: ProjectRule[] = []): string | undefined {
+  const known = new Set(projects.map((p) => p.key));
+  const keys = [...text.matchAll(TICKET_KEY)].map((m) => m[1]!.split("-")[0]!);
+  const hit = keys.find((k) => known.has(k));
+  if (hit) return hit;
+  for (const p of projects) {
+    if (!p.match) continue;
+    try {
+      if (new RegExp(p.match, "i").test(text)) return p.key;
+    } catch {}
+  }
+  return undefined;
+}
+
+function kindOf(section: string, text: string): ItemKind {
+  if (/delegated|team-owned/i.test(section)) return "followup";
+  if (/ticket hygiene/i.test(section)) return "ticket";
+  if (/writing/i.test(section)) return "task";
+  if (/\b(reply|respond|in-thread)\b/i.test(text)) return "message";
+  if (/\b(email|mail)\b/i.test(text) && /\bsend\b/i.test(text)) return "email";
+  if (/\b(chase|nudge|ping|ask \w+ to)\b/i.test(text)) return "followup";
+  if (/\b(decide|decision|sign-off|approve)\b/i.test(text)) return "decision";
+  if (/\bpineapple\b/i.test(text) && /no ticket/i.test(text)) return "ticket";
+  if (/\b(review|read)\b.*\b(MR|doc|draft)\b/i.test(text)) return "review";
+  if (/\b(interview|1-1|meeting|demo)\b/i.test(text)) return "meeting";
+  return "task";
+}
+
+function links(text: string): string[] {
+  const out = new Set<string>();
+  for (const m of text.matchAll(MD_LINK)) out.add(m[2]!);
+  return [...out].slice(0, 8);
+}
+
+function flags(text: string) {
+  const kill = /\bkill\b[^.]*?(\d{4}-\d{2}-\d{2})/i.exec(text)?.[1];
+  const due = /\b(?:by|target|due)\b[^.]*?(\d{4}-\d{2}-\d{2})/i.exec(text)?.[1];
+  return {
+    stateUnknown: /state unknown|completion unknown|unconfirmed|not checked|confirm whether|intent unknown/i.test(text),
+    killDate: kill,
+    dueDate: due,
+    lowConfidence: /lower confidence|notes-only/i.test(text),
+    pineapple: /pineapple|🍍/i.test(text),
+  };
+}
+
+/** Parse the to-do list (`memory.todosPath`). Only unchecked checkbox lines become items. */
+export function parseActiveTodos(md: string, file = "active-todos", projects: ProjectRule[] = []): ParsedItem[] {
+  const out: ParsedItem[] = [];
+  let section = "";
+  const lines = md.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const h = /^##\s+(.+)/.exec(line);
+    if (h) {
+      section = plain(h[1]!);
+      continue;
+    }
+    if (!section || SKIP_SECTIONS.test(section)) continue;
+    const m = /^\s*-\s+\[ \]\s+(.*)$/.exec(line);
+    if (!m) continue;
+    // Continuation lines (indented, not a new bullet) belong to this item.
+    let body = m[1]!;
+    while (i + 1 < lines.length && /^\s{2,}\S/.test(lines[i + 1]!) && !/^\s*-\s/.test(lines[i + 1]!)) {
+      body += " " + lines[++i]!.trim();
+    }
+    const { title, rest } = titleOf(body);
+    if (!title) continue;
+    out.push({
+      key: `memory:${file}:${slug(title)}`,
+      kind: kindOf(section, body),
+      title,
+      detail: rest,
+      section,
+      project: projectOf(body, projects),
+      links: links(body),
+      flags: flags(body),
+    });
+  }
+  return out;
+}
+
+/** Parse the numbered proposals in a `*-improvement-proposals.md` file. */
+export function parseProposals(md: string, date: string): ParsedItem[] {
+  const out: ParsedItem[] = [];
+  let section = "";
+  const blocks = md.split(/\n(?=#{2,3}\s)/);
+  for (const block of blocks) {
+    const h2 = /^##\s+(.+)/.exec(block);
+    if (h2) {
+      section = plain(h2[1]!);
+      continue;
+    }
+    const h3 = /^###\s+(\d+)\.\s+(.+)\n?([\s\S]*)$/.exec(block);
+    if (!h3 || !/priority/i.test(section)) continue;
+    const title = plain(h3[2]!);
+    const body = h3[3]!.trim();
+    out.push({
+      key: `memory:proposals:${slug(title)}`,
+      kind: "idea",
+      title,
+      detail: body.slice(0, 1200),
+      section: `Proposals ${date} · ${section}`,
+      project: undefined,
+      links: links(body),
+      flags: { ...flags(body), stateUnknown: false },
+    });
+  }
+  return out;
+}
