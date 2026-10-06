@@ -142,6 +142,12 @@ export const config = {
     headlessEnv: pick<Record<string, string>>(undefined, "pi.headlessEnv", {}),
     /** Tools headless sweeps must never use. */
     headlessDenyTools: pick<string>(undefined, "pi.headlessDenyTools", "edit,write,ask_user_question,cmux_open_terminal"),
+    /** Minimum gap between pi launches (headless and cmux). Keeps bursts under per-minute provider limits. 0 = off. */
+    launchSpacingSec: Number(pick("WORK_HQ_LAUNCH_SPACING", "pi.launchSpacingSec", 20)),
+    /** On a provider rate-limit / 503 error, retry this many times. 0 = off. */
+    rateLimitRetries: Number(pick("WORK_HQ_RATE_LIMIT_RETRIES", "pi.rateLimitRetries", 2)),
+    /** Wait a random time in this range (seconds) before each rate-limit retry. */
+    rateLimitBackoffSec: pick<[number, number]>(undefined, "pi.rateLimitBackoffSec", [60, 90]),
   },
 
   sweeps: {
@@ -157,6 +163,9 @@ export const config = {
     enabled: env("WORK_HQ_SWEEPS") ? env("WORK_HQ_SWEEPS") !== "off" : get(raw, "sweeps.enabled") !== false,
     disabled: pick<string[]>(undefined, "sweeps.disabled", []),
   },
+
+  /** Morning checks: shell commands that print `{ items: [...] }` JSON, run once per workday. See src/server/checks.ts. */
+  checks: pick<{ name: string; command: string; timeoutSec?: number }[]>(undefined, "checks", []),
 
   /** Ticket prefixes / keywords that tag items with a project. */
   projects: pick<Project[]>(undefined, "projects", []),
@@ -186,6 +195,23 @@ export const config = {
   cmux: {
     bin: [env("CMUX_BIN"), "/Applications/cmux.app/Contents/Resources/bin/cmux"].find((p) => p && existsSync(p)),
     group: pick<string>(undefined, "cmux.group", "Work HQ"),
+    /** Close a job's cmux workspace once its pi session has been idle this long. 0 = never. The pi session file stays, so `pi --resume` brings it back. */
+    pruneIdleHours: Number(pick("WORK_HQ_CMUX_PRUNE_HOURS", "cmux.pruneIdleHours", 3)),
+  },
+
+  /** Push-to-talk dictation ("Scheduled for…", the command-bar mic). See src/server/transcribe.ts. */
+  voice: {
+    /** auto = HEX if running, else `command` if set, else Chrome Web Speech. */
+    dictation: pick("WORK_HQ_DICTATION", "voice.dictation", "auto") as "auto" | "browser" | "hex" | "command",
+    /** Shell command that transcribes {file} (a 16 kHz mono WAV) and prints the text. */
+    command: pick<string | undefined>("WORK_HQ_DICTATION_COMMAND", "voice.command", undefined),
+    hex: {
+      /** Empty → whatever model HEX has selected. */
+      model: pick<string>(undefined, "voice.hex.model", ""),
+      discoveryFile: path(pick<string | undefined>(undefined, "voice.hex.discoveryFile", undefined)),
+    },
+    /** Silence that ends a recorded dictation. */
+    silenceMs: Number(pick(undefined, "voice.silenceMs", 1400)),
   },
 
   /** Corporate TLS interception? Point at the root CA bundle; exported to every child process. */

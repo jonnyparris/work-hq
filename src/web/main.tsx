@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { SyncState } from "../shared/types.ts";
+import { quickFirst } from "../shared/batch.ts";
+import { Deck } from "./deck.tsx";
 import { AgentsPanel, Board, Drawer, Focus, JournalPage, JournalPanel, NowPanel, Timeline, TodayPanel } from "./parts.tsx";
 import { api, useHQ, useNow } from "./store.ts";
 import { Icon, ago } from "./ui.tsx";
-import { Voice, chime, speechSupported } from "./voice.ts";
+import { Voice, chime, micSupported, speechSupported } from "./voice.ts";
 
 function App() {
   const notify = useCallback((n: { title: string; body: string }) => {
@@ -19,6 +21,19 @@ function App() {
   const [view, setView] = useState<"today" | "journal">(location.pathname === "/journal" ? "journal" : "today");
   const [sel, setSel] = useState<string | undefined>();
   const [skipped, setSkipped] = useState<string[]>([]);
+  const [deck, setDeck] = useState(false);
+  const [quick, setQuick] = useState(() => localStorage.getItem("whq:quickFirst") === "1");
+  useEffect(() => { localStorage.setItem("whq:quickFirst", quick ? "1" : "0"); }, [quick]);
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement)?.closest("input, textarea, select, [contenteditable]") || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "b") { e.preventDefault(); setDeck((x) => !x); }
+      else if (e.key === "q") { e.preventDefault(); setQuick((x) => !x); }
+      else if (e.key === "Escape") setDeck(false);
+    };
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, []);
 
   // Ask once for notification permission, on the first interaction (browsers require a gesture).
   useEffect(() => {
@@ -30,10 +45,10 @@ function App() {
   const queue = useMemo(() => {
     const t = now.getTime();
     const ready = s.questions.filter((q) => !q.notBefore || Date.parse(q.notBefore) <= t);
-    ready.sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt));
+    ready.sort(quick ? quickFirst : (a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt));
     // Skipped go to the back, not away.
     return [...ready.filter((q) => !skipped.includes(q.id)), ...ready.filter((q) => skipped.includes(q.id))];
-  }, [s.questions, skipped, now]);
+  }, [s.questions, skipped, now, quick]);
   const later = s.questions.filter((q) => q.notBefore && Date.parse(q.notBefore) > now.getTime());
 
   useEffect(() => {
@@ -56,6 +71,15 @@ function App() {
               <Timeline now={now} events={s.events} items={s.items} onRefresh={() => api.sync("calendar")} sync={s.sync.find((x) => x.name === "calendar")} />
             </div>
             <div className="col center">
+              {deck ? (
+                <Deck
+                  questions={queue}
+                  items={s.items}
+                  now={now}
+                  onClose={() => setDeck(false)}
+                  onFocus={(id) => { setDeck(false); setSkipped(queue.filter((q) => q.id !== id).map((q) => q.id)); }}
+                />
+              ) : (
               <div>
                 <Focus
                   q={queue[0]}
@@ -75,8 +99,13 @@ function App() {
                     {later.length > 0 && <span className="qchip later">{later.length} snoozed</span>}
                   </div>
                 )}
-                <div className="kbd-help"><kbd>1</kbd>–<kbd>9</kbd> answer · <kbd>s</kbd> skip · <kbd>n</kbd> note · <kbd>⌘↵</kbd> save note + skip · <kbd>⌘K</kbd> talk · <kbd>⌘.</kbd> 🍍</div>
+                <div className="kbd-help">
+                  <kbd>1</kbd>–<kbd>9</kbd> answer · <kbd>s</kbd> skip · <kbd>n</kbd> note · <kbd>⌘↵</kbd> save note + skip · <kbd>⌘K</kbd> talk · <kbd>⌘.</kbd> 🍍
+                  {queue.length > 1 && <> · <button className="kbd-btn" onClick={() => setDeck(true)}><kbd>b</kbd> clear the deck</button></>}
+                  {" · "}<button className={`kbd-btn ${quick ? "on" : ""}`} onClick={() => setQuick((x) => !x)}><kbd>q</kbd> quick wins first{quick ? " ✓" : ""}</button>
+                </div>
               </div>
+              )}
               <Board items={s.items} selected={sel} onOpen={setSel} />
             </div>
             <div className="col right">
@@ -132,6 +161,7 @@ function CommandBar() {
   const [reply, setReply] = useState<string | undefined>();
   const [listening, setListening] = useState(false);
   const [dictating, setDictating] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const [ticker, setTicker] = useState("");
   const [fired, setFired] = useState(false);
   const [err, setErr] = useState<string | undefined>();
@@ -174,10 +204,12 @@ function CommandBar() {
         setText(t);
         if (final && t.trim()) setTimeout(() => input.current?.focus(), 0);
       },
-      onState: ({ listening: l, dictating: d, error }) => {
+      onState: ({ listening: l, dictating: d, transcribing: t, error }) => {
         setListening(l || (voice.current?.listening ?? false));
         setDictating(d);
+        setTranscribing(Boolean(t));
         setErr(error);
+        window.dispatchEvent(new CustomEvent("whq:dictate-phase", { detail: t ? "transcribing" : d ? "listening" : "idle" }));
       },
     });
   }
@@ -186,9 +218,15 @@ function CommandBar() {
     const start = (e: Event) => { target.current = (e as CustomEvent).detail; voice.current?.startDictation(); };
     // Swallow the final result of a cancelled borrow so it doesn't land in the command bar.
     const stop = () => { if (target.current) target.current = () => {}; voice.current?.stopDictation(); };
+    const finish = () => voice.current?.finishDictation();
     window.addEventListener("whq:dictate", start);
     window.addEventListener("whq:dictate-stop", stop);
-    return () => { window.removeEventListener("whq:dictate", start); window.removeEventListener("whq:dictate-stop", stop); };
+    window.addEventListener("whq:dictate-finish", finish);
+    return () => {
+      window.removeEventListener("whq:dictate", start);
+      window.removeEventListener("whq:dictate-stop", stop);
+      window.removeEventListener("whq:dictate-finish", finish);
+    };
   }, []);
 
   useEffect(() => {
@@ -208,7 +246,7 @@ function CommandBar() {
   const toggleDictate = () => {
     const v = voice.current!;
     target.current = undefined;
-    if (dictating) v.stopDictation();
+    if (dictating) v.finishDictation();
     else v.startDictation();
   };
 
@@ -221,8 +259,8 @@ function CommandBar() {
         </div>
       )}
       <div className="bar">
-        {speechSupported && (
-          <button className={`mic ${dictating ? "on" : ""}`} onClick={toggleDictate} title="Dictate">
+        {(speechSupported || micSupported) && (
+          <button className={`mic ${dictating || transcribing ? "on" : ""}`} onClick={toggleDictate} title="Dictate">
             <Icon name="mic" />
           </button>
         )}
@@ -234,7 +272,7 @@ function CommandBar() {
             if (e.key === "Enter" && text.trim() && !pending) { const t = text; setText(""); send(t); }
             if (e.key === "Escape") (e.target as HTMLInputElement).blur();
           }}
-          placeholder={dictating ? "Listening…" : "Tell Work HQ anything — “PAY-123 is closed”, “remind me to reply to Sam after standup”, “file a ticket for…”"}
+          placeholder={transcribing ? "Transcribing…" : dictating ? "Listening…" : "Tell Work HQ anything — “PAY-123 is closed”, “remind me to reply to Sam after standup”, “file a ticket for…”"}
         />
         <span className="hint">⌘K</span>
         {speechSupported && (

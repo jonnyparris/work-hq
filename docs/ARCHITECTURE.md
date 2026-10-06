@@ -39,7 +39,17 @@
   in cmux, grouped under "Work HQ", with a small pi extension (`pi/status-beacon.ts`) telling the
   server when a turn settles, blocks on input, or exits. Sweeps are read-only and headless,
   but stream tool calls into the Agents panel. `WORK_HQ_SWEEP_SURFACE=cmux` if you want those
-  in cmux too.
+  in cmux too. Every 10 minutes the scheduler closes job workspaces whose session has been idle
+  (beacon `idle`/`exited`) longer than `cmux.pruneIdleHours` (default 3). It never touches a
+  workspace that is selected, pinned, still working, or waiting on you.
+- **Provider rate limits are waited out, not fatal.** Every pi launch with tools (cmux actions,
+  sweeps) goes through one launch gate (`src/server/launch-gate.ts`) that spaces starts at least
+  `pi.launchSpacingSec` apart (default 20). Tool-less triage skips the gate. If a run still dies
+  on a rate limit, 429, 503 or "overloaded" (e.g. the per-org "Grammar compilation rate limit",
+  20/min), Work HQ waits 60–90 s (`pi.rateLimitBackoffSec`) and retries up to `pi.rateLimitRetries`
+  (default 2) times. A cmux session is nudged in place ("carry on"); a headless tool run resumes
+  its own session so finished tool calls aren't repeated. pi's own retries (2/4/8 s) sit inside
+  this and don't outlast a per-minute limit on their own.
 - **Human decisions are the source of truth.** `confirmedAt` is set whenever the owner decides
   something. Memory re-imports refresh text but never undo a confirmed status.
 
@@ -89,7 +99,32 @@ server? Work HQ still runs; you just lose import and the flush.
 | Reflection proposal | unconverted proposal (kept across nights until answered) | 45 (max 2 open) |
 | Draft to review / post idea | `post` item, proposed | 42 / 38 (max 2 open) |
 
-Total open questions are capped at 14 so it asks rather than nags.
+Total open questions are capped at 14 so it asks rather than nags. Deferred questions (see below) don't count
+against the 14, but still count against their own kind's cap.
+
+### Clear the deck (batch triage)
+
+`b` swaps the focus card for every open question at once, grouped by how much of you it needs
+([`src/shared/batch.ts`](../src/shared/batch.ts)):
+
+| Effort | Groups | Bulk ops |
+|---|---|---|
+| one tap | meetings that ended, captured, still waiting, it's time | clear all, all later, chase all, send agents, push |
+| hand off | state unknown / kill date, reflection proposals | check all for me (verify), send agents, reject all |
+| needs you | agents asking, blog posts | defer, drop all |
+
+Plan / wrap / prep are never touched in bulk. A bulk op runs each question's **own** option (same effects
+and journal as answering one at a time) and writes one `Batch — …` journal line. Bulk dispatch never uses
+`publish` or `draft`. **Defer** hides a question until 09:30 on the day picked (tomorrow, the rest of this
+week, next Monday). An item that's already scheduled gets its time moved instead. With a `kind` (e.g. posts),
+scheduled items of that kind that haven't come due yet move as well. "Push everything that needs your head to…"
+defers every *needs you* group in one go.
+
+`q` sorts the normal one-at-a-time queue quick-first (one tap → hand off → needs you).
+
+The command bar does the same in words: "skip all blog posts till Thursday", "clear the meeting ones",
+"check all the unknowns for me", "push the rest to tomorrow". Triage sees the open groups and returns
+`bulk: [{ op, group | kind | ids, until }]`. All of these go through `POST /api/questions/bulk`.
 
 ### "Scheduled for…"
 
@@ -124,7 +159,21 @@ Scheduled for…, and Not for me. Saying "I should blog about X" in the command 
 
 Now: Chrome Web Speech, continuous, `owner.speechLang` (default `en-GB`). The 🍍 listener keeps ~2.5 minutes of
 transcript; on the keyword it waits 7 s for the sentence to finish, then sends it to triage
-in `pineapple` mode. Dictation shares the recogniser.
+in `pineapple` mode.
+
+Dictation (command-bar mic, "Scheduled for…") uses `voice.dictation`, resolved on every press
+([`transcribe.ts`](../src/server/transcribe.ts)):
+
+- **hex** — [HEX](https://hex.kitlangton.dev)'s local API. HEX writes
+  `~/Library/Application Support/voice-control/local-api.json` (port + bearer token); the server
+  checks `/health`, then posts the WAV to `/transcriptions?model=<HEX's selected model>`.
+- **command** — any shell command that reads `{file}` and prints text (whisper.cpp, parakeet-mlx, …).
+- **browser** — Web Speech, sharing the 🍍 recogniser. Live interim text.
+- **auto** (default) — hex if it's up, else command if set, else browser.
+
+For hex/command the browser records (AudioWorklet → 16 kHz mono WAV), stops on `voice.silenceMs` of
+quiet or ↵ / ⌘↵, **releases the mic before uploading**, and posts to `/api/transcribe`. No interim text;
+the prompt shows "Transcribing…" instead. If HEX has quit, the next press falls back to Web Speech.
 
 Next:
 - **Speaker separation.** The laptop mic hears the call. Options: route the Meet tab's audio
@@ -192,6 +241,7 @@ src/server/hub.ts         state transitions, journal, agent-report ingest
 src/server/prompter.ts    proactive rules
 src/server/scheduler.ts   heartbeat + cadences
 src/server/agents.ts      pi spawning: headless, cmux, triage
+src/server/launch-gate.ts launch spacing + rate-limit detection/backoff
 src/server/cmux.ts        cmux workspace + beacon plumbing
 src/server/config.ts      config file + env → typed config
 src/server/prompts.ts     prompt assembly + the JSON contracts the server parses

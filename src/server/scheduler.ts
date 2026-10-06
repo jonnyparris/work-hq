@@ -3,6 +3,7 @@
 // whole limitation the cloud/ DO scaffold exists to lift later).
 
 import type { Agents } from "./agents.ts";
+import type { Checks } from "./checks.ts";
 import { config, memoryOn, sweepOn } from "./config.ts";
 import type { Hub } from "./hub.ts";
 import type { MemorySync } from "./memory-sync.ts";
@@ -17,6 +18,7 @@ export class Scheduler {
     private prompter: Prompter,
     private agents: Agents,
     private memory: MemorySync,
+    private checks?: Checks,
   ) {}
 
   start() {
@@ -62,6 +64,10 @@ export class Scheduler {
   }
 
   private async cadence() {
+    if (this.due("cmuxPrune", 10)) {
+      this.last.cmuxPrune = Date.now();
+      this.agents.pruneCmux();
+    }
     if (this.due("journal", config.memory.flushEveryMin) && memoryOn()) {
       this.last.journal = Date.now();
       await this.memory.flushJournal().catch((e) => console.error("[journal]", e.message));
@@ -71,6 +77,8 @@ export class Scheduler {
       await this.memory.importAll().catch((e) => console.error("[memory]", e.message));
     }
     if (!config.sweeps.enabled || !this.inWorkHours()) return;
+    // Cheap shell checks, once per workday, ahead of the morning plan.
+    if (this.checks && sweepOn("checks")) void this.checks.runDue().catch((e) => console.error("[checks]", e.message));
     if (sweepOn("calendar") && this.due("calendar", config.sweeps.calendarEveryMin)) {
       this.last.calendar = Date.now();
       void this.agents.sweep("calendar");

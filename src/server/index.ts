@@ -2,8 +2,10 @@
 // scheduler. The web app is bundled by Bun's HTML import on the fly.
 
 import index from "../web/index.html";
+import type { BulkRequest } from "../shared/batch.ts";
 import type { ActionKind, AgentReport, ItemStatus } from "../shared/types.ts";
 import { Agents } from "./agents.ts";
+import { Checks } from "./checks.ts";
 import { config, memoryOn } from "./config.ts";
 import { Store, nowIso } from "./db.ts";
 import { Hub } from "./hub.ts";
@@ -11,6 +13,7 @@ import { MemoryClient } from "./memory.ts";
 import { MemorySync } from "./memory-sync.ts";
 import { Prompter } from "./prompter.ts";
 import { Scheduler } from "./scheduler.ts";
+import { dictationEngine, transcribe } from "./transcribe.ts";
 
 const store = new Store(config.dbPath);
 const hub = new Hub(store);
@@ -18,7 +21,8 @@ const memory = new MemoryClient();
 const memorySync = new MemorySync(hub, memory);
 const agents = new Agents(hub);
 const prompter = new Prompter(hub);
-const scheduler = new Scheduler(hub, prompter, agents, memorySync);
+const checks = new Checks(hub);
+const scheduler = new Scheduler(hub, prompter, agents, memorySync, checks);
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (msg: string, status = 400) => json({ error: msg }, status);
@@ -44,6 +48,11 @@ const server = Bun.serve({
     "/board": index,
 
     "/api/snapshot": { GET: () => json(hub.snapshot()) },
+
+    "/api/voice": { GET: () => handle(async () => ({ engine: await dictationEngine(), silenceMs: config.voice.silenceMs })) },
+    "/api/transcribe": {
+      POST: (req) => handle(async () => transcribe(new Uint8Array(await req.arrayBuffer()))),
+    },
 
     "/api/items": {
       POST: (req) =>
@@ -109,9 +118,21 @@ const server = Bun.serve({
           if (b.optionId === "look") {
             const job = hub.store.jobs(100).find((j) => j.itemId === q.itemId && j.workspace);
             if (job) agents.focus(job.id);
+            else hub.toast("That session was closed after sitting idle. `pi --resume` in your workspace brings it back.", "warn");
           }
           if (q.kind === "open") hub.journal(`${q.prompt} → ${answered.answer}`);
           return answered;
+        }),
+    },
+
+    "/api/questions/bulk": {
+      POST: (req) =>
+        handle(async () => {
+          const b = await body<BulkRequest>(req);
+          if (!["dispatch", "done", "drop", "dismiss", "defer"].includes(b.op)) throw new Error("unknown op");
+          const r = await hub.bulk(b);
+          if (r.count) hub.toast(`${r.count} handled${r.skipped ? ` · ${r.skipped} didn't fit` : ""}`, "good");
+          return r;
         }),
     },
 

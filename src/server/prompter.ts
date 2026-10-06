@@ -73,7 +73,9 @@ export class Prompter {
     const open = (this.open = store.questions("open"));
     const openCount = (kind: Question["kind"], pred: (q: Question) => boolean = () => true) =>
       open.filter((q) => q.kind === kind && pred(q)).length;
-    let budget = CAP.total - open.length;
+    // Deferred questions (notBefore later) don't count against the total: they aren't nagging anyone.
+    // Per-kind caps still count them, so "skip all posts till Thu" also stops new post questions.
+    let budget = CAP.total - open.filter((q) => !q.notBefore || Date.parse(q.notBefore) <= now.getTime()).length;
 
     this.expireMoot(open, items, now);
 
@@ -98,9 +100,11 @@ export class Prompter {
             ...(act ? [opt("go", act.label, { type: "dispatch", action: act.action }, "primary")] : []),
             opt("doing", "I'm on it", { type: "status", status: "doing" }, act ? "quiet" : "primary"),
             opt("done", "Already done", { type: "status", status: "done" }, "good"),
-            opt("1h", "Push 1 hour", { type: "schedule", at: new Date(now.getTime() + 60 * MIN).toISOString(), label: "in an hour" }),
+            opt("1h", "Push 1 hour", { type: "schedule", at: new Date(now.getTime() + 60 * MIN).toISOString(), inMin: 60, label: "in an hour" }),
             WHEN_OPT,
           ],
+          // "Scheduled for…" resolves async; don't re-ask this slot while the new time is landing.
+          cooldownMin: 15,
         },
         true,
       );
@@ -119,6 +123,7 @@ export class Prompter {
             kind: "prep",
             eventId: ev.id,
             key: `prep:${ev.id}`,
+            once: true,
             priority: 85,
             prompt: `${ev.title} in ${Math.round((start - now.getTime()) / MIN)} min. Want a brief?`,
             context: ev.attendees?.length ? `With ${ev.attendees.slice(0, 5).join(", ")}` : undefined,
@@ -135,6 +140,7 @@ export class Prompter {
           kind: "review",
           eventId: ev.id,
           key: `review:${ev.id}`,
+          once: true,
           priority: 70,
           prompt: `${ev.title} just ended. Anything you committed to?`,
           context: "Type or say it below — it goes straight to triage. Meeting notes get scanned on the next sweep either way.",
@@ -151,6 +157,7 @@ export class Prompter {
       this.ask({
         kind: "plan",
         key: `plan:${today}`,
+        once: true,
         priority: 95,
         prompt: "Morning. What are today's three?",
         context: "Pick from what memory thinks is live. Everything else stays proposed.",
@@ -166,6 +173,7 @@ export class Prompter {
       this.ask({
         kind: "wrap",
         key: `wrap:${today}`,
+        once: true,
         priority: 88,
         prompt: "Wrap up. What actually happened today?",
         context: "Confirm the real state of what you touched. It goes to memory, so tonight's reflection starts from the truth.",
@@ -356,7 +364,7 @@ export class Prompter {
 
   private open: Question[] = [];
 
-  private ask(q: Omit<Question, "id" | "status" | "createdAt"> & { cooldownMin?: number }, notify = false) {
+  private ask(q: Omit<Question, "id" | "status" | "createdAt"> & { cooldownMin?: number; once?: boolean }, notify = false) {
     const created = this.hub.ask(q);
     if (created) this.open.push(created);
     if (created && (notify || q.priority >= 80)) {
@@ -371,10 +379,14 @@ export class Prompter {
     for (const q of open) {
       const it = q.itemId ? byId.get(q.itemId) : undefined;
       if (q.itemId && (!it || ["done", "dropped"].includes(it.status))) this.hub.expireQuestion(q.id, "moot");
+      // Rescheduled (or started / un-scheduled) since this was asked: the old slot's prompt is stale.
+      else if (q.key.startsWith("due:") && it && (it.status !== "scheduled" || q.key !== `due:${it.id}:${it.scheduledFor}`)) this.hub.expireQuestion(q.id, "rescheduled");
       else if (q.kind === "confirm" && it && it.status !== "inbox") this.hub.expireQuestion(q.id, "triaged");
       else if (q.kind === "post" && it && q.key.endsWith(":idea") && hasDraft(it)) this.hub.expireQuestion(q.id, "drafted");
       else if (q.kind === "prep" && q.eventId && this.startedAgo(q.eventId, now) > 10 * MIN) this.hub.expireQuestion(q.id, "meeting started");
       else if (q.kind === "plan" && now.getHours() >= 14) this.hub.expireQuestion(q.id, "day moved on");
+      // A snoozed wrap/plan keeps its old key; once the date rolls over it's a stale duplicate.
+      else if ((q.kind === "wrap" || q.kind === "plan") && q.key !== `${q.kind}:${localDate(now)}`) this.hub.expireQuestion(q.id, "day moved on");
     }
   }
 

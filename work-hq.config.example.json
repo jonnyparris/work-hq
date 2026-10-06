@@ -42,7 +42,12 @@
     "triageThinking": "low",
     "sweepThinking": "medium",
     // Extra env for headless (read-only) sweeps, e.g. to pre-approve MCP reads in a permissions extension.
-    "headlessEnv": {}
+    "headlessEnv": {},
+    // Space out pi launches (seconds) so bursts stay under per-minute provider limits. 0 = off.
+    "launchSpacingSec": 20,
+    // On a rate-limit / 429 / 503 / overloaded error: retry this many times, waiting a random time in this range (seconds).
+    "rateLimitRetries": 2,
+    "rateLimitBackoffSec": [60, 90]
   },
 
   // Background sweeps. Only run on weekdays inside work hours.
@@ -52,8 +57,16 @@
     "calendarEveryMin": 120,
     "transcriptsEveryMin": 30,
     "postsEveryDays": 7,                  // writing scout; 0 = off
-    "disabled": []                         // any of "calendar", "transcripts", "posts"
+    "disabled": []                         // any of "calendar", "transcripts", "posts", "checks"
   },
+
+  // Morning checks: plain shell commands (no pi), run once per workday from dayStart, so their
+  // findings are on the board before the morning plan. Each prints { "items": [...] } JSON on
+  // stdout, every item with a stable source.key. An item a later run stops reporting is closed
+  // as done. Exit code is ignored when stdout parses. Disable all with sweeps.disabled: ["checks"].
+  "checks": [
+    // { "name": "unlanded", "command": "bun run --silent --cwd ~/code/mr-tools unlanded --whq", "timeoutSec": 180 }
+  ],
 
   // Ticket prefixes / keywords that tag items with a project badge.
   "projects": [
@@ -73,6 +86,22 @@
   // Your company's tools and conventions go here: copy any file from ./prompts into this folder and edit it.
   // Missing files fall back to the defaults.
   "promptsDir": "~/.config/work-hq/prompts",
+
+  // Dispatched agents run in cmux workspaces under this group. Once a job's session has sat idle
+  // pruneIdleHours, its workspace is closed (0 = never). Selected or pinned workspaces are left alone,
+  // and the pi session file stays, so `pi --resume` brings it back.
+  "cmux": { "group": "Work HQ", "pruneIdleHours": 3 },
+
+  // Push-to-talk dictation (command-bar mic, "Scheduled for…"). The 🍍 listener always uses Chrome's Web Speech.
+  //   "auto"    → HEX if it's running (found via its local API, no setup), else "command" if set, else Web Speech
+  //   "hex" | "command" | "browser" to pin one. Recorded engines stop on silenceMs of quiet, or ↵ / ⌘↵.
+  "voice": {
+    "dictation": "auto",
+    // Any local transcriber. {file} is a 16 kHz mono WAV; stdout is the text.
+    // "command": "whisper-cli -m ~/models/ggml-base.en.bin -nt -np -f {file}",
+    "hex": { "model": "" },               // empty = the model selected in HEX
+    "silenceMs": 1400
+  },
 
   // Corporate TLS proxy? Root CA bundle, exported to bun and every pi it starts.
   "tls": { "caFile": "~/certs/corp-root.pem" }

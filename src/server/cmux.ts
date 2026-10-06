@@ -3,7 +3,7 @@
 // (pi/status-beacon.ts), never from scraping the terminal.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { config, ROOT } from "./config.ts";
 
@@ -142,6 +142,59 @@ export function liveWorkspaces(): Set<string> | undefined {
   return t ? new Set(t.flatMap((w) => [w.id, w.ref])) : undefined;
 }
 
+/** A cmux workspace Work HQ launched (tagged "work-hq · <jobId>" in its description). */
+export interface JobWorkspace {
+  id: string;
+  ref: string;
+  jobId: string;
+  title: string;
+  /** Selected in its window, or pinned by the owner: never prune. */
+  keep: boolean;
+}
+
+export function jobWorkspaces(): JobWorkspace[] | undefined {
+  const r = cli(["--json", "--id-format", "both", "tree", "--all"]);
+  if (r.code !== 0) return undefined;
+  try {
+    const parsed = JSON.parse(r.stdout);
+    return (parsed.windows ?? []).flatMap((w: any) =>
+      (w.workspaces ?? []).flatMap((ws: any) => {
+        const jobId = /work-hq · (job_\w+)/.exec(ws.description ?? "")?.[1];
+        if (!jobId || !ws.id) return [];
+        return [{ id: ws.id, ref: ws.ref, jobId, title: ws.title ?? "", keep: Boolean(ws.selected || ws.active || ws.pinned) }];
+      }),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** When the job's pi session last went quiet, from its beacon. Undefined = working, waiting on you, or unknown. */
+export function idleSince(jobId: string): number | undefined {
+  const path = resolve(config.stateDir, "jobs", jobId, "status.json");
+  const b = readBeacon(path);
+  if (!b || !["idle", "exited"].includes(b.state)) return undefined;
+  const at = b.at ? Date.parse(b.at) : NaN;
+  if (!Number.isNaN(at)) return at;
+  try {
+    return statSync(path).mtimeMs; // launch.sh writes "exited" without a timestamp
+  } catch {
+    return undefined;
+  }
+}
+
+/** Which job workspaces have sat idle long enough to close. Pure, for tests. */
+export function pickIdle(
+  workspaces: JobWorkspace[],
+  o: { now: number; idleMs: number; busy: Set<string>; idleSince: (jobId: string) => number | undefined },
+): JobWorkspace[] {
+  return workspaces.filter((w) => {
+    if (w.keep || o.busy.has(w.jobId)) return false;
+    const since = o.idleSince(w.jobId);
+    return since !== undefined && o.now - since >= o.idleMs;
+  });
+}
+
 export function focusWorkspace(id: string) {
   const r = cli(["workspace", "select", id]);
   spawnSync("open", ["-a", "cmux"]);
@@ -150,6 +203,12 @@ export function focusWorkspace(id: string) {
 
 export function closeWorkspace(id: string) {
   return cli(["workspace", "close", id]).code === 0;
+}
+
+/** Type a line into the workspace's terminal and press Enter (e.g. nudge an idle pi session). */
+export function sendLine(workspace: string, text: string) {
+  if (cli(["send", "--workspace", workspace, "--", text]).code !== 0) return false;
+  return cli(["send-key", "--workspace", workspace, "enter"]).code === 0;
 }
 
 export function notify(workspace: string | undefined, title: string, body: string) {

@@ -130,9 +130,16 @@ export const ACTIONS: Array<{ action: ActionKind; label: string; hint: string }>
 export function dictateInto(onText: (text: string, final: boolean) => void) {
   window.dispatchEvent(new CustomEvent("whq:dictate", { detail: onText }));
 }
+/** Cancel: mic off, words dropped. */
 export function stopDictation() {
   window.dispatchEvent(new CustomEvent("whq:dictate-stop"));
 }
+/** Done talking: mic off, deliver the words now. */
+export function finishDictation() {
+  window.dispatchEvent(new CustomEvent("whq:dictate-finish"));
+}
+/** "listening" | "transcribing" | "idle" — broadcast so borrowers can show it. */
+export type DictationPhase = "listening" | "transcribing" | "idle";
 
 /** Who's using the dashboard. Filled from the server snapshot (config.owner). */
 export const profile = { name: "", aliases: [] as string[], speechLang: "en-GB" };

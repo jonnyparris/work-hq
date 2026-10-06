@@ -1,4 +1,5 @@
 import { useEffect, useReducer, useRef, useState } from "react";
+import type { BulkRequest } from "../shared/batch.ts";
 import type { ActionKind, ItemStatus, ServerEvent, Snapshot } from "../shared/types.ts";
 import { setProfile } from "./ui.tsx";
 
@@ -98,6 +99,7 @@ export const api = {
   schedule: (id: string, at: string, label?: string) => call("POST", `/api/items/${id}/schedule`, { at, label }),
   add: (title: string, status: ItemStatus = "today") => call("POST", "/api/items", { title, status }),
   say: (text: string, mode: "chat" | "pineapple" | "review" = "chat") => call<{ reply?: string }>("POST", "/api/say", { text, mode }),
+  bulk: (req: BulkRequest) => call<{ count: number; skipped: number }>("POST", "/api/questions/bulk", req),
   sync: (name: string) => call("POST", `/api/sync/${name}`),
   focusJob: (id: string) => call("POST", `/api/jobs/${id}/focus`),
   cancelJob: (id: string) => call("POST", `/api/jobs/${id}/cancel`),

@@ -52,6 +52,34 @@ describe("prompter", () => {
     expect(seen).toContain("It's time: reply to Sam");
   });
 
+  test("'Push 1 hour' counts from the click, not from when it was asked", async () => {
+    const it = hub.createItem({ title: "reply to Sam", kind: "message", status: "scheduled", scheduledFor: new Date(Date.now() - 3 * 3600_000).toISOString() });
+    p.tick(new Date(Date.now() - 2 * 3600_000)); // asked two hours ago, ignored since
+    const q = hub.store.questions("open").find((q) => q.itemId === it.id)!;
+    await hub.answer(q.id, "1h");
+    expect(Date.parse(hub.store.item(it.id)!.scheduledFor!)).toBeGreaterThan(Date.now() + 59 * 60_000);
+    p.tick(new Date());
+    expect(hub.store.questions("open").filter((q) => q.itemId === it.id)).toHaveLength(0);
+  });
+
+  test("'Scheduled for…' on a due prompt doesn't re-ask while the time is being parsed", async () => {
+    const it = hub.createItem({ title: "reply to Sam", kind: "message", status: "scheduled", scheduledFor: new Date(Date.now() - 60_000).toISOString() });
+    p.tick(new Date());
+    const q = hub.store.questions("open").find((q) => q.itemId === it.id)!;
+    hub.dispatcher = { scheduleFromWords: () => new Promise(() => {}) } as any; // parse still in flight
+    await hub.answer(q.id, "when", "friday morning");
+    p.tick(new Date());
+    expect(hub.store.questions("open").filter((q) => q.itemId === it.id)).toHaveLength(0);
+  });
+
+  test("a due prompt for a slot that's since been rescheduled expires", () => {
+    const it = hub.createItem({ title: "reply to Sam", kind: "message", status: "scheduled", scheduledFor: new Date(Date.now() - 60_000).toISOString() });
+    p.tick(new Date());
+    hub.schedule(it.id, new Date(Date.now() + 3600_000).toISOString(), "later");
+    p.tick(new Date());
+    expect(hub.store.questions("open").filter((q) => q.itemId === it.id)).toHaveLength(0);
+  });
+
   test("meeting prep 15 minutes before a small meeting", () => {
     hub.setEvents([{ id: "e1", title: "1-1 Sam", start: at(10, 15).toISOString(), end: at(10, 45).toISOString(), attendees: ["Sam", "Alex"], oneOnOne: true }]);
     p.tick(at(10));
@@ -137,4 +165,48 @@ test("an idea question makes way for the draft question once a draft lands", () 
   p.tick(at(15, 1));
   const qs = hub.store.questions("open").filter((q) => q.itemId === it.id);
   expect(qs.map((q) => q.badge)).toEqual(["Draft to review"]);
+});
+
+// Regression: answering the wrap-up used to re-ask it on the next 30s tick (no cooldown on a per-day key).
+test("wrap-up asked once per day, not again after it's answered", async () => {
+  const [, end] = (await import("../src/server/config.ts")).config.sweeps.workHours;
+  const t = (m: number) => new Date(2026, 8, 23, end - 1, m);
+  p.tick(t(0));
+  const wrap = () => hub.store.questions("open").filter((q) => q.kind === "wrap");
+  expect(wrap()).toHaveLength(1);
+  await hub.answer(wrap()[0]!.id, "flush");
+  p.tick(t(1));
+  p.tick(t(30));
+  expect(wrap()).toHaveLength(0);
+});
+
+test("snoozed wrap-up comes back once, then stays answered", async () => {
+  const [, end] = (await import("../src/server/config.ts")).config.sweeps.workHours;
+  const t = (m: number) => new Date(2026, 8, 23, end - 1, m);
+  p.tick(t(0));
+  const wrap = () => hub.store.questions("open").filter((q) => q.kind === "wrap");
+  await hub.answer(wrap()[0]!.id, "later");
+  p.tick(t(1));
+  expect(wrap()).toHaveLength(1); // the snoozed one, not a second copy
+  await hub.answer(wrap()[0]!.id, "flush");
+  p.tick(t(2));
+  expect(wrap()).toHaveLength(0);
+});
+
+// Regression: a wrap snoozed on one day kept its old key and sat next to the next day's wrap.
+test("yesterday's snoozed wrap-up expires instead of doubling up", async () => {
+  const [, end] = (await import("../src/server/config.ts")).config.sweeps.workHours;
+  p.tick(new Date(2026, 8, 23, end - 1));
+  const wrap = () => hub.store.questions("open").filter((q) => q.kind === "wrap");
+  await hub.answer(wrap()[0]!.id, "later");
+  p.tick(new Date(2026, 8, 24, end - 1));
+  expect(wrap().map((q) => q.key)).toEqual(["wrap:2026-09-24"]);
+});
+
+test("morning plan not re-asked after it's answered", async () => {
+  p.tick(at(10));
+  const plan = () => hub.store.questions("open").filter((q) => q.kind === "plan");
+  await hub.answer(plan()[0]!.id, "plan");
+  p.tick(at(10, 1));
+  expect(plan()).toHaveLength(0);
 });

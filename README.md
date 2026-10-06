@@ -87,9 +87,11 @@ Placeholders like `{{owner.name}}` and `{{tracker}}` are filled from the config.
 | Dashboard, board, journal, command bar | Bun | — |
 | Triage ("PAY-123 is closed", "remind me after standup") | [pi](https://github.com/earendil-works/pi) with a model | the command bar just journals your words |
 | Calendar, transcripts, blog-idea sweeps | pi + MCPs for calendar / docs / email | nothing gets swept; you add items by hand or by voice |
+| Morning checks (e.g. "merged but never landed") | any shell command that prints `{ "items": [...] }` JSON — see `checks` in the example config | nothing extra on the board |
 | Dispatched actions you can watch | [cmux](https://cmux.com) | they run headless and stream into the Agents panel |
 | Import to-dos, save the journal | a memory MCP with `read`/`write`/`list`/`search` over markdown | the journal stays in the local SQLite database |
 | Dictation and 🍍 | Chrome (Web Speech API, no keys) | type instead |
+| Better on-device dictation (optional) | [HEX](https://hex.kitlangton.dev) running — picked up automatically — or any local transcriber via `voice.command` | Web Speech |
 
 ## What it asks, and when
 
@@ -109,7 +111,10 @@ and cheap to run every 30 seconds. The model decides what things *mean*. The rul
 | **Wrap up** | 90 min before end of day | what actually happened |
 | **Post idea / Draft to review** | the weekly writing scout found something | never nags |
 
-At most 14 questions are open at once, so it asks rather than nags. Answering *"Doing it today"*
+At most 14 questions are open at once, so it asks rather than nags. End of the day and too many left?
+Press **`b`** to *clear the deck*: every question grouped by effort (one tap, hand off to an agent, needs you),
+with bulk buttons per group and "push everything that needs your head to Thu". You can also say it in the command
+bar: *"skip all blog posts till Thursday"*. **`q`** sorts the normal queue quick wins first. Answering *"Doing it today"*
 won't bring the same question back tomorrow morning.
 
 <table>
@@ -163,6 +168,6 @@ All optional. They override the config file.
 `WORK_HQ_CONFIG` (path, or `none`) · `WORK_HQ_PORT` · `WORK_HQ_DB` · `WORK_HQ_STATE` · `WORK_HQ_OWNER` ·
 `WORK_HQ_TZ` · `WORK_HQ_WORKSPACE` · `WORK_HQ_PROMPTS` · `WORK_HQ_MODEL` · `WORK_HQ_PI` ·
 `WORK_HQ_SWEEPS=off` · `WORK_HQ_DAY_START` / `_END` · `WORK_HQ_CALENDAR_EVERY` · `WORK_HQ_TRANSCRIPTS_EVERY` ·
-`WORK_HQ_POSTS_EVERY_DAYS` · `WORK_HQ_SWEEP_SURFACE=cmux` · `WORK_HQ_MEMORY_URL` · `WORK_HQ_MEMORY_TOKEN` ·
+`WORK_HQ_POSTS_EVERY_DAYS` · `WORK_HQ_SWEEP_SURFACE=cmux` · `WORK_HQ_CMUX_PRUNE_HOURS` · `WORK_HQ_MEMORY_URL` · `WORK_HQ_MEMORY_TOKEN` ·
 `WORK_HQ_MEMORY_TOKEN_FILE` · `WORK_HQ_MEMORY_WRITE` · `WORK_HQ_CA_FILE` · `WORK_HQ_LAUNCHD_LABEL`
 </details>

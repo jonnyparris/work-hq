@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CalendarEvent, Item, ItemStatus, Job, JournalEntry, Question, SyncState } from "../shared/types.ts";
+import { CalmScene } from "./calm.tsx";
 import { api } from "./store.ts";
-import { ACTIONS, Icon, KIND_LABEL, Md, Q_BADGE, ago, dictateInto, hhmm, people, shortUrl, stopDictation, whenLabel } from "./ui.tsx";
+import { ACTIONS, Icon, KIND_LABEL, Md, Q_BADGE, ago, dictateInto, finishDictation, hhmm, people, shortUrl, stopDictation, whenLabel } from "./ui.tsx";
 
 // ── Now + timeline ────────────────────────────────────────────────────────
 export function NowPanel({ now, events, workHours }: { now: Date; events: CalendarEvent[]; workHours: [number, number] }) {
@@ -90,15 +91,27 @@ export function Focus({ q, total, items, onSkip, onOpenItem }: { q?: Question; t
   // "Scheduled for…": the option id waiting for the owner to say when.
   const [whenFor, setWhenFor] = useState<string | undefined>();
   const [heard, setHeard] = useState(false);
+  const [phase, setPhase] = useState<string>("idle");
+  useEffect(() => {
+    const on = (e: Event) => setPhase((e as CustomEvent).detail);
+    window.addEventListener("whq:dictate-phase", on);
+    return () => window.removeEventListener("whq:dictate-phase", on);
+  }, []);
   const whenRef = useRef<HTMLInputElement>(null);
   const typed = useRef(false);
   useEffect(() => { setNote(""); setBusy(false); setWhenFor(undefined); }, [q?.id]);
+  // Never leave the mic open behind a question that's gone.
+  const whenOpen = useRef(false);
+  whenOpen.current = Boolean(whenFor);
+  useEffect(() => () => { if (whenOpen.current) stopDictation(); }, [q?.id]);
 
   const answer = async (optionId: string, itemIds?: string[], words?: string) => {
     if (!q || busy) return;
     const o = q.options.find((x) => x.id === optionId);
     const text = (words ?? note).trim();
     if (o?.effect.type === "when" && !text) return startWhen(optionId);
+    // Typed or ⌘↵ submit while still dictating: release the mic now, drop the late final result.
+    if (whenFor) { stopDictation(); setHeard(false); }
     setBusy(true);
     try { await api.answer(q.id, optionId, text || undefined, itemIds ?? (q.kind === "plan" ? picked : undefined)); }
     catch { setBusy(false); }
@@ -152,7 +165,7 @@ export function Focus({ q, total, items, onSkip, onOpenItem }: { q?: Question; t
   if (!q) {
     return (
       <div className="focus calm allclear">
-        <div className="glyph">◇</div>
+        <CalmScene />
         <div className="big">Nothing needs you right now.</div>
         <p>I'll ask when something's due, a meeting ends, or a capture lands. Say 🍍 or type below any time.</p>
       </div>
@@ -178,7 +191,7 @@ export function Focus({ q, total, items, onSkip, onOpenItem }: { q?: Question; t
       {q.kind === "wrap" && <Wrap items={items} />}
       {whenFor ? (
         <div className="when-say">
-          <div className="when-prompt">{heard ? <><span className="rec-dot" /> Listening — say when.</> : "When?"} <span>“booked it Thu 2pm” · “put it in Friday morning” · “remind me Monday”</span></div>
+          <div className="when-prompt">{heard && phase === "transcribing" ? <><span className="thinking"><i /><i /><i /></span> Transcribing…</> : heard ? <><span className="rec-dot" /> Listening — say when. <kbd>↵</kbd> when done</> : "When?"} <span>“booked it Thu 2pm” · “put it in Friday morning” · “remind me Monday”</span></div>
           <div className="when-row">
             <input
               ref={whenRef}
@@ -188,6 +201,8 @@ export function Focus({ q, total, items, onSkip, onOpenItem }: { q?: Question; t
               onChange={(e) => { typed.current = true; stopDictation(); setHeard(false); setNote(e.target.value); }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && note.trim()) answer(whenFor, undefined, note);
+                // Still talking, nothing typed: ↵ / ⌘↵ means "that's it" — stop the mic, send what was heard.
+                else if (e.key === "Enter" && heard) { e.preventDefault(); finishDictation(); }
                 if (e.key === "Escape") cancelWhen();
               }}
             />

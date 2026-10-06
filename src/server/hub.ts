@@ -6,6 +6,7 @@ import type {
   AgentReport, CalendarEvent, Effect, Item, ItemKind, ItemStatus, Job, JournalEntry, Question,
   QuestionOption, ServerEvent, Snapshot, SyncState,
 } from "../shared/types.ts";
+import { type BulkRequest, deckGroup, optionFor } from "../shared/batch.ts";
 import { config, memoryOn } from "./config.ts";
 import { newId, nowIso, type Store } from "./db.ts";
 
@@ -129,13 +130,19 @@ export class Hub {
   }
 
   // ── questions ──────────────────────────────────────────────────────────
-  ask(q: Omit<Question, "id" | "status" | "createdAt"> & { cooldownMin?: number }): Question | undefined {
+  /**
+   * Ask once per key while open. `cooldownMin` also holds it back after an answer;
+   * `once` means never ask this key again after it was answered or expired
+   * (per-day / per-event keys like `wrap:<date>`, `plan:<date>`, `prep:<event>`).
+   */
+  ask(q: Omit<Question, "id" | "status" | "createdAt"> & { cooldownMin?: number; once?: boolean }): Question | undefined {
     if (this.store.openQuestionByKey(q.key)) return undefined;
+    if (q.once && this.store.lastAnswered(q.key)) return undefined;
     if (q.cooldownMin) {
       const last = this.store.lastAnswered(q.key);
       if (last?.answeredAt && Date.now() - Date.parse(last.answeredAt) < q.cooldownMin * 60_000) return undefined;
     }
-    const { cooldownMin: _c, ...rest } = q;
+    const { cooldownMin: _c, once: _o, ...rest } = q;
     const question: Question = { ...rest, id: newId("q"), status: "open", createdAt: nowIso() };
     this.store.putQuestion(question);
     this.emit({ type: "question", data: question });
@@ -198,7 +205,7 @@ export class Hub {
         else this.journal(`${q?.prompt} → ${opt?.label}${note ? ` — ${note}` : ""}`);
         break;
       case "schedule":
-        if (itemId) this.schedule(itemId, effect.at, effect.label);
+        if (itemId) this.schedule(itemId, effect.inMin ? new Date(Date.now() + effect.inMin * 60_000).toISOString() : effect.at, effect.label);
         break;
       case "snooze":
         if (q) this.reopen(q, effect.minutes);
@@ -230,6 +237,71 @@ export class Hub {
         for (const e of effect.effects) await this.applyEffect(e, q, opt, note);
         break;
     }
+  }
+
+  /**
+   * Batch triage. Applies one op to every open question the selector matches, using each
+   * question's own option for it (so effects, journal and follow-through stay identical to
+   * answering one by one). Plan / wrap / prep are never touched unless picked by id.
+   * `defer` hides a question until `until`; for an item that's already scheduled it moves
+   * the time instead, and with `kind` it also moves not-yet-due scheduled items of that kind.
+   */
+  async bulk(req: BulkRequest) {
+    const { op } = req;
+    const until = req.until && !Number.isNaN(Date.parse(req.until)) ? req.until : undefined;
+    if (op === "defer" && !until) throw new Error("defer needs a time");
+    const label = req.label ?? (until ? new Date(until).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "");
+    const ids = req.ids ? new Set(req.ids) : undefined;
+    const picked = this.store.questions("open").filter((q) => {
+      if (ids && !ids.has(q.id)) return false;
+      const g = deckGroup(q);
+      if (!ids && g === "day") return false;
+      if (req.group && g !== req.group) return false;
+      if (req.kind && (!q.itemId || this.store.item(q.itemId)?.kind !== req.kind)) return false;
+      return Boolean(req.ids || req.group || req.kind);
+    });
+
+    const touched: string[] = [];
+    let skipped = 0;
+    for (const q of picked) {
+      const item = q.itemId ? this.store.item(q.itemId) : undefined;
+      if (op === "defer") {
+        if (item?.status === "scheduled") {
+          this.updateItem(item.id, { scheduledFor: until, when: label, confirmedAt: nowIso() });
+          this.expireQuestion(q.id, `pushed to ${label}`);
+        } else {
+          q.notBefore = until;
+          this.store.putQuestion(q);
+          this.emit({ type: "question", data: q });
+        }
+        touched.push(item?.title ?? q.prompt);
+        continue;
+      }
+      const opt = optionFor(q, op);
+      if (!opt) {
+        skipped++;
+        continue;
+      }
+      await this.answer(q.id, opt.id);
+      touched.push(item?.title ?? q.prompt);
+    }
+
+    // "Skip all blog posts till Thursday" also means the ones already scheduled for tomorrow.
+    if (op === "defer" && req.kind && !ids) {
+      const done = new Set(picked.map((q) => q.itemId));
+      for (const it of this.store.items()) {
+        if (it.kind !== req.kind || it.status !== "scheduled" || done.has(it.id)) continue;
+        if (it.scheduledFor && Date.parse(it.scheduledFor) >= Date.parse(until!)) continue;
+        this.updateItem(it.id, { scheduledFor: until, when: label, confirmedAt: nowIso() });
+        touched.push(it.title);
+      }
+    }
+
+    if (touched.length) {
+      const verb = { dispatch: "Dispatched", done: "Marked done", drop: "Dropped", dismiss: "Cleared", defer: `Deferred to ${label}` }[op];
+      this.journal(`Batch \u2014 ${verb} (${touched.length}): ${touched.join("; ")}`.slice(0, 1200));
+    }
+    return { count: touched.length, skipped };
   }
 
   /** Put the same question back, now or later. */

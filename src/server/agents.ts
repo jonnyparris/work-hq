@@ -3,6 +3,7 @@
 //   triage  — headless, no tools, fast. Turns the owner's words into state changes.
 //   action  — interactive pi in a cmux workspace. Anything the owner dispatches. Highly visible.
 
+import type { BulkRequest } from "../shared/batch.ts";
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -11,12 +12,27 @@ import * as cmux from "./cmux.ts";
 import { config } from "./config.ts";
 import { newId, nowIso } from "./db.ts";
 import type { Dispatcher, Hub } from "./hub.ts";
+import { backoffMs, isRateLimited, LaunchGate } from "./launch-gate.ts";
 import {
   actionPrompt, calendarPrompt, calendarSweepPrompt, openUrl, postSweepPrompt, schedulePrompt, SITE_LINK, SITE_POSTS,
   transcriptSweepPrompt, triagePrompt, WIKI_DRAFTS,
 } from "./prompts.ts";
 
 const modelArgs = () => (config.pi.model ? ["--model", config.pi.model] : []);
+const backoff = () => backoffMs({ minSec: config.pi.rateLimitBackoffSec[0] ?? 60, maxSec: config.pi.rateLimitBackoffSec[1] ?? 90 });
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const RESUME_NUDGE = "Your last request failed on a provider rate limit. Carry on from where you stopped.";
+
+type RunResult = { ok: boolean; text: string; error?: string; session?: string; toolsRan?: boolean };
+
+interface Running {
+  statusPath?: string;
+  seenWork: boolean;
+  proc?: ReturnType<typeof spawn>;
+  /** cmux: rate-limit nudges sent so far, and the pending one (if any). */
+  rateRetries?: number;
+  retry?: { at: number; seq: number; sent?: number };
+}
 
 export interface TriageResult {
   reply?: string;
@@ -26,6 +42,7 @@ export interface TriageResult {
   journal?: string[];
   question?: { prompt: string; options?: string[] } | null;
   calendar?: Array<{ id: string; start: string; durationMin?: number }>;
+  bulk?: BulkRequest[];
 }
 
 interface PostIdea {
@@ -62,16 +79,21 @@ export function extractJson<T = any>(text: string): T | undefined {
 }
 
 export class Agents implements Dispatcher {
-  private running = new Map<string, { statusPath?: string; seenWork: boolean; proc?: ReturnType<typeof spawn> }>();
+  private running = new Map<string, Running>();
+  /** Every pi launch goes through here, so bursts can't trip per-minute provider limits. */
+  readonly gate = new LaunchGate(() => config.pi.launchSpacingSec * 1000);
 
   constructor(private hub: Hub) {
     hub.dispatcher = this;
     ensureSiteLink();
     // Pick up cmux jobs that were running when the server restarted.
     for (const job of hub.store.jobs(100)) {
-      if (job.surface === "cmux" && ["running", "blocked", "queued"].includes(job.status)) {
+      if (job.surface === "cmux" && job.status === "queued" && !job.workspace) {
+        // Was waiting on the launch gate; never started.
+        hub.putJob({ ...job, status: "failed", error: "server restarted before launch", finishedAt: nowIso() });
+      } else if (job.surface === "cmux" && ["running", "blocked", "queued"].includes(job.status)) {
         this.running.set(job.id, { statusPath: resolve(cmux.jobDir(job.id), "status.json"), seenWork: true });
-      } else if (job.surface === "headless" && job.status === "running") {
+      } else if (job.surface === "headless" && ["running", "queued"].includes(job.status)) {
         hub.putJob({ ...job, status: "failed", error: "server restarted mid-run", finishedAt: nowIso() });
       }
     }
@@ -101,25 +123,37 @@ export class Agents implements Dispatcher {
     // Verifying doesn't change what the item *is*; everything else means someone's on it.
     if (action !== "verify") this.hub.updateItem(itemId, { status: "doing" });
     const prompt = actionPrompt(job.id, item, action, note);
+    // Launch in the background: the gate may hold it for a while and callers shouldn't wait.
+    void this.launchAction(job.id, title, prompt, useCmux);
+    return this.hub.store.job(job.id);
+  }
 
+  private async launchAction(jobId: string, title: string, prompt: string, useCmux: boolean) {
     if (useCmux) {
+      const wait = this.gate.wait();
+      if (wait > 0) {
+        this.line(jobId, `⏳ queued ${Math.ceil(wait / 1000)} s — spacing launches`);
+        this.hub.toast(`Queued: ${title} — launching in ${Math.ceil(wait / 1000)} s`, "info");
+      }
+      await this.gate.acquire();
+      if (this.hub.store.job(jobId)?.status !== "queued") return; // cancelled while waiting
       const launched = cmux.launchInCmux({
-        jobId: job.id,
+        jobId: jobId,
         title,
         prompt,
         cwd: config.workspace.dir,
         piArgs: [...modelArgs(), "-n", `work-hq: ${title}`],
       });
       if (launched) {
-        this.running.set(job.id, { statusPath: launched.statusPath, seenWork: false });
+        this.running.set(jobId, { statusPath: launched.statusPath, seenWork: false });
         this.hub.toast(`Dispatched to cmux: ${title}`, "good");
-        return this.patch(job.id, { status: "running", workspace: launched.workspace, startedAt: nowIso(), tail: ["▸ launched in cmux · Work HQ group"] });
+        return this.patch(jobId, { status: "running", workspace: launched.workspace, startedAt: nowIso(), tail: ["▸ launched in cmux · Work HQ group"] });
       }
-      this.line(job.id, "cmux launch failed — falling back to headless");
+      this.line(jobId, "cmux launch failed — falling back to headless");
     }
     // No cmux: run headless with full tools. Still visible in the dashboard feed.
-    void this.runHeadless(job.id, prompt, { tools: true, thinking: "medium", perms: false, timeoutMin: 45 }).then((r) => this.finishAction(job.id, r));
-    return this.hub.store.job(job.id);
+    const r = await this.runHeadless(jobId, prompt, { tools: true, thinking: "medium", perms: false, timeoutMin: 45 });
+    this.finishAction(jobId, r);
   }
 
   /** Poll cmux beacons. Called every few seconds by the scheduler. */
@@ -140,6 +174,27 @@ export class Agents implements Dispatcher {
         continue;
       }
       if (!b) continue;
+      // Waiting out a provider rate limit. Any new turn (seq bump — ours or the owner's) ends the wait.
+      if (r.retry && b.seq > r.retry.seq) {
+        r.retry = undefined;
+        r.seenWork = true;
+      }
+      if (r.retry && b.state === "idle") {
+        if (!r.retry.sent && Date.now() >= r.retry.at && this.gate.wait() === 0) {
+          void this.gate.acquire();
+          if (job.workspace && cmux.sendLine(job.workspace, RESUME_NUDGE)) {
+            r.retry.sent = Date.now();
+            this.line(id, `↻ nudged after rate limit (${r.rateRetries}/${config.pi.rateLimitRetries})`);
+          } else {
+            this.running.delete(id);
+            this.finishAction(id, { ok: false, text: "", error: `${b.detail ?? "rate limited"} (couldn't nudge the session)` });
+          }
+        } else if (r.retry.sent && Date.now() - r.retry.sent > 120_000) {
+          this.running.delete(id);
+          this.finishAction(id, { ok: false, text: "", error: `${b.detail ?? "rate limited"} (nudge didn't start a new turn)` });
+        }
+        continue;
+      }
       if (b.state === "working" && job.status !== "running") {
         r.seenWork = true;
         this.patch(id, { status: "running" });
@@ -149,6 +204,14 @@ export class Agents implements Dispatcher {
         this.patch(id, { status: "blocked", tail: [...job.tail, "⏸ waiting for you in cmux"].slice(-12) });
         this.hub.emit({ type: "notify", data: { title: "Agent needs you", body: job.title } });
         cmux.notify(job.workspace, "Work HQ", `Waiting for you: ${job.title}`);
+      } else if (
+        b.state === "idle" && b.seq >= 1 && (r.seenWork || job.status === "running") &&
+        b.outcome === "error" && isRateLimited(b.detail) && (r.rateRetries ?? 0) < config.pi.rateLimitRetries && job.workspace
+      ) {
+        r.rateRetries = (r.rateRetries ?? 0) + 1;
+        const ms = backoff();
+        r.retry = { at: Date.now() + ms, seq: b.seq };
+        this.patch(id, { status: "running", tail: [...job.tail, `⏳ rate limited — retrying in ${Math.round(ms / 1000)} s (${r.rateRetries}/${config.pi.rateLimitRetries})`].slice(-12) });
       } else if (b.state === "idle" && b.seq >= 1 && (r.seenWork || job.status === "running")) {
         // Turn settled. The session stays open for follow-ups; the job is done.
         this.running.delete(id);
@@ -158,6 +221,22 @@ export class Agents implements Dispatcher {
         this.finishAction(id, { ok: job.reported ?? false, text: "", error: job.reported ? undefined : `pi exited (${b.code ?? "?"})` });
       }
     }
+  }
+
+  /** Close cmux workspaces whose job finished and whose session has sat idle past the threshold. */
+  pruneCmux(now = Date.now()) {
+    const hours = config.cmux.pruneIdleHours;
+    if (!config.cmux.bin || !(hours > 0)) return [];
+    const all = cmux.jobWorkspaces();
+    if (!all) return [];
+    const idle = cmux.pickIdle(all, { now, idleMs: hours * 3600_000, busy: new Set(this.running.keys()), idleSince: cmux.idleSince });
+    const closed = idle.filter((w) => cmux.closeWorkspace(w.id));
+    for (const w of closed) {
+      const job = this.hub.store.job(w.jobId);
+      if (job?.workspace) this.patch(job.id, { workspace: undefined, tail: [...job.tail, `▸ cmux workspace closed after ${hours}h idle`].slice(-12) });
+    }
+    if (closed.length) console.log(`[cmux] closed ${closed.length} idle workspace(s) (> ${hours}h): ${closed.map((w) => w.jobId).join(", ")}`);
+    return closed;
   }
 
   private finishAction(jobId: string, r: { ok: boolean; text: string; error?: string }) {
@@ -246,7 +325,7 @@ export class Agents implements Dispatcher {
   // ── triage (headless, no tools) ────────────────────────────────────────
   async triage(utterance: string, mode: "chat" | "pineapple" | "review" = "chat"): Promise<TriageResult & { jobId: string }> {
     const job = this.newJob("triage", mode, mode === "pineapple" ? `🍍 ${utterance.slice(-60)}` : utterance.slice(0, 80), "headless");
-    const prompt = triagePrompt(utterance, { now: new Date(), items: this.hub.store.items(), events: this.hub.todayEvents() }, mode);
+    const prompt = triagePrompt(utterance, { now: new Date(), items: this.hub.store.items(), events: this.hub.todayEvents(), questions: this.hub.store.questions("open") }, mode);
     const r = await this.runHeadless(job.id, prompt, { tools: false, thinking: config.pi.triageThinking, perms: false, timeoutMin: 4 });
     const result = extractJson<TriageResult>(r.text);
     if (!r.ok || !result) {
@@ -278,6 +357,14 @@ export class Agents implements Dispatcher {
       if (Object.keys(rest).length) this.hub.updateItem(id, { ...rest, confirmedAt: nowIso() });
     }
     for (const line of t.journal ?? []) this.hub.journal(line, { who: "hq" });
+    for (const b of t.bulk ?? []) {
+      if (!b?.op || !(b.group || b.kind || b.ids?.length)) continue;
+      try {
+        await this.hub.bulk(b);
+      } catch (e) {
+        this.hub.toast(`Batch ${b.op}: ${(e as Error).message}`, "warn");
+      }
+    }
     if (t.question?.prompt) {
       this.hub.ask({
         kind: "open",
@@ -431,18 +518,57 @@ export class Agents implements Dispatcher {
   }
 
   // ── the one place pi gets spawned headless ─────────────────────────────
-  private runHeadless(
+  /**
+   * Tool runs are spaced by the launch gate. If the run dies on a provider rate limit, wait 60–90 s and
+   * try again (up to pi.rateLimitRetries). Tool runs resume their own session so finished
+   * tool calls aren't repeated; tool-less runs have no side effects and simply rerun.
+   */
+  private async runHeadless(
     jobId: string,
     prompt: string,
     o: { tools: boolean; thinking: string; perms: boolean; timeoutMin: number },
-  ): Promise<{ ok: boolean; text: string; error?: string }> {
+  ): Promise<RunResult> {
+    let resume: string | undefined;
+    for (let attempt = 0; ; attempt++) {
+      // Tool-less triage stays instant: no tool schemas, nothing to compile, and the owner is waiting on it.
+      if (o.tools) {
+        const wait = this.gate.wait();
+        if (wait > 0) this.line(jobId, `⏳ queued ${Math.ceil(wait / 1000)} s — spacing launches`);
+        await this.gate.acquire();
+      }
+      if (this.cancelled(jobId)) return { ok: false, text: "", error: "cancelled" };
+      const r = await this.runHeadlessOnce(jobId, prompt, o, resume);
+      if (r.ok || this.cancelled(jobId) || attempt >= config.pi.rateLimitRetries) return r;
+      if (!isRateLimited(`${r.error ?? ""}\n${r.text}`)) return r;
+      // A tool run that already did things must resume, not restart. No session → give up.
+      if (o.tools && r.toolsRan && !r.session) return r;
+      resume = o.tools ? r.session ?? resume : undefined;
+      const ms = backoff();
+      this.line(jobId, `⏳ rate limited — retrying in ${Math.round(ms / 1000)} s (${attempt + 1}/${config.pi.rateLimitRetries})`);
+      this.patch(jobId, { status: "queued" });
+      await sleep(ms);
+      if (this.cancelled(jobId)) return { ok: false, text: "", error: "cancelled" };
+    }
+  }
+
+  private cancelled(jobId: string) {
+    return this.hub.store.job(jobId)?.error === "cancelled";
+  }
+
+  private runHeadlessOnce(
+    jobId: string,
+    prompt: string,
+    o: { tools: boolean; thinking: string; perms: boolean; timeoutMin: number },
+    resume?: string,
+  ): Promise<RunResult> {
     const job = this.hub.store.job(jobId)!;
     const args = ["-p", "--mode", "json", ...modelArgs(), "--thinking", o.thinking];
     if (o.tools) args.push("-a", "-n", `work-hq: ${job.title}`, "-xt", config.pi.headlessDenyTools);
     else args.push("-nt", "-nc", "-ns", "-np", "--no-session");
+    if (resume) args.push("--session", resume);
     const promptPath = resolve(cmux.jobDir(jobId), "prompt.md");
     writeFileSync(promptPath, prompt);
-    args.push(`Read ${promptPath} and follow the instructions in it exactly.`);
+    args.push(resume ? RESUME_NUDGE : `Read ${promptPath} and follow the instructions in it exactly.`);
     if (!o.tools) args[args.length - 1] = prompt; // no read tool without tools
 
     const env: Record<string, string> = {
@@ -460,8 +586,10 @@ export class Agents implements Dispatcher {
       this.running.set(jobId, { seenWork: true, proc });
       let buf = "";
       let lastText = "";
+      let lastError: string | undefined;
+      let toolsRan = Boolean(resume);
       let stderr = "";
-      let session: string | undefined;
+      let session: string | undefined = resume;
       const timer = setTimeout(() => proc.kill("SIGTERM"), o.timeoutMin * 60_000);
       proc.stdout.on("data", (chunk: Buffer) => {
         buf += chunk.toString();
@@ -476,10 +604,13 @@ export class Agents implements Dispatcher {
             continue;
           }
           if (ev.type === "session") session = ev.id;
-          else if (ev.type === "tool_execution_start") this.line(jobId, `▸ ${describeTool(ev.toolName, ev.args)}`);
-          else if (ev.type === "message_end" && ev.message?.role === "assistant") {
+          else if (ev.type === "tool_execution_start") {
+            toolsRan = true;
+            this.line(jobId, `▸ ${describeTool(ev.toolName, ev.args)}`);
+          } else if (ev.type === "message_end" && ev.message?.role === "assistant") {
             const text = (ev.message.content ?? []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
             if (text) lastText = text;
+            lastError = ev.message.stopReason === "error" ? ev.message.errorMessage : undefined;
           }
         }
       });
@@ -488,10 +619,13 @@ export class Agents implements Dispatcher {
         clearTimeout(timer);
         this.running.delete(jobId);
         if (session) this.patch(jobId, { session });
-        done(code === 0 ? { ok: true, text: lastText } : { ok: false, text: lastText, error: `pi exited ${code}: ${stderr.trim().split("\n").pop() ?? ""}` });
+        const base = { text: lastText, session, toolsRan };
+        if (code === 0 && !lastError) done({ ok: true, ...base });
+        else done({ ok: false, ...base, error: lastError ?? `pi exited ${code}: ${stderr.trim().split("\n").pop() ?? ""}` });
       });
       proc.on("error", (e) => {
         clearTimeout(timer);
+        this.running.delete(jobId);
         done({ ok: false, text: "", error: String(e) });
       });
     });

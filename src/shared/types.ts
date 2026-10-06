@@ -30,6 +30,7 @@ export type SourceType =
   | "voice" // dictated into the command bar
   | "manual" // typed into the command bar
   | "agent" // a dispatched agent created it
+  | "check" // a configured morning check command (src/server/checks.ts)
   | "calendar";
 
 export interface ItemSource {
@@ -114,7 +115,8 @@ export interface QuestionOption {
 
 export type Effect =
   | { type: "status"; status: ItemStatus; note?: string }
-  | { type: "schedule"; at: string; label: string }
+  /** `inMin` is relative to when it's answered (wins over `at`, which is fixed when asked). */
+  | { type: "schedule"; at: string; label: string; inMin?: number }
   | { type: "snooze"; minutes: number }
   | { type: "dispatch"; action: ActionKind }
   | { type: "open"; url: string; /** keep the question open afterwards */ keep?: boolean }

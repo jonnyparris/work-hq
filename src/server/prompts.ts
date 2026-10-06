@@ -7,7 +7,8 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { ActionKind, CalendarEvent, Item } from "../shared/types.ts";
+import { type DeckGroup, deckGroup, deferTargets, GROUP_ORDER, GROUPS } from "../shared/batch.ts";
+import type { ActionKind, CalendarEvent, Item, Question } from "../shared/types.ts";
 import { config, ROOT } from "./config.ts";
 
 const WHQ = `${ROOT}/bin/whq`;
@@ -163,6 +164,7 @@ export interface TriageContext {
   now: Date;
   items: Item[];
   events: CalendarEvent[];
+  questions?: Question[];
 }
 
 export function triagePrompt(utterance: string, ctx: TriageContext, mode: "chat" | "pineapple" | "review") {
@@ -173,6 +175,7 @@ export function triagePrompt(utterance: string, ctx: TriageContext, mode: "chat"
     .map((i) => `${i.id} | ${i.status} | ${i.kind} | ${i.project ?? "-"} | ${i.title}${i.when ? ` | when: ${i.when}` : ""}`)
     .join("\n");
   const events = ctx.events.map((e) => `${e.start.slice(11, 16)}–${e.end.slice(11, 16)} ${e.title}`).join("\n");
+  const deck = deckSummary(ctx.questions ?? [], ctx.now);
   const framing = {
     chat: `${me} typed or said this to their dashboard. It may be a correction ("X is done", "that's not mine"),
 a new commitment ("remind me to reply to Sam after standup"), a scheduling instruction, a question, or a request
@@ -196,6 +199,9 @@ ${events || "(unknown)"}
 Active items (id | status | kind | project | title):
 ${active || "(none)"}
 
+Open questions waiting on ${me}, by group (group · effort · count · examples):
+${deck || "(none)"}
+
 Statuses: inbox, proposed, today, scheduled, doing, waiting, done, dropped.
 Kinds: task, ticket, message, email, followup, decision, review, meeting, idea, post.
 "post" = a blog post they should write ("I should blog about X"): status "proposed", add "post": {"venue": "wiki|site|both"}
@@ -207,6 +213,12 @@ Rules:
 - Times: resolve "after standup", "this afternoon", "tomorrow" to an absolute ISO timestamp using the calendar.
 - Calendar: only when asked ("put it in my calendar", "block time", "book a slot") add a "calendar" entry.
   "Remind me" alone means an in-app reminder (scheduledFor), no calendar event. "I've booked it" = scheduledFor only.
+- Batch: "skip all blog posts till Thursday", "clear the meeting ones", "check all the unknowns for me",
+  "push the rest to tomorrow" → a "bulk" entry. Select by "group" (above) and/or item "kind", or "ids" (question ids).
+  ops: defer (hide until "until"; scheduled items move to it), dismiss (one-tap "nothing new / later / keep waiting"),
+  dispatch (send agents — only when asked), done, drop. Defer times: 09:30 local on the day they name;
+  "later this week" = ${laterThisWeek(ctx.now)}. Prefer "kind" for kinds of work ("blog posts" → kind "post").
+  "Push the rest / everything else to tomorrow" = one defer per group they didn't just handle, never "day".
 - Never invent facts. If it's ambiguous, ask ONE short question.
 - reply: ≤2 short sentences, dry, no fluff — you're a bot in a terminal, not a butler.
 
@@ -224,6 +236,7 @@ OUTPUT: ONLY a JSON object, no prose, no fences:
   "updates": [{ "id", "status", "title", "detail", "when", "scheduledFor", "note" }],
   "dispatch": [{ "id": "<existing id, or 'new:<index into items>'>", "action": "ticket|reply|email|prep|work|verify|draft|publish", "note" }],
   "calendar": [{ "id": "<existing id, or 'new:<index>'>", "start": "ISO", "durationMin": 30 }],
+  "bulk": [{ "op": "defer|dismiss|dispatch|done|drop", "group": "review|inbox|waiting|due|state|proposal|agent|post", "kind": "post", "ids": ["q_…"], "until": "ISO", "label": "Thu 09:30" }],
   "journal": ["facts worth keeping, e.g. '${me}: PAY-123 closed 09-25'"],
   "question": { "prompt", "options": ["...", "..."] } | null
 }`;
@@ -296,4 +309,27 @@ OUTPUT: final message ONLY JSON (no prose, no fences):
     "angle": "2-3 sentences: the point and the story", "evidence": ["links or memory paths"],
     "wikiDraft": "full markdown or omit", "siteDraft": "full markdown incl. frontmatter (draft: true, date: ${today}) or omit" }] }
 Job id: ${jobId}.`;
+}
+
+/** One line per deck group so triage can do "skip all X till Y". */
+function deckSummary(questions: Question[], now: Date) {
+  const by = new Map<DeckGroup, Question[]>();
+  for (const q of questions) {
+    if (q.notBefore && Date.parse(q.notBefore) > now.getTime()) continue;
+    const g = deckGroup(q);
+    by.set(g, [...(by.get(g) ?? []), q]);
+  }
+  return GROUP_ORDER.filter((g) => by.has(g))
+    .map((g) => {
+      const qs = by.get(g)!;
+      return `${g} · ${GROUPS[g].effort} · ${qs.length} · ${qs.slice(0, 4).map((q) => `${q.id}: ${q.prompt.slice(0, 60)}`).join(" | ")}`;
+    })
+    .join("\n");
+}
+
+function laterThisWeek(now: Date) {
+  // Mon/Tue → Thu, Wed → Fri, Thu/Fri/weekend → next Monday.
+  const want = [1, 4, 4, 5, 1, 1, 1][now.getDay()]!;
+  const t = deferTargets(now).find((x) => new Date(x.at).getDay() === want) ?? deferTargets(now).at(-1)!;
+  return `${t.label} (${t.at})`;
 }
