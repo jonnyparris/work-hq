@@ -14,6 +14,17 @@ const DAY = 86_400_000;
 /** Caps so the app asks, rather than nags. */
 const CAP = { state: 3, kill: 3, proposal: 2, post: 2, inbox: 6, waiting: 2, total: 14 };
 
+const nameTokens = (s: string) => s.toLowerCase().split("@")[0]!.split(/[\s._-]+/).filter(Boolean);
+
+/** True if an attendee ("alex@x.com", "alex.owner@gmail.com", "Alex Owner") is the owner (config.owner.aliases). */
+export function isOwner(attendee: string, aliases: string[] = config.owner.aliases) {
+  const who = nameTokens(attendee);
+  return aliases.some((a) => {
+    const t = nameTokens(a);
+    return t.length > 0 && t.every((w, i) => who[i] === w);
+  });
+}
+
 export function atLocal(hours: number, minutes = 0, dayOffset = 0, from = new Date()) {
   const d = new Date(from);
   d.setDate(d.getDate() + dayOffset);
@@ -113,6 +124,8 @@ export class Prompter {
     // 2. Meetings: prep before, capture after.
     for (const ev of this.hub.todayEvents(now)) {
       if (ev.response === "declined") continue;
+      // Only you on the invite (e.g. a personal block mirrored from a personal address): not a meeting.
+      if (ev.attendees?.length && ev.attendees.every((a) => isOwner(a))) continue;
       const start = Date.parse(ev.start);
       const end = Date.parse(ev.end);
       const n = ev.attendees?.length ?? 0;
@@ -135,7 +148,11 @@ export class Prompter {
           true,
         );
       }
-      if (end < now.getTime() && now.getTime() - end < 45 * MIN && (ev.attendees?.length ?? 0) > 1) {
+      // Never RSVP'd = probably didn't go. 1-1s are the exception: plenty of real ones never get accepted.
+      const attended = ev.response !== "needsAction" || ev.oneOnOne;
+      // The calendar sweep usually leaves you off the attendee list, so a real 1-1 has one attendee.
+      const meeting = ev.oneOnOne || (ev.attendees?.length ?? 0) > 1;
+      if (attended && meeting && end < now.getTime() && now.getTime() - end < 45 * MIN) {
         this.ask({
           kind: "review",
           eventId: ev.id,

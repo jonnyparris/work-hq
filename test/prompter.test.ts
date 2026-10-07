@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { Store } from "../src/server/db.ts";
 import { Hub } from "../src/server/hub.ts";
-import { Prompter } from "../src/server/prompter.ts";
+import { isOwner, Prompter } from "../src/server/prompter.ts";
+import { config } from "../src/server/config.ts";
 
 let hub: Hub;
 let p: Prompter;
@@ -92,6 +93,43 @@ describe("prompter", () => {
     expect(hub.store.questions("open").some((q) => q.kind === "prep")).toBe(false);
   });
 
+  test("no prep or wrap-up when you're the only attendee (personal block from your own addresses)", () => {
+    const prev = config.owner.aliases;
+    config.owner.aliases = ["alex"];
+    try {
+      const me = ["alex@example.com", "alex.owner@gmail.com"];
+      hub.setEvents([
+        { id: "m1", title: "Cuf", start: at(10, 15).toISOString(), end: at(11).toISOString(), attendees: me },
+        { id: "m2", title: "Cuf shoulder", start: at(9).toISOString(), end: at(9, 45).toISOString(), attendees: me },
+      ]);
+      p.tick(at(10));
+      expect(hub.store.questions("open").some((q) => q.kind === "prep" || q.kind === "review")).toBe(false);
+    } finally {
+      config.owner.aliases = prev;
+    }
+  });
+
+  test("no wrap-up for a meeting you never RSVP'd to, unless it's a 1-1", () => {
+    hub.setEvents([
+      { id: "v1", title: "Vibe check", start: at(9, 15).toISOString(), end: at(9, 45).toISOString(), attendees: ["Sam", "Alex", "Jo"], response: "needsAction" },
+      { id: "o1", title: "Jo / Alex", start: at(9, 15).toISOString(), end: at(9, 45).toISOString(), attendees: ["Jo", "Alex"], oneOnOne: true, response: "needsAction" },
+    ]);
+    p.tick(at(10));
+    const reviews = hub.store.questions("open").filter((q) => q.kind === "review");
+    expect(reviews.map((q) => q.eventId)).toEqual(["o1"]);
+  });
+
+  test("wrap-up after a 1-1 whose invite lists only the other person", () => {
+    // Real sweep output since 09-29: { title: "Sam / Alex", attendees: ["sam@example.com"], oneOnOne: true }.
+    hub.setEvents([
+      { id: "c1", title: "Sam / Alex", start: at(9, 15).toISOString(), end: at(9, 45).toISOString(), attendees: ["sam@example.com"], oneOnOne: true, response: "accepted" },
+      { id: "h1", title: "Hold", start: at(9, 15).toISOString(), end: at(9, 45).toISOString(), attendees: ["kim@example.com"], response: "accepted" },
+    ]);
+    p.tick(at(10));
+    const reviews = hub.store.questions("open").filter((q) => q.kind === "review");
+    expect(reviews.map((q) => q.eventId)).toEqual(["c1"]);
+  });
+
   test("snooze re-asks later with notBefore", async () => {
     p.tick(at(10));
     const plan = hub.store.questions("open").find((q) => q.kind === "plan")!;
@@ -109,6 +147,16 @@ describe("prompter", () => {
     expect(after.status).toBe("done");
     expect(after.title).toBe("x (reworded)");
   });
+});
+
+test("isOwner matches emails, dotted names and display names, not lookalikes", () => {
+  const a = ["alex"];
+  expect(isOwner("alex@example.com", a)).toBe(true);
+  expect(isOwner("alex.owner@gmail.com", a)).toBe(true);
+  expect(isOwner("Alex Owner", a)).toBe(true);
+  expect(isOwner("alexc@example.com", a)).toBe(false);
+  expect(isOwner("sam@example.com", a)).toBe(false);
+  expect(isOwner("Alex Owner", ["alex owner"])).toBe(true);
 });
 
 import { effectFromLabel } from "../src/server/hub.ts";
