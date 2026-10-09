@@ -45,8 +45,19 @@ bun install
 bin/work-hq demo          # → http://localhost:7718, made-up data, nothing real touched
 ```
 
-The demo has no config, no memory and no background sweeps. Dispatching an action starts pi
-for real, so press `s` (skip) if you only want to look around.
+The demo has no config, no memory and no background sweeps. Dispatched agents, sweeps and calendar
+writes are scripted: they run in cmux and report back like the real thing, but touch nothing. Only the
+command bar still asks pi to understand your words, and pi only ever sees the made-up items.
+
+### Showing it to people
+
+Click **Demo** in the top bar of your real dashboard (or press <kbd>⇧D</kbd>). Work HQ starts the sandbox as a
+separate process, with its own port and a throwaway database, and the tab switches to it. Nothing is shared
+with your live data, so there is no way for it to leak onto the screen. Live notifications stay quiet while
+the demo runs. In the demo, a purple **DEMO** pill shows you're safe. **Reset** loads a fresh made-up day
+(times are relative to now, so reset just before you start). **Exit** asks first, then takes you back and stops the sandbox.
+
+Need a few framing slides first? The demo serves a short deck at [`/talk`](docs/talk/index.html) (`←`/`→`, `n` for speaker notes, `f` fullscreen). Its last slide jumps into the dashboard.
 
 ## Make it yours
 

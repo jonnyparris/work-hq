@@ -69,6 +69,10 @@ export function launchInCmux(opts: {
   cwd: string;
   piArgs: string[];
   env?: Record<string, string>;
+  /** Run this instead of pi (demo mode's scripted agent). Must write the beacon itself. */
+  command?: string[];
+  /** Sidebar group; defaults to config.cmux.group. */
+  group?: string;
 }): Launched | undefined {
   const dir = jobDir(opts.jobId);
   const promptPath = resolve(dir, "prompt.md");
@@ -76,7 +80,7 @@ export function launchInCmux(opts: {
   const launchPath = resolve(dir, "launch.sh");
   writeFileSync(promptPath, opts.prompt);
   const env = { ...tlsEnv(), ...(opts.env ?? {}), WORK_HQ_PI_STATUS: statusPath, WORK_HQ_JOB: opts.jobId, WORK_HQ_URL: `http://127.0.0.1:${config.port}` };
-  const pi = [config.pi.bin, ...opts.piArgs, "-e", BEACON_EXTENSION, `Read ${promptPath} and follow the instructions in it exactly.`]
+  const pi = (opts.command ?? [config.pi.bin, ...opts.piArgs, "-e", BEACON_EXTENSION, `Read ${promptPath} and follow the instructions in it exactly.`])
     .map(shq)
     .join(" ");
   writeFileSync(
@@ -95,7 +99,7 @@ export function launchInCmux(opts: {
     ].join("\n"),
   );
 
-  const group = ensureGroup();
+  const group = ensureGroup(opts.group);
   const created = cli([
     "workspace", "create",
     "--name", opts.title.slice(0, 60),
@@ -110,8 +114,9 @@ export function launchInCmux(opts: {
   return { workspace: idForRef(ref) ?? ref, statusPath };
 }
 
-function ensureGroup(): string | undefined {
-  const r = cli(["--json", "workspace-group", "create", "--name", config.cmux.group, "--idempotency-key", "work-hq"]);
+function ensureGroup(name = config.cmux.group): string | undefined {
+  const key = name === config.cmux.group ? "work-hq" : `work-hq:${name}`;
+  const r = cli(["--json", "workspace-group", "create", "--name", name, "--idempotency-key", key]);
   if (r.code !== 0) return undefined;
   try {
     return JSON.parse(r.stdout)?.group?.ref;
@@ -211,6 +216,11 @@ export function sendLine(workspace: string, text: string) {
   return cli(["send-key", "--workspace", workspace, "enter"]).code === 0;
 }
 
+/** True while the demo sandbox is on screen: live jobs don't pop cmux notifications over it. */
+let quiet = false;
+export const setQuiet = (on: boolean) => { quiet = on; };
+
 export function notify(workspace: string | undefined, title: string, body: string) {
+  if (quiet) return;
   cli(["notify", ...(workspace ? ["--workspace", workspace] : []), "--title", title, "--body", body]);
 }

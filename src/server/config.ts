@@ -93,6 +93,12 @@ const caFile = path(pick<string | undefined>("WORK_HQ_CA_FILE", "tls.caFile", un
 
 export const config = {
   file: CONFIG_FILE,
+  /** Demo mode: made-up data, scripted agents, nothing real reached. Set by `bin/work-hq demo`. */
+  demo: env("WORK_HQ_DEMO") === "on",
+  /** In demo mode: where "Exit demo" goes back to. */
+  liveUrl: env("WORK_HQ_LIVE_URL") ?? "http://localhost:7717",
+  /** Port the demo toggle starts the sandbox on. */
+  demoPort: Number(env("WORK_HQ_DEMO_PORT") ?? 7718),
   port: pick("WORK_HQ_PORT", "server.port", 7717),
   dbPath: path(pick("WORK_HQ_DB", "server.db", resolve(STATE_DIR, "work-hq.db"))),
   stateDir: STATE_DIR,
@@ -164,8 +170,8 @@ export const config = {
     disabled: pick<string[]>(undefined, "sweeps.disabled", []),
   },
 
-  /** Morning checks: shell commands that print `{ items: [...] }` JSON, run once per workday. See src/server/checks.ts. */
-  checks: pick<{ name: string; command: string; timeoutSec?: number }[]>(undefined, "checks", []),
+  /** Checks: shell commands that print `{ items: [...] }` JSON, run once per workday (from dayStart, or `after` "HH:MM"). See src/server/checks.ts. */
+  checks: pick<{ name: string; command: string; timeoutSec?: number; after?: string }[]>(undefined, "checks", []),
 
   /** Ticket prefixes / keywords that tag items with a project. */
   projects: pick<Project[]>(undefined, "projects", []),

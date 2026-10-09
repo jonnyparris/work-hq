@@ -26,6 +26,9 @@ export interface CheckConfig {
   /** Run with `sh -c` in workspace.dir. */
   command: string;
   timeoutSec?: number;
+  /** Local "HH:MM": don't run before this time of day (e.g. "17:00" for an
+   *  end-of-day check ahead of the nightly run). Default: from dayStart. */
+  after?: string;
 }
 
 const syncName = (c: CheckConfig) => `check:${c.name}`;
@@ -43,10 +46,12 @@ export function staleCheckItems(items: Item[], checkName: string, report: AgentR
   );
 }
 
-/** True when the check has not succeeded today and has not been tried in the last hour. */
-export function checkDue(state: { lastOkAt?: string; lastRunAt?: string }, now = new Date()): boolean {
-  const today = now.toDateString();
-  if (state.lastOkAt && new Date(state.lastOkAt).toDateString() === today) return false;
+/** True when the check has not succeeded today (since `after`, if set) and has not been tried in the last hour. */
+export function checkDue(state: { lastOkAt?: string; lastRunAt?: string }, now = new Date(), after?: string): boolean {
+  const m = after?.match(/^(\d{1,2}):(\d{2})$/);
+  const from = new Date(now.getFullYear(), now.getMonth(), now.getDate(), m ? +m[1] : 0, m ? +m[2] : 0);
+  if (now < from) return false;
+  if (state.lastOkAt && Date.parse(state.lastOkAt) >= from.getTime()) return false;
   return !state.lastRunAt || now.getTime() - Date.parse(state.lastRunAt) > 60 * 60_000;
 }
 
@@ -58,7 +63,7 @@ export class Checks {
   /** Run every due check. Called from the scheduler's cadence during work hours. */
   async runDue(now = new Date()) {
     for (const c of config.checks) {
-      if (checkDue(this.hub.store.syncState(syncName(c)), now)) await this.run(c);
+      if (checkDue(this.hub.store.syncState(syncName(c)), now, c.after)) await this.run(c);
     }
   }
 

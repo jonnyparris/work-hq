@@ -68,6 +68,13 @@ export class Scheduler {
       this.last.cmuxPrune = Date.now();
       this.agents.pruneCmux();
     }
+    if (config.demo && this.due("journal", 1)) {
+      // Demo: pretend the journal was saved, so the "saved" chip and journal dots behave like the real thing.
+      this.last.journal = Date.now();
+      const pending = this.hub.store.unsyncedJournal();
+      for (const e of pending) this.hub.store.putJournal({ ...e, synced: true });
+      if (pending.length) this.hub.putSync({ ...this.hub.store.syncState("journal"), lastRunAt: new Date().toISOString(), lastOkAt: new Date().toISOString(), cursor: `${pending.length} entries` });
+    }
     if (this.due("journal", config.memory.flushEveryMin) && memoryOn()) {
       this.last.journal = Date.now();
       await this.memory.flushJournal().catch((e) => console.error("[journal]", e.message));
@@ -98,6 +105,8 @@ export class Scheduler {
   /** Manual trigger from the UI. */
   async run(name: "memory" | "journal" | "calendar" | "transcripts" | "posts", since?: string) {
     this.last[name] = Date.now();
+    if (name === "journal" && config.demo) return;
+    if (name === "memory" && config.demo) return;
     if (name === "memory") return this.memory.importAll();
     if (name === "journal") return this.memory.flushJournal();
     if (name === "posts") return this.agents.postSweep();

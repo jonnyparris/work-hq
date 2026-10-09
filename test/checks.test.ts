@@ -13,6 +13,14 @@ describe("morning checks", () => {
     expect(checkDue({ lastRunAt: new Date(2026, 9, 6, 7, 30).toISOString() }, now)).toBe(true);
   });
 
+  test("after: held until that time, and an earlier run today doesn't count", () => {
+    const at = (h: number, m = 0) => new Date(2026, 9, 6, h, m);
+    expect(checkDue({}, at(16, 59), "17:00")).toBe(false);
+    expect(checkDue({}, at(17, 0), "17:00")).toBe(true);
+    expect(checkDue({ lastOkAt: at(9).toISOString(), lastRunAt: at(9).toISOString() }, at(17, 5), "17:00")).toBe(true);
+    expect(checkDue({ lastOkAt: at(17, 1).toISOString() }, at(18), "17:00")).toBe(false);
+  });
+
   test("closes only this check's open items that dropped out of the report", () => {
     const hub = new Hub(new Store(":memory:"));
     const src = (key: string, label = "unlanded") => ({ type: "check" as const, label, key });

@@ -64,8 +64,10 @@
   // findings are on the board before the morning plan. Each prints { "items": [...] } JSON on
   // stdout, every item with a stable source.key. An item a later run stops reporting is closed
   // as done. Exit code is ignored when stdout parses. Disable all with sweeps.disabled: ["checks"].
+  // "after": "HH:MM" holds a check until that time of day, e.g. a token check before a nightly job.
   "checks": [
-    // { "name": "unlanded", "command": "bun run --silent --cwd ~/code/mr-tools unlanded --whq", "timeoutSec": 180 }
+    // { "name": "unlanded", "command": "bun run --silent --cwd ~/code/mr-tools unlanded --whq", "timeoutSec": 180 },
+    // { "name": "auth", "command": "~/bin/auth-check --whq", "after": "17:00" }
   ],
 
   // Ticket prefixes / keywords that tag items with a project badge.

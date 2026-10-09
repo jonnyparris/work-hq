@@ -11,6 +11,7 @@ import type { ActionKind, AgentReport, Item, Job, JobKind } from "../shared/type
 import * as cmux from "./cmux.ts";
 import { config } from "./config.ts";
 import { newId, nowIso } from "./db.ts";
+import { type DemoScript, demoActionScript, demoSweepScript, feedLine } from "./demo.ts";
 import type { Dispatcher, Hub } from "./hub.ts";
 import { backoffMs, isRateLimited, LaunchGate } from "./launch-gate.ts";
 import {
@@ -122,6 +123,10 @@ export class Agents implements Dispatcher {
     const job = this.newJob("action", action, title, useCmux ? "cmux" : "headless", itemId);
     // Verifying doesn't change what the item *is*; everything else means someone's on it.
     if (action !== "verify") this.hub.updateItem(itemId, { status: "doing" });
+    if (config.demo) {
+      void this.launchDemoAction(job.id, title, demoActionScript(item, action, note), useCmux);
+      return this.hub.store.job(job.id);
+    }
     const prompt = actionPrompt(job.id, item, action, note);
     // Launch in the background: the gate may hold it for a while and callers shouldn't wait.
     void this.launchAction(job.id, title, prompt, useCmux);
@@ -154,6 +159,56 @@ export class Agents implements Dispatcher {
     // No cmux: run headless with full tools. Still visible in the dashboard feed.
     const r = await this.runHeadless(jobId, prompt, { tools: true, thinking: "medium", perms: false, timeoutMin: 45 });
     this.finishAction(jobId, r);
+  }
+
+  // ── demo mode: scripted runs that look real and reach nothing ───────────
+  private async launchDemoAction(jobId: string, title: string, script: DemoScript, useCmux: boolean) {
+    if (useCmux) {
+      const dir = cmux.jobDir(jobId);
+      const scriptPath = resolve(dir, "demo-script.json");
+      writeFileSync(scriptPath, JSON.stringify({ ...script, title }));
+      const launched = cmux.launchInCmux({
+        jobId, title, prompt: `(demo) ${title}`, cwd: config.workspace.dir, piArgs: [],
+        command: [process.execPath, resolve(import.meta.dir, "../cli/demo-agent.ts"), scriptPath],
+        group: `${config.cmux.group} · demo`,
+      });
+      if (launched) {
+        this.running.set(jobId, { statusPath: launched.statusPath, seenWork: false });
+        this.hub.toast(`Dispatched to cmux: ${title}`, "good");
+        this.patch(jobId, { status: "running", workspace: launched.workspace, startedAt: nowIso(), tail: ["▸ launched in cmux · Work HQ group"] });
+        // Mirror the script into the dashboard feed so the Agents panel moves in step with the terminal.
+        void this.playFeed(jobId, script, 600);
+        return;
+      }
+      this.line(jobId, "cmux launch failed — running in the dashboard");
+    }
+    this.patch(jobId, { status: "running", startedAt: nowIso() });
+    await this.playFeed(jobId, script, 0);
+    this.hub.ingestReport({ ...script.report, jobId }, "agent");
+    this.finishAction(jobId, { ok: true, text: "" });
+  }
+
+  /** Stream a demo script's steps into the job's tail, at the script's pace. */
+  private async playFeed(jobId: string, script: DemoScript, startMs: number) {
+    await sleep(startMs);
+    for (const step of script.steps) {
+      await sleep(step.ms);
+      if (this.cancelled(jobId)) return;
+      if (step.t !== "out") this.line(jobId, feedLine(step));
+    }
+  }
+
+  private async demoSweep(name: "transcripts" | "calendar" | "posts") {
+    const title = { transcripts: "Scan meeting transcripts", calendar: "Read today's calendar", posts: "Scout blog posts worth writing" }[name];
+    const job = this.newJob("sweep", name, title, "headless");
+    this.hub.putSync({ ...this.hub.store.syncState(name), lastRunAt: nowIso() });
+    this.patch(job.id, { status: "running", startedAt: nowIso() });
+    const script = demoSweepScript(name);
+    await this.playFeed(job.id, script, 0);
+    const { created } = this.hub.ingestReport({ ...script.report, jobId: job.id }, name === "calendar" ? "calendar" : name === "posts" ? "agent" : "transcript");
+    this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: script.report.summary });
+    this.hub.putSync({ ...this.hub.store.syncState(name), lastOkAt: nowIso(), error: undefined, cursor: "demo" });
+    if (created.length) this.hub.toast(`${created.length} new from ${name}`, "good");
   }
 
   /** Poll cmux beacons. Called every few seconds by the scheduler. */
@@ -226,7 +281,7 @@ export class Agents implements Dispatcher {
   /** Close cmux workspaces whose job finished and whose session has sat idle past the threshold. */
   pruneCmux(now = Date.now()) {
     const hours = config.cmux.pruneIdleHours;
-    if (!config.cmux.bin || !(hours > 0)) return [];
+    if (config.demo || !config.cmux.bin || !(hours > 0)) return [];
     const all = cmux.jobWorkspaces();
     if (!all) return [];
     const idle = cmux.pickIdle(all, { now, idleMs: hours * 3600_000, busy: new Set(this.running.keys()), idleSince: cmux.idleSince });
@@ -283,6 +338,10 @@ export class Agents implements Dispatcher {
 
   async sweep(name: "transcripts" | "calendar", opts: { since?: string } = {}) {
     if (this.sweeping.has(name)) return;
+    if (config.demo) {
+      this.sweeping.add(name);
+      return this.demoSweep(name).finally(() => this.sweeping.delete(name));
+    }
     this.sweeping.add(name);
     const state = this.hub.store.syncState(name);
     this.hub.putSync({ ...state, lastRunAt: nowIso() });
@@ -429,6 +488,11 @@ export class Agents implements Dispatcher {
   async calendarBlock(itemId: string, start: string, durationMin: number) {
     const item = this.hub.store.item(itemId);
     if (!item) return;
+    if (config.demo) {
+      this.hub.journal(`In calendar ${new Date(start).toLocaleString()}: ${item.title}`, { itemId, who: "hq" });
+      this.hub.toast(`In your calendar: ${item.title}`, "good");
+      return;
+    }
     const end = new Date(Date.parse(start) + Math.max(15, Math.min(240, durationMin)) * 60_000).toISOString();
     const job = this.newJob("sweep", "calendar-write", `Calendar: ${item.title}`.slice(0, 80), "headless", itemId);
     const r = await this.runHeadless(job.id, calendarPrompt(job.id, item, start, end), { tools: true, thinking: "low", perms: true, timeoutMin: 6 });
@@ -450,6 +514,10 @@ export class Agents implements Dispatcher {
   // ── writing scout (weekly, headless) ───────────────────────────────────
   async postSweep() {
     if (this.sweeping.has("posts")) return;
+    if (config.demo) {
+      this.sweeping.add("posts");
+      return this.demoSweep("posts").finally(() => this.sweeping.delete("posts"));
+    }
     this.sweeping.add("posts");
     const state = this.hub.store.syncState("posts");
     this.hub.putSync({ ...state, lastRunAt: nowIso() });
@@ -561,6 +629,8 @@ export class Agents implements Dispatcher {
     o: { tools: boolean; thinking: string; perms: boolean; timeoutMin: number },
     resume?: string,
   ): Promise<RunResult> {
+    // Belt and braces: demo mode never gives pi tools (sweeps and actions are scripted above).
+    if (config.demo && o.tools) return Promise.resolve({ ok: false, text: "", error: "demo mode: no tool runs" });
     const job = this.hub.store.job(jobId)!;
     const args = ["-p", "--mode", "json", ...modelArgs(), "--thinking", o.thinking];
     if (o.tools) args.push("-a", "-n", `work-hq: ${job.title}`, "-xt", config.pi.headlessDenyTools);

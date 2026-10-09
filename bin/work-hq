@@ -7,7 +7,8 @@
 #   bin/work-hq open         open the dashboard
 #   bin/work-hq logs         tail the log
 #   bin/work-hq config       print the resolved config (which file, every value, secrets masked)
-#   bin/work-hq demo         run a sandbox with made-up data on :7718 (no config, no memory, no sweeps)
+#   bin/work-hq demo         run a sandbox with made-up data on :7718 (no config, no memory, scripted agents)
+#                            (or click "Demo" / press ⇧D in the live dashboard)
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LABEL="${WORK_HQ_LAUNCHD_LABEL:-work-hq.dashboard}"

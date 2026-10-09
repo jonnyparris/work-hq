@@ -27,7 +27,8 @@ function App() {
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.closest("input, textarea, select, [contenteditable]") || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.key === "b") { e.preventDefault(); setDeck((x) => !x); }
+      if (e.key === "D") { e.preventDefault(); window.dispatchEvent(new Event("whq:demo-toggle")); }
+      else if (e.key === "b") { e.preventDefault(); setDeck((x) => !x); }
       else if (e.key === "q") { e.preventDefault(); setQuick((x) => !x); }
       else if (e.key === "Escape") setDeck(false);
     };
@@ -52,15 +53,24 @@ function App() {
   const later = s.questions.filter((q) => q.notBefore && Date.parse(q.notBefore) > now.getTime());
 
   useEffect(() => {
-    document.title = queue.length ? `(${queue.length}) Work HQ` : "Work HQ";
-  }, [queue.length]);
+    const name = s.config.demo ? "Work HQ · demo" : "Work HQ";
+    document.title = queue.length ? `(${queue.length}) ${name}` : name;
+  }, [queue.length, s.config.demo]);
+
+  // Back from the demo ("Exit demo" lands on /?exitDemo=1): stop the sandbox, tidy the URL.
+  useEffect(() => {
+    if (new URLSearchParams(location.search).has("exitDemo")) {
+      void api.demoStop().catch(() => {});
+      history.replaceState(null, "", location.pathname);
+    }
+  }, []);
 
   const go = (v: "today" | "journal") => { setView(v); history.replaceState(null, "", v === "today" ? "/" : "/journal"); };
   const selected = sel ? s.items.find((i) => i.id === sel) : undefined;
 
   return (
-    <div className="app">
-      <TopBar sync={s.sync} connected={s.connected} memoryOn={s.config.memory} view={view} go={go} now={now} />
+    <div className={`app ${s.config.demo ? "demo-mode" : ""}`}>
+      <TopBar sync={s.sync} connected={s.connected} memoryOn={s.config.memory} view={view} go={go} now={now} demo={s.config.demo} liveUrl={s.config.liveUrl} />
       <div className="main" style={view === "journal" ? { gridTemplateColumns: "1fr" } : undefined}>
         {view === "journal" ? (
           <div className="col"><JournalPage journal={s.journal} journalPath={s.config.memory ? s.config.journalPath : undefined} /></div>
@@ -124,7 +134,44 @@ function App() {
   );
 }
 
-function TopBar({ sync, connected, memoryOn, view, go, now }: { sync: SyncState[]; connected: boolean; memoryOn: boolean; view: string; go: (v: "today" | "journal") => void; now: Date }) {
+/** Live: "Demo" starts the sandbox and hops over. Demo: a loud badge, a reset, and a guarded way back. */
+function DemoToggle({ demo, liveUrl }: { demo: boolean; liveUrl?: string }) {
+  const [busy, setBusy] = useState(false);
+  const start = useCallback(async () => {
+    setBusy(true);
+    try {
+      const { url } = await api.demoStart(true);
+      location.href = url;
+    } catch (e) {
+      alert(`Couldn't start the demo: ${(e as Error).message}`);
+      setBusy(false);
+    }
+  }, []);
+  const exit = useCallback(() => {
+    if (confirm("Leave the demo? The next screen is your REAL dashboard.")) location.href = `${liveUrl ?? "http://localhost:7717"}/?exitDemo=1`;
+  }, [liveUrl]);
+  useEffect(() => {
+    const t = () => (demo ? exit() : start());
+    window.addEventListener("whq:demo-toggle", t);
+    return () => window.removeEventListener("whq:demo-toggle", t);
+  }, [demo, exit, start]);
+  if (!demo) {
+    return (
+      <button className="demo-btn" onClick={start} disabled={busy} title="Switch to a sandbox with made-up data, safe to screen-share (⇧D)">
+        {busy ? "Starting demo…" : "Demo"}
+      </button>
+    );
+  }
+  return (
+    <div className="demo-pill" title="Made-up data. Agents and sweeps are scripted. Nothing real is read or touched.">
+      <span className="demo-dot" />DEMO
+      <button onClick={() => api.demoReset()} title="Wipe and load a fresh made-up day">Reset</button>
+      <button onClick={exit} title="Back to the live dashboard (⇧D)">Exit</button>
+    </div>
+  );
+}
+
+function TopBar({ sync, connected, memoryOn, view, go, now, demo, liveUrl }: { sync: SyncState[]; connected: boolean; memoryOn: boolean; view: string; go: (v: "today" | "journal") => void; now: Date; demo: boolean; liveUrl?: string }) {
   const chip = (name: string, label: string) => {
     const x = sync.find((y) => y.name === name);
     const running = x?.lastRunAt && (!x.lastOkAt || x.lastRunAt > x.lastOkAt) && !x.error && Date.now() - Date.parse(x.lastRunAt) < 25 * 60_000;
@@ -142,9 +189,10 @@ function TopBar({ sync, connected, memoryOn, view, go, now }: { sync: SyncState[
         <button className={view === "today" ? "on" : ""} onClick={() => go("today")}>Today</button>
         <button className={view === "journal" ? "on" : ""} onClick={() => go("journal")}>Journal</button>
       </div>
+      <DemoToggle demo={demo} liveUrl={liveUrl} />
       <span className="spacer" />
       <div className="chips">
-        {memoryOn ? chip("memory", "memory") : <span className="sync-chip"><span className="dot err" />memory off</span>}
+        {memoryOn || demo ? chip("memory", "memory") : <span className="sync-chip"><span className="dot err" />memory off</span>}
         {chip("transcripts", "transcripts")}
         {chip("calendar", "calendar")}
         {chip("journal", "saved")}

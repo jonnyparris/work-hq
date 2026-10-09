@@ -2,11 +2,14 @@
 // scheduler. The web app is bundled by Bun's HTML import on the fly.
 
 import index from "../web/index.html";
+import talk from "../../docs/talk/index.html";
 import type { BulkRequest } from "../shared/batch.ts";
 import type { ActionKind, AgentReport, ItemStatus } from "../shared/types.ts";
 import { Agents } from "./agents.ts";
 import { Checks } from "./checks.ts";
 import { config, memoryOn } from "./config.ts";
+import { resetDemo } from "./demo.ts";
+import { DemoSandbox } from "./demo-sandbox.ts";
 import { Store, nowIso } from "./db.ts";
 import { Hub } from "./hub.ts";
 import { MemoryClient } from "./memory.ts";
@@ -23,6 +26,7 @@ const agents = new Agents(hub);
 const prompter = new Prompter(hub);
 const checks = new Checks(hub);
 const scheduler = new Scheduler(hub, prompter, agents, memorySync, checks);
+const sandbox = config.demo ? undefined : new DemoSandbox();
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (msg: string, status = 400) => json({ error: msg }, status);
@@ -46,6 +50,7 @@ const server = Bun.serve({
     "/": index,
     "/journal": index,
     "/board": index,
+    "/talk": talk,
 
     "/api/snapshot": { GET: () => json(hub.snapshot()) },
 
@@ -170,6 +175,24 @@ const server = Bun.serve({
     },
 
     "/api/tick": { POST: () => handle(() => prompter.tick()) },
+
+    // Demo toggle. The live server starts the sandbox (a separate process on its own port and
+    // database) and the browser hops over; "Exit demo" comes back here and stops it.
+    "/api/demo/start": {
+      POST: (req) => handle(async () => {
+        if (!sandbox) throw new Error("already in demo mode");
+        return { url: await sandbox.start(new URL(req.url).searchParams.get("reset") === "1") };
+      }),
+    },
+    "/api/demo/stop": { POST: () => handle(() => ({ stopped: sandbox?.stop() ?? false })) },
+    "/api/demo/reset": {
+      POST: () => handle(() => {
+        if (!config.demo) throw new Error("not in demo mode");
+        resetDemo(hub);
+        prompter.tick();
+        hub.toast("Fresh demo day loaded", "good");
+      }),
+    },
   },
 
   fetch(req, srv) {
@@ -190,15 +213,29 @@ const server = Bun.serve({
   },
 });
 
-hub.subscribe((e) => server.publish("hq", JSON.stringify(e)));
+hub.subscribe((e) => {
+  // While the demo is on screen, real notifications stay quiet.
+  if (e.type === "notify" && sandbox?.running) return;
+  server.publish("hq", JSON.stringify(e));
+});
 scheduler.start();
 
+if (config.demo) console.log(`\n  ◆ DEMO MODE — made-up data, scripted agents, nothing real touched`);
 console.log(`\n  ◆ Work HQ  →  http://localhost:${server.port}\n`);
 console.log(`    config: ${config.file ?? "defaults (no config file — see work-hq.config.example.json)"}`);
 console.log(`    owner: ${config.owner.name} · memory: ${memoryOn() ? `MCP (${config.memory.write ? "read+write" : "READ-ONLY"})` : "OFF (set memory.url + token)"} · cmux: ${config.cmux.bin ? "yes" : "no"} · model: ${config.pi.model || "pi default"}`);
 console.log(`    sweeps: ${config.sweeps.enabled ? `on, ${config.sweeps.workHours.join("–")}h` : "off"} · db: ${config.dbPath}\n`);
 
+if (config.demo) setTimeout(() => prompter.tick(), 300);
+
+const shutdown = () => sandbox?.stop();
+process.on("exit", shutdown);
+process.on("SIGTERM", () => {
+  shutdown();
+  process.exit(0);
+});
 process.on("SIGINT", () => {
+  shutdown();
   scheduler.stop();
   process.exit(0);
 });

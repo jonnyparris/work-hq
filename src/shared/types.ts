@@ -228,6 +228,10 @@ export interface Snapshot {
 
 export interface PublicConfig {
   port: number;
+  /** Demo mode: made-up data, scripted agents. The UI shows a banner and an exit. */
+  demo: boolean;
+  /** Demo mode: the live dashboard to go back to. */
+  liveUrl?: string;
   cmux: boolean;
   memory: boolean;
   model: string;

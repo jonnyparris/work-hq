@@ -8,7 +8,7 @@ type State = Snapshot & { connected: boolean; toasts: Array<{ id: number; text: 
 const empty: State = {
   items: [], questions: [], jobs: [], events: [], journal: [], sync: [],
   config: {
-    port: 7717, cmux: false, memory: false, model: "", workHours: [8, 19],
+    port: 7717, demo: false, cmux: false, memory: false, model: "", workHours: [8, 19],
     owner: { name: "", aliases: [], speechLang: "en-GB" },
     labels: { tracker: "tracker", chat: "chat", wiki: "wiki", site: "site" },
     journalPath: "",
@@ -103,6 +103,11 @@ export const api = {
   sync: (name: string) => call("POST", `/api/sync/${name}`),
   focusJob: (id: string) => call("POST", `/api/jobs/${id}/focus`),
   cancelJob: (id: string) => call("POST", `/api/jobs/${id}/cancel`),
+  /** Live dashboard: start (or restart, with reset) the demo sandbox and get its URL. */
+  demoStart: (reset = false) => call<{ url: string }>("POST", `/api/demo/start${reset ? "?reset=1" : ""}`),
+  demoStop: () => call("POST", "/api/demo/stop"),
+  /** Demo dashboard: wipe and reseed the made-up day. */
+  demoReset: () => call("POST", "/api/demo/reset"),
 };
 
 /** Re-render every `ms` — for clocks and relative times. */

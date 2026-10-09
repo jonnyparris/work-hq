@@ -50,6 +50,8 @@ export class Hub {
       sync: this.store.syncStates(),
       config: {
         port: config.port,
+        demo: config.demo,
+        liveUrl: config.demo ? config.liveUrl : undefined,
         cmux: Boolean(config.cmux.bin),
         memory: memoryOn(),
         model: config.pi.model || "pi default",

@@ -254,6 +254,9 @@ pi/status-beacon.ts       pi extension: session state → JSON file
 bin/work-hq               run / install / uninstall (launchd)
 bin/whq                   CLI for agents and terminals
 src/cli/demo.ts           `bin/work-hq demo`: sandbox with made-up data
+src/server/demo.ts        demo seed data + scripted agents/sweeps (WORK_HQ_DEMO=on)
+src/server/demo-sandbox.ts the live dashboard's Demo toggle: runs demo.ts as a child process
+src/cli/demo-agent.ts     plays a scripted agent run in a cmux terminal
 src/cli/config.ts         `bin/work-hq config`: print the resolved config
 cloud/                    Durable Object scaffold (not deployed)
 ```
