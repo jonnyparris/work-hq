@@ -84,7 +84,11 @@ function App() {
               {deck ? (
                 <Deck
                   questions={queue}
+                  allQuestions={s.questions}
                   items={s.items}
+                  events={[...s.events, ...(s.upcoming ?? [])]}
+                  calendarThrough={s.sync.find((x) => x.name === "calendar")?.through}
+                  workHours={s.config.workHours}
                   now={now}
                   onClose={() => setDeck(false)}
                   onFocus={(id) => { setDeck(false); setSkipped(queue.filter((q) => q.id !== id).map((q) => q.id)); }}

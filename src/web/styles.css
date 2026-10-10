@@ -534,6 +534,10 @@ a:hover { text-decoration: underline; }
 .deck-sum .e-quick { color: var(--leaf); } .deck-sum .e-agent { color: var(--sky); } .deck-sum .e-think { color: var(--violet); }
 .deck-eod { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 12px; padding: 9px 12px; border-radius: 12px; background: var(--violet-soft); font-size: 12.5px; color: var(--text-2); }
 .deck-eod > span { margin-right: 4px; }
+.deck-confirm { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; padding: 9px 12px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line-2); font-size: 12.5px; color: var(--text-2); }
+.deck-confirm.warn { border-color: rgba(242,193,78,0.4); }
+.deck-confirm-q { font-weight: 600; color: var(--text); }
+.deck-confirm.warn .deck-confirm-load { color: var(--gold); }
 .deck-groups { display: flex; flex-direction: column; gap: 14px; margin-top: 16px; max-height: 62vh; overflow: auto; padding-right: 4px; }
 .deck-group { border-left: 2px solid var(--line-2); padding-left: 12px; }
 .deck-group.e-quick { border-left-color: rgba(123,216,143,0.5); }

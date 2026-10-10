@@ -146,9 +146,9 @@ OUTPUT: your final message must be ONLY a JSON object (no prose, no fences):
 Do not write files or send anything. Job id: ${jobId}.`;
 }
 
-export function calendarSweepPrompt(jobId: string, day: string) {
+export function calendarSweepPrompt(jobId: string, day: string, through = day) {
   return `You are Work HQ's calendar reader: headless and READ-ONLY.
-${template("sweeps/calendar", { day })}
+${template("sweeps/calendar", { day, through })}
 
 Skip all-day OOO/holiday markers. For each event output:
 { "id", "title", "start": ISO with offset, "end": ISO with offset, "attendees": [first names or emails, max 8],

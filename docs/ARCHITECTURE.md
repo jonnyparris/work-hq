@@ -120,6 +120,14 @@ week, next Monday). An item that's already scheduled gets its time moved instead
 scheduled items of that kind that haven't come due yet move as well. "Push everything that needs your head to…"
 defers every *needs you* group in one go.
 
+A batch defer asks once before it moves anything, and shows the two facts about the slot it lands in:
+how many open items already sit in that 30-minute slot, and any meeting it clashes with (solo holds like "Focus time" don't count)
+(`Mon 09:30: 19 items already · clashes with CluePoints 09:30`). If there's a clash it offers the next free
+30-minute gap that day as a second button. Nothing is blocked. To make this work, the calendar sweep reads from
+today to the furthest defer target (`deferHorizon`), not only today. Later days go to `snapshot.upcoming`;
+prep, review and triage still only look at today. If the sweep hasn't read that day, the line says so instead
+of calling the slot free. The single-row Defer menu shows the same count and clash next to each day.
+
 `q` sorts the normal one-at-a-time queue quick-first (one tap → hand off → needs you).
 
 The command bar does the same in words: "skip all blog posts till Thursday", "clear the meeting ones",

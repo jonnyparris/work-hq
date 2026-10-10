@@ -6,7 +6,7 @@ import { setProfile } from "./ui.tsx";
 type State = Snapshot & { connected: boolean; toasts: Array<{ id: number; text: string; tone?: string }> };
 
 const empty: State = {
-  items: [], questions: [], jobs: [], events: [], journal: [], sync: [],
+  items: [], questions: [], jobs: [], events: [], upcoming: [], journal: [], sync: [],
   config: {
     port: 7717, demo: false, cmux: false, memory: false, model: "", workHours: [8, 19],
     owner: { name: "", aliases: [], speechLang: "en-GB" },
@@ -40,6 +40,7 @@ function reducer(s: State, e: ServerEvent | { type: "conn"; up: boolean } | { ty
       };
     case "job": return { ...s, jobs: upsert(s.jobs, e.data) };
     case "events": return { ...s, events: e.data };
+    case "upcoming": return { ...s, upcoming: e.data };
     case "journal": return { ...s, journal: upsert(s.journal, e.data).slice(0, 300) };
     case "sync": return { ...s, sync: upsert(s.sync.map((x) => ({ ...x, id: x.name })), { ...e.data, id: e.data.name }) };
     case "toast": return { ...s, toasts: [...s.toasts, { id: ++toastId, ...e.data }].slice(-4) };

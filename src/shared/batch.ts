@@ -3,7 +3,7 @@
 // push the head-work to later. Shared by server (bulk ops, triage) and web (Deck).
 // Keep it dependency-free.
 
-import type { ItemKind, Question, QuestionOption } from "./types.ts";
+import type { CalendarEvent, Item, ItemKind, Question, QuestionOption } from "./types.ts";
 
 export type DeckGroup = "review" | "inbox" | "waiting" | "due" | "state" | "proposal" | "agent" | "post" | "day";
 
@@ -115,6 +115,82 @@ export function deferTargets(now = new Date()): DeferTarget[] {
     if (!out.some((t) => t.at === mon.toISOString())) out.push({ id: "nextweek", label: "Next week · Mon", at: mon.toISOString() });
   }
   return out;
+}
+
+/** Local YYYY-MM-DD. */
+export function localDay(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** The last day a defer button can land on. The calendar sweep reads up to here. */
+export function deferHorizon(now = new Date()) {
+  const ts = deferTargets(now).map((t) => t.at).sort();
+  return localDay(new Date(ts[ts.length - 1] ?? now.toISOString()));
+}
+
+const SLOT_MS = 30 * 60_000;
+
+export interface SlotLoad {
+  /** Open items already landing in this 30-minute slot. */
+  count: number;
+  /** Non-declined meetings (with other people) overlapping the slot. */
+  clashes: CalendarEvent[];
+  /** False when the calendar sweep hasn't read that day: say so, don't claim "free". */
+  calendarKnown: boolean;
+  /** Next 30-minute gap with no meeting, same day, inside work hours. */
+  nextFree?: { at: string; hhmm: string };
+}
+
+export const hhmm = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+
+/** A meeting has other people in it. Solo holds ("🚫 No interviews", "Focus time") are fine to land work in. */
+const isMeeting = (e: CalendarEvent) => e.response !== "declined" && (e.attendees?.length ?? 0) > 0;
+const overlaps = (e: CalendarEvent, from: number, to: number) => isMeeting(e) && Date.parse(e.start) < to && Date.parse(e.end) > from;
+
+/**
+ * What a defer target already holds: the two facts worth seeing before you pile more on.
+ * `calendarThrough` is the last local day the calendar sweep covered (YYYY-MM-DD).
+ */
+export function slotLoad(
+  at: string,
+  ctx: { items: Item[]; questions: Question[]; events: CalendarEvent[]; calendarThrough?: string; workHours?: [number, number] },
+): SlotLoad {
+  const from = Date.parse(at);
+  const to = from + SLOT_MS;
+  const inSlot = (iso?: string) => Boolean(iso) && Date.parse(iso!) >= from && Date.parse(iso!) < to;
+  const ids = new Set<string>();
+  for (const i of ctx.items) {
+    if (["done", "dropped"].includes(i.status)) continue;
+    if (inSlot(i.scheduledFor)) ids.add(i.id);
+  }
+  for (const q of ctx.questions) {
+    if (q.status === "open" && inSlot(q.notBefore)) ids.add(q.itemId ?? `q:${q.id}`);
+  }
+  const day = localDay(new Date(from));
+  const calendarKnown = Boolean(ctx.calendarThrough && ctx.calendarThrough >= day);
+  const dayEvents = ctx.events.filter((e) => localDay(new Date(e.start)) === day || localDay(new Date(e.end)) === day);
+  const clashes = dayEvents.filter((e) => overlaps(e, from, to)).sort((a, b) => a.start.localeCompare(b.start));
+  let nextFree: SlotLoad["nextFree"];
+  if (calendarKnown && clashes.length) {
+    const end = new Date(from);
+    end.setHours(ctx.workHours?.[1] ?? 18, 0, 0, 0);
+    for (let t = to; t + SLOT_MS <= end.getTime(); t += SLOT_MS) {
+      if (!dayEvents.some((e) => overlaps(e, t, t + SLOT_MS))) {
+        nextFree = { at: new Date(t).toISOString(), hhmm: hhmm(new Date(t)) };
+        break;
+      }
+    }
+  }
+  return { count: ids.size, clashes, calendarKnown, nextFree };
+}
+
+/** "Mon 09:30: 19 items already · clashes with CluePoints 09:30". */
+export function slotLine(label: string, l: SlotLoad) {
+  const parts = [l.count ? `${l.count} item${l.count === 1 ? "" : "s"} already` : "nothing else there yet"];
+  if (!l.calendarKnown) parts.push("calendar not read that far yet");
+  else if (l.clashes.length) parts.push(`clashes with ${l.clashes.map((e) => `${e.title} ${hhmm(new Date(e.start))}`).join(", ")}`);
+  else parts.push("calendar free");
+  return `${label}: ${parts.join(" · ")}`;
 }
 
 /** What a bulk op picks. Any combination; all given filters must match. */

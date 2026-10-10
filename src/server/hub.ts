@@ -6,7 +6,7 @@ import type {
   AgentReport, CalendarEvent, Effect, Item, ItemKind, ItemStatus, Job, JournalEntry, Question,
   QuestionOption, ServerEvent, Snapshot, SyncState,
 } from "../shared/types.ts";
-import { type BulkRequest, deckGroup, optionFor } from "../shared/batch.ts";
+import { type BulkRequest, deckGroup, deferHorizon, localDay, optionFor } from "../shared/batch.ts";
 import { config, memoryOn } from "./config.ts";
 import { newId, nowIso, type Store } from "./db.ts";
 
@@ -46,6 +46,7 @@ export class Hub {
       questions: this.store.questions("open"),
       jobs: this.store.jobs(40),
       events: this.todayEvents(),
+      upcoming: this.upcomingEvents(),
       journal: this.store.journal(120),
       sync: this.store.syncStates(),
       config: {
@@ -61,6 +62,16 @@ export class Hub {
         labels: { tracker: config.labels.tracker, chat: config.labels.chat, wiki: config.writing.wiki.name, site: config.writing.site.name },
       },
     };
+  }
+
+  /** After today, up to the furthest defer target. */
+  upcomingEvents(now = new Date()): CalendarEvent[] {
+    const today = localDay(now);
+    const last = deferHorizon(now);
+    return this.store.events().filter((e) => {
+      const d = localDay(new Date(e.start));
+      return d > today && d <= last;
+    });
   }
 
   todayEvents(now = new Date()): CalendarEvent[] {
@@ -348,10 +359,12 @@ export class Hub {
     this.emit({ type: "sync", data: s });
   }
 
-  setEvents(events: CalendarEvent[]) {
-    const day = new Date().toISOString().slice(0, 10);
-    this.store.replaceEvents(day, events);
+  setEvents(events: CalendarEvent[], through?: string) {
+    const day = localDay(new Date());
+    const last = [through ?? day, ...events.map((e) => e.start.slice(0, 10))].sort().pop()!;
+    this.store.replaceEvents(day, last, events);
     this.emit({ type: "events", data: this.todayEvents() });
+    this.emit({ type: "upcoming", data: this.upcomingEvents() });
   }
 
   // ── agent reports ──────────────────────────────────────────────────────
@@ -393,7 +406,7 @@ export class Hub {
       });
     }
     for (const line of r.journal ?? []) this.journal(line, { who: "agent" });
-    if (r.events) this.setEvents(r.events);
+    if (r.events) this.setEvents(r.events, r.eventsThrough);
     if (job) {
       const tail = r.summary ? [...job.tail, `✓ ${r.summary}`].slice(-12) : job.tail;
       this.putJob({ ...job, summary: r.summary ?? job.summary, tail, reported: true });

@@ -3,7 +3,7 @@
 //   triage  — headless, no tools, fast. Turns the owner's words into state changes.
 //   action  — interactive pi in a cmux workspace. Anything the owner dispatches. Highly visible.
 
-import type { BulkRequest } from "../shared/batch.ts";
+import { type BulkRequest, deferHorizon } from "../shared/batch.ts";
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -348,8 +348,9 @@ export class Agents implements Dispatcher {
     try {
       const day = new Date();
       const dayStr = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
-      const job = this.newJob("sweep", name, name === "transcripts" ? "Scan meeting transcripts" : "Read today's calendar", "headless");
+      const job = this.newJob("sweep", name, name === "transcripts" ? "Scan meeting transcripts" : "Read the calendar", "headless");
       let prompt: string;
+      let through: string | undefined;
       if (name === "transcripts") {
         const midnight = new Date(day);
         midnight.setHours(0, 0, 0, 0);
@@ -357,7 +358,8 @@ export class Agents implements Dispatcher {
         const known = this.hub.store.items().filter((i) => i.source.type === "transcript" || i.status !== "dropped").map((i) => i.title);
         prompt = transcriptSweepPrompt(job.id, since, known);
       } else {
-        prompt = calendarSweepPrompt(job.id, dayStr);
+        through = deferHorizon(day);
+        prompt = calendarSweepPrompt(job.id, dayStr, through);
       }
       const r = await this.runHeadless(job.id, prompt, { tools: true, thinking: config.pi.sweepThinking, perms: true, timeoutMin: 20 });
       const report = extractJson<AgentReport>(r.text);
@@ -367,13 +369,14 @@ export class Agents implements Dispatcher {
         this.hub.putSync({ ...this.hub.store.syncState(name), error });
         return;
       }
-      const { created } = this.hub.ingestReport({ ...report, jobId: job.id }, name === "transcripts" ? "transcript" : "calendar");
+      const { created } = this.hub.ingestReport({ ...report, jobId: job.id, eventsThrough: through }, name === "transcripts" ? "transcript" : "calendar");
       this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: report.summary });
       this.hub.putSync({
         ...this.hub.store.syncState(name),
         lastOkAt: nowIso(),
         error: undefined,
         cursor: name === "transcripts" ? report.cursor ?? state.cursor : `${report.events?.length ?? 0} events`,
+        through: name === "calendar" && report.events ? through : state.through,
       });
       if (created.length) this.hub.toast(`${created.length} new from transcripts`, "good");
     } finally {

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { deckGroup, deferTargets, optionFor, quickFirst } from "../src/shared/batch.ts";
+import { deckGroup, deferHorizon, deferTargets, optionFor, quickFirst, slotLine, slotLoad } from "../src/shared/batch.ts";
 import { Store } from "../src/server/db.ts";
 import { Hub } from "../src/server/hub.ts";
 import { Prompter } from "../src/server/prompter.ts";
@@ -118,5 +118,60 @@ describe("quickFirst", () => {
   });
   test("optionFor skips options that need words", () => {
     expect(optionFor({ key: "inbox:x", kind: "confirm", options: [{ id: "when", label: "", effect: { type: "when" } }] }, "dismiss")).toBeUndefined();
+  });
+});
+
+describe("slotLoad", () => {
+  // Friday 2026-10-09 18:00: "Mon" is the first target.
+  const fri = new Date(2026, 9, 9, 18);
+  const mon = deferTargets(fri)[0]!;
+  const at = (h: number, m = 0) => new Date(2026, 9, 12, h, m).toISOString();
+  const ev = (id: string, title: string, s: string, e: string, response?: "declined") => ({ id, title, start: s, end: e, response, attendees: ["Rory"] });
+
+  test("counts what's already there and names the clash", () => {
+    const items = Array.from({ length: 3 }, (_, i) => ({ id: `i${i}`, title: `t${i}`, kind: "task", status: "scheduled", scheduledFor: mon.at, source: { type: "manual" }, createdAt: "", updatedAt: "" })) as any[];
+    const questions = [
+      { id: "q1", itemId: "i0", notBefore: mon.at, status: "open" }, // same item: counted once
+      { id: "q2", itemId: "i9", notBefore: mon.at, status: "open" },
+    ] as any[];
+    const events = [ev("e1", "CluePoints", at(9, 30), at(10, 30)), ev("e2", "Skipped", at(9, 30), at(10), "declined"), ev("e3", "Standup", at(11), at(11, 15))];
+    const l = slotLoad(mon.at, { items, questions, events, calendarThrough: "2026-10-12", workHours: [8, 18] });
+    expect(l.count).toBe(4);
+    expect(l.clashes.map((e) => e.title)).toEqual(["CluePoints"]);
+    expect(l.nextFree?.hhmm).toBe("10:30");
+    expect(slotLine("Mon 09:30", l)).toBe("Mon 09:30: 4 items already · clashes with CluePoints 09:30");
+  });
+
+  test("next free skips back-to-back events", () => {
+    const events = [ev("a", "A", at(9, 30), at(10, 30)), ev("b", "B", at(10, 30), at(11, 15))];
+    expect(slotLoad(mon.at, { items: [], questions: [], events, calendarThrough: "2026-10-12" }).nextFree?.hhmm).toBe("11:30");
+  });
+
+  test("solo holds don't count as clashes", () => {
+    const hold = { id: "h", title: "Focus time", start: at(9), end: at(12), attendees: [] };
+    expect(slotLoad(mon.at, { items: [], questions: [], events: [hold], calendarThrough: "2026-10-12" }).clashes).toHaveLength(0);
+  });
+
+  test("doesn't claim free when the calendar wasn't read that far", () => {
+    const l = slotLoad(mon.at, { items: [], questions: [], events: [], calendarThrough: "2026-10-09" });
+    expect(l.calendarKnown).toBe(false);
+    expect(slotLine("Mon 09:30", l)).toBe("Mon 09:30: nothing else there yet · calendar not read that far yet");
+  });
+
+  test("horizon is the furthest defer target", () => {
+    expect(deferHorizon(now)).toBe("2026-10-12");
+  });
+
+  test("setEvents with a range clears empty later days and exposes upcoming", () => {
+    const hub2 = new Hub(new Store(":memory:"));
+    const t = new Date();
+    const iso = (d: Date) => { const p = (n: number) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:00:00`; };
+    const through = deferHorizon(t);
+    const later = deferTargets(t)[0]!;
+    const ld = new Date(later.at);
+    hub2.setEvents([{ id: "x", title: "Later", start: iso(ld), end: iso(new Date(ld.getTime() + 3600_000)) }], through);
+    expect(hub2.snapshot().upcoming.map((e) => e.id)).toEqual(["x"]);
+    hub2.setEvents([], through);
+    expect(hub2.snapshot().upcoming).toHaveLength(0);
   });
 });

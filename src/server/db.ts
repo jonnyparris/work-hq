@@ -119,9 +119,10 @@ export class Store {
   events(): CalendarEvent[] {
     return this.all<CalendarEvent>("events", "ORDER BY updated ASC");
   }
-  replaceEvents(day: string, events: CalendarEvent[]) {
+  /** Replace every event whose local start day is in [from, to] (YYYY-MM-DD). */
+  replaceEvents(from: string, to: string, events: CalendarEvent[]) {
     const tx = this.db.transaction(() => {
-      this.db.query("DELETE FROM events WHERE substr(updated, 1, 10) = ?").run(day);
+      this.db.query("DELETE FROM events WHERE substr(updated, 1, 10) BETWEEN ? AND ?").run(from, to);
       for (const e of events) this.put("events", e.id, "", e.start, e);
     });
     tx();

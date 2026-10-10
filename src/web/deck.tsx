@@ -2,20 +2,42 @@
 // needs. One-tap stuff first, hand-offs next, head-work last (and deferrable in bulk).
 
 import { useMemo, useState } from "react";
-import { type BulkOp, type BulkRequest, type DeckGroup, EFFORT_LABEL, GROUP_ORDER, GROUPS, deckGroup, deferTargets } from "../shared/batch.ts";
-import type { Item, Question } from "../shared/types.ts";
+import {
+  type BulkOp, type BulkRequest, type DeckGroup, type DeferTarget, EFFORT_LABEL, GROUP_ORDER, GROUPS, type SlotLoad, deckGroup, deferTargets, slotLine, slotLoad,
+} from "../shared/batch.ts";
+import type { CalendarEvent, Item, Question } from "../shared/types.ts";
 import { api } from "./store.ts";
 import { KIND_LABEL } from "./ui.tsx";
 
-export function Deck({ questions, items, now, onFocus, onClose }: {
+const short = (t: DeferTarget) => t.label.replace("Tomorrow · ", "").replace("Next week · ", "");
+
+/** A batch defer waiting for a second look at the slot it lands in. */
+interface PendingDefer {
+  key: string;
+  target: DeferTarget;
+  groups: DeckGroup[];
+  n: number;
+}
+
+export function Deck({ questions, allQuestions, items, events, calendarThrough, workHours, now, onFocus, onClose }: {
   questions: Question[];
+  /** Every open question, snoozed ones too: they count toward a slot's load. */
+  allQuestions?: Question[];
   items: Item[];
+  events?: CalendarEvent[];
+  calendarThrough?: string;
+  workHours?: [number, number];
   now: Date;
   onFocus: (id: string) => void;
   onClose: () => void;
 }) {
   const [busy, setBusy] = useState<string | undefined>();
+  const [pending, setPending] = useState<PendingDefer | undefined>();
   const targets = useMemo(() => deferTargets(now), [now.toDateString()]);
+  const loads = useMemo(() => {
+    const ctx = { items, questions: allQuestions ?? questions, events: events ?? [], calendarThrough, workHours };
+    return new Map(targets.map((t) => [t.id, slotLoad(t.at, ctx)]));
+  }, [targets, items, allQuestions, questions, events, calendarThrough, workHours]);
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
   const groups = useMemo(() => {
     const m = new Map<DeckGroup, Question[]>();
@@ -33,8 +55,13 @@ export function Deck({ questions, items, now, onFocus, onClose }: {
     try { for (const r of reqs) await api.bulk(r); }
     finally { setBusy(undefined); }
   };
-  const bulk = (g: DeckGroup, op: BulkOp, t?: { at: string; label: string }) =>
-    run(`${g}:${op}:${t?.at ?? ""}`, [{ group: g, op, until: t?.at, label: t && `${t.label} 09:30` }]);
+  const bulk = (g: DeckGroup, op: BulkOp) => run(`${g}:${op}:`, [{ group: g, op }]);
+  const ask = (key: string, target: DeferTarget, gs: DeckGroup[]) =>
+    setPending({ key, target, groups: gs, n: groups.filter((x) => gs.includes(x.g)).reduce((n, x) => n + x.qs.length, 0) });
+  const confirm = async (p: PendingDefer, at: string, time: string) => {
+    await run(p.key, p.groups.map((g) => ({ group: g, op: "defer" as const, until: at, label: `${p.target.label} ${time}` })));
+    setPending(undefined);
+  };
 
   if (!questions.length) {
     return (
@@ -58,12 +85,13 @@ export function Deck({ questions, items, now, onFocus, onClose }: {
         <div className="deck-eod">
           <span>Push everything that needs your head to</span>
           {targets.map((t) => (
-            <button key={t.id} className="mini-opt" disabled={Boolean(busy)} onClick={() => run(`eod:${t.at}`, think.map((x) => ({ group: x.g, op: "defer" as const, until: t.at, label: `${t.label} 09:30` })))}>
+            <button key={t.id} className={`mini-opt ${pending?.key === `eod:${t.at}` ? "primary" : ""}`} disabled={Boolean(busy)} title={slotLine(`${short(t)} 09:30`, loads.get(t.id)!)} onClick={() => ask(`eod:${t.at}`, t, think.map((x) => x.g))}>
               {t.label}
             </button>
           ))}
         </div>
       )}
+      {pending && <DeferConfirm p={pending} load={loads.get(pending.target.id)!} busy={Boolean(busy)} onGo={(at, time) => confirm(pending, at, time)} onCancel={() => setPending(undefined)} />}
       <div className="deck-groups">
         {groups.map(({ g, qs }) => {
           const info = GROUPS[g];
@@ -84,12 +112,12 @@ export function Deck({ questions, items, now, onFocus, onClose }: {
                   <span className="defer-set">
                     <span>{info.ops.defer} →</span>
                     {targets.map((t) => (
-                      <button key={t.id} className="mini-opt quiet" disabled={Boolean(busy)} onClick={() => bulk(g, "defer", t)}>{t.label.replace("Tomorrow · ", "Tmrw ").replace("Next week · ", "")}</button>
+                      <button key={t.id} className={`mini-opt ${pending?.key === `${g}:defer:${t.at}` ? "primary" : "quiet"}`} disabled={Boolean(busy)} title={slotLine(`${short(t)} 09:30`, loads.get(t.id)!)} onClick={() => ask(`${g}:defer:${t.at}`, t, [g])}>{t.label.replace("Tomorrow · ", "Tmrw ").replace("Next week · ", "")}</button>
                     ))}
                   </span>
                 )}
               </div>
-              {qs.map((q) => <DeckRow key={q.id} q={q} item={q.itemId ? byId.get(q.itemId) : undefined} targets={targets} onFocus={() => onFocus(q.id)} />)}
+              {qs.map((q) => <DeckRow key={q.id} q={q} item={q.itemId ? byId.get(q.itemId) : undefined} targets={targets} loads={loads} onFocus={() => onFocus(q.id)} />)}
             </section>
           );
         })}
@@ -98,7 +126,23 @@ export function Deck({ questions, items, now, onFocus, onClose }: {
   );
 }
 
-function DeckRow({ q, item, targets, onFocus }: { q: Question; item?: Item; targets: ReturnType<typeof deferTargets>; onFocus: () => void }) {
+/** The two facts worth seeing before a pile moves: what's already there, and what's on the calendar. */
+function DeferConfirm({ p, load, busy, onGo, onCancel }: { p: PendingDefer; load: SlotLoad; busy: boolean; onGo: (at: string, time: string) => void; onCancel: () => void }) {
+  const day = short(p.target);
+  const warn = load.count > 0 || load.clashes.length > 0;
+  return (
+    <div className={`deck-confirm ${warn ? "warn" : ""}`}>
+      <span className="deck-confirm-q">Defer {p.n} to {day} 09:30?</span>
+      <span className="deck-confirm-load">{slotLine(`${day} 09:30`, load)}</span>
+      <span className="spacer" />
+      <button className="mini-opt primary" disabled={busy} onClick={() => onGo(p.target.at, "09:30")}>{busy ? "…" : `${day} 09:30`}</button>
+      {load.nextFree && <button className="mini-opt good" disabled={busy} onClick={() => onGo(load.nextFree!.at, load.nextFree!.hhmm)}>{day} {load.nextFree.hhmm} — next free</button>}
+      <button className="mini-opt quiet" disabled={busy} onClick={onCancel}>Cancel</button>
+    </div>
+  );
+}
+
+function DeckRow({ q, item, targets, loads, onFocus }: { q: Question; item?: Item; targets: DeferTarget[]; loads: Map<string, SlotLoad>; onFocus: () => void }) {
   const [busy, setBusy] = useState(false);
   const go = async (fn: () => Promise<unknown>) => {
     if (busy) return;
@@ -125,7 +169,11 @@ function DeckRow({ q, item, targets, onFocus }: { q: Question; item?: Item; targ
             if (t) go(() => api.bulk({ ids: [q.id], op: "defer", until: t.at, label: `${t.label} 09:30` }));
           }}>
             <option value="">Defer…</option>
-            {targets.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+            {targets.map((t) => {
+              const l = loads.get(t.id);
+              const note = [l?.count ? `${l.count} there` : "", l?.clashes.length ? "clash" : ""].filter(Boolean).join(", ");
+              return <option key={t.id} value={t.id}>{t.label}{note ? ` (${note})` : ""}</option>;
+            })}
           </select>
         )}
       </span>

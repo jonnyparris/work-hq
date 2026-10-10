@@ -214,6 +214,8 @@ export interface SyncState {
   lastOkAt?: string;
   cursor?: string;
   error?: string;
+  /** calendar only: last local day (YYYY-MM-DD) the last good sweep read. */
+  through?: string;
 }
 
 export interface Snapshot {
@@ -221,6 +223,8 @@ export interface Snapshot {
   questions: Question[];
   jobs: Job[];
   events: CalendarEvent[];
+  /** Events after today, up to the furthest defer target. For the defer slot check. */
+  upcoming: CalendarEvent[];
   journal: JournalEntry[];
   sync: SyncState[];
   config: PublicConfig;
@@ -249,6 +253,7 @@ export type ServerEvent =
   | { type: "question"; data: Question }
   | { type: "job"; data: Job }
   | { type: "events"; data: CalendarEvent[] }
+  | { type: "upcoming"; data: CalendarEvent[] }
   | { type: "journal"; data: JournalEntry }
   | { type: "sync"; data: SyncState }
   | { type: "toast"; data: { text: string; tone?: "good" | "warn" | "info" } }
@@ -273,6 +278,8 @@ export interface AgentReport {
     priority?: number;
   }>;
   events?: CalendarEvent[];
+  /** With `events`: the last local day (YYYY-MM-DD) they cover, so empty days get cleared too. */
+  eventsThrough?: string;
   journal?: string[];
   cursor?: string;
 }
