@@ -118,7 +118,8 @@ export type Effect =
   /** `inMin` is relative to when it's answered (wins over `at`, which is fixed when asked). */
   | { type: "schedule"; at: string; label: string; inMin?: number }
   | { type: "snooze"; minutes: number }
-  | { type: "dispatch"; action: ActionKind }
+  /** `note` goes to the agent when the owner typed none (e.g. which of several dispatch options was picked). */
+  | { type: "dispatch"; action: ActionKind; note?: string }
   | { type: "open"; url: string; /** keep the question open afterwards */ keep?: boolean }
   /** The owner says when, in words ("booked Thu 14:00", "put it in Friday morning"). Needs the note. */
   | { type: "when" }
@@ -273,8 +274,15 @@ export interface AgentReport {
     prompt: string;
     context?: string;
     itemId?: string;
-    /** Plain labels are mapped to effects by keyword; objects say exactly what happens. */
-    options?: Array<string | { label: string; status?: ItemStatus; action?: ActionKind }>;
+    /** Checks only: the `source.key` of an item in the same report (they can't know its id yet). */
+    itemKey?: string;
+    /** Stable dedupe key. Default: a hash of the prompt. */
+    key?: string;
+    /** Ask once per key: never re-ask after it's been answered. */
+    once?: boolean;
+    /** Plain labels are mapped to effects by keyword; objects say exactly what happens.
+     *  `note` rides along with `action` to the dispatched agent. */
+    options?: Array<string | { label: string; status?: ItemStatus; action?: ActionKind; note?: string }>;
     priority?: number;
   }>;
   events?: CalendarEvent[];

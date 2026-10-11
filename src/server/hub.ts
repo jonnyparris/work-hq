@@ -226,7 +226,7 @@ export class Hub {
       case "dispatch":
         if (itemId && this.dispatcher) {
           this.journal(`Dispatched ${effect.action}: ${this.store.item(itemId)?.title}`, { itemId });
-          await this.dispatcher.dispatch(itemId, effect.action, note);
+          await this.dispatcher.dispatch(itemId, effect.action, note?.trim() ? note : effect.note);
         }
         break;
       case "when":
@@ -389,7 +389,8 @@ export class Hub {
     }
     for (const q of r.questions ?? []) {
       const opts = q.options?.length ? q.options : ["Yes", "No"];
-      const itemId = q.itemId && this.store.item(q.itemId) ? q.itemId : job?.itemId;
+      const byKey = q.itemKey ? this.store.itemBySourceKey(q.itemKey)?.id : undefined;
+      const itemId = byKey ?? (q.itemId && this.store.item(q.itemId) ? q.itemId : job?.itemId);
       this.ask({
         kind: "open",
         badge: job ? "Agent asks" : undefined,
@@ -397,10 +398,11 @@ export class Hub {
         prompt: q.prompt,
         context: q.context,
         priority: q.priority ?? 72,
-        key: `agent:${hash(q.prompt)}`,
+        key: q.key ?? `agent:${hash(q.prompt)}`,
+        once: q.once,
         options: opts.map((o, i) => {
           const label = typeof o === "string" ? o : o.label;
-          const effect = typeof o === "string" ? (itemId ? effectFromLabel(o) : { type: "noop" as const }) : o.action ? { type: "dispatch" as const, action: o.action } : o.status ? { type: "status" as const, status: o.status } : { type: "noop" as const };
+          const effect = typeof o === "string" ? (itemId ? effectFromLabel(o) : { type: "noop" as const }) : o.action ? { type: "dispatch" as const, action: o.action, ...(o.note ? { note: o.note } : {}) } : o.status ? { type: "status" as const, status: o.status } : { type: "noop" as const };
           return { id: `o${i}`, label, tone: i === 0 ? "primary" : effect.type === "status" && effect.status === "dropped" ? "danger" : effect.type === "status" && effect.status === "done" ? "good" : "quiet", effect };
         }),
       });

@@ -65,4 +65,30 @@ describe("Checks.run", () => {
     expect(hub.store.syncState("check:unlanded").error).toContain("fatal: timed out");
     expect(hub.store.items()[0]!.status).toBe("inbox");
   });
+
+  test("questions about its own items: asked once, carry the dispatch note, suppress inbox triage", async () => {
+    const { Checks } = await import("../src/server/checks.ts");
+    const { Prompter } = await import("../src/server/prompter.ts");
+    const hub = new Hub(new Store(":memory:"));
+    const checks = new Checks(hub);
+    const report = JSON.stringify({
+      items: [{ title: "ESC-1 unassigned", kind: "decision", source: { key: "esc:ESC-1" } }],
+      questions: [
+        { itemKey: "esc:ESC-1", key: "ESC-1", prompt: "ESC-1?", options: [{ label: "Assign to on-call", action: "work", note: "assign it" }, { label: "Take it", status: "today" }] },
+        { itemKey: "esc:nope", prompt: "orphan" },
+      ],
+    });
+    const cmd = `cat <<'J'\n${report}\nJ`;
+    await checks.run({ name: "esc", command: cmd });
+    const [it] = hub.store.items();
+    const qs = hub.store.questions("open");
+    expect(qs.map((q) => q.prompt)).toEqual(["ESC-1?"]);
+    expect(qs[0]).toMatchObject({ itemId: it!.id, key: "check:esc:ESC-1" });
+    expect(qs[0]!.options[0]!.effect).toEqual({ type: "dispatch", action: "work", note: "assign it" });
+    new Prompter(hub).tick(new Date(2026, 9, 6, 10, 0));
+    expect(hub.store.questions("open").filter((q) => q.itemId === it!.id).length).toBe(1);
+    await hub.answer(qs[0]!.id, "o1");
+    await checks.run({ name: "esc", command: cmd });
+    expect(hub.store.questions("open").filter((q) => q.itemId === it!.id).length).toBe(0);
+  });
 });

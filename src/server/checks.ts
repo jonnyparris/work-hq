@@ -8,6 +8,9 @@
 // fixed problem leaves the board on its own. Items the owner already closed
 // stay closed: re-imports never clobber a confirmed status (see Hub.updateItem).
 //
+// A check may also send `questions` about its own items: point at one with
+// `itemKey` (its source.key) and give a stable `key`; they're asked once.
+//
 // The exit code is ignored when stdout parses: "found something" commonly
 // exits 1. No JSON on stdout is a failure, recorded in sync state as an error.
 
@@ -84,7 +87,10 @@ export class Checks {
       const items = report.items
         .filter((i) => i.source?.key)
         .map((i) => ({ ...i, source: { ...i.source, type: "check" as const, label: c.name } }));
-      this.hub.ingestReport({ items });
+      const questions = (report.questions ?? [])
+        .filter((q) => q.itemKey && items.some((i) => i.source.key === q.itemKey))
+        .map((q) => ({ ...q, key: `check:${c.name}:${q.key ?? q.itemKey}`, once: true }));
+      this.hub.ingestReport({ items, questions });
       for (const it of staleCheckItems(this.hub.store.items(), c.name, { items })) {
         this.hub.setStatus(it.id, "done", `${c.name} no longer reports it`, "agent");
       }

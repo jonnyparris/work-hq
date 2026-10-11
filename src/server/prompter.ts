@@ -209,6 +209,8 @@ export class Prompter {
       .sort((a, b) => Number(b.signals?.pineapple ?? 0) - Number(a.signals?.pineapple ?? 0));
     for (const it of inbox) {
       if (budget <= 0 || openCount("confirm") >= CAP.inbox) break;
+      // Something (a check) is already asking about it, with better answers than these.
+      if (open.some((q) => q.itemId === it.id)) continue;
       // 🍍 means "this should become a ticket" unless it's clearly a message/email.
       const act = it.signals?.pineapple && !["message", "email"].includes(it.kind) ? ACTION_FOR.ticket : ACTION_FOR[it.kind];
       if (
