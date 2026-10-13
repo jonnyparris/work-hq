@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import type { BulkRequest } from "../shared/batch.ts";
 import type { ActionKind, ItemStatus, ServerEvent, Snapshot } from "../shared/types.ts";
-import { setProfile } from "./ui.tsx";
+import { setProfile, setTracker } from "./ui.tsx";
 
 type State = Snapshot & { connected: boolean; toasts: Array<{ id: number; text: string; tone?: string }> };
 
@@ -30,6 +30,7 @@ function reducer(s: State, e: ServerEvent | { type: "conn"; up: boolean } | { ty
   switch (e.type) {
     case "snapshot":
       if (e.data.config?.owner) setProfile(e.data.config.owner);
+      setTracker(e.data.config?.labels?.trackerUrl);
       return { ...s, ...e.data };
     case "item": return { ...s, items: upsert(s.items, e.data) };
     case "item:remove": return { ...s, items: s.items.filter((i) => i.id !== e.id) };

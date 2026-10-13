@@ -568,3 +568,9 @@ a:hover { text-decoration: underline; }
 .mini-opt.danger { border-color: rgba(255,122,107,0.3); color: var(--coral); }
 .mini-opt.quiet { background: transparent; }
 .mini-sel { background: transparent; border: 1px solid var(--line); border-radius: 8px; color: var(--text-3); font-size: 12px; padding: 3px 6px; }
+
+/* Ticket keys link to the tracker (config labels.trackerUrl). */
+a.ticket { color: inherit; text-decoration: underline; text-decoration-color: rgba(242,193,78,0.55); text-underline-offset: 2px; }
+a.ticket:hover { text-decoration-color: currentColor; }
+.tickets { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; font-size: 12.5px; }
+.tickets a.ticket { color: var(--text-2); text-decoration: none; background: var(--surface-2); padding: 2px 7px; border-radius: 6px; }

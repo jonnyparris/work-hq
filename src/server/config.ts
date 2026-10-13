@@ -180,6 +180,8 @@ export const config = {
   labels: {
     tracker: pick<string>(undefined, "labels.tracker", "issue tracker"),
     chat: pick<string>(undefined, "labels.chat", "team chat"),
+    /** Ticket keys (ABC-123) anywhere in the UI link to `<trackerUrl><KEY>`, e.g. "https://linear.app/acme/issue/". */
+    trackerUrl: pick<string>("WORK_HQ_TRACKER_URL", "labels.trackerUrl", ""),
   },
 
   writing: {

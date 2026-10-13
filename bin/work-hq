@@ -7,6 +7,7 @@
 #   bin/work-hq open         open the dashboard
 #   bin/work-hq logs         tail the log
 #   bin/work-hq config       print the resolved config (which file, every value, secrets masked)
+#   bin/work-hq usage [--since D] [--until D]   markdown digest of how you used it (repeats, notes, failures); default last 24h
 #   bin/work-hq demo         run a sandbox with made-up data on :7718 (no config, no memory, scripted agents)
 #                            (or click "Demo" / press ⇧D in the live dashboard)
 set -euo pipefail
@@ -33,6 +34,7 @@ run() {
 
 case "${1:-run}" in
   run) run ;;
+  usage) shift; cd "$ROOT"; exec "$BUN" src/cli/usage.ts "$@" ;;
   install)
     mkdir -p "$(dirname "$PLIST")" "$(dirname "$LOG")"
     cat > "$PLIST" <<PL

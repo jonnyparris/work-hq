@@ -66,6 +66,7 @@ cp work-hq.config.example.json ~/.config/work-hq/config.json   # edit: name, tim
 bin/work-hq config        # shows which file was loaded and every value (secrets masked)
 bin/work-hq               # → http://localhost:7717
 bin/work-hq install       # optional: start at login, restart if it crashes (launchd)
+bin/work-hq usage         # markdown digest of the last 24h: repeats, notes that did nothing, failed runs
 ```
 
 <p align="center"><img src="docs/img/config.svg" alt="Config layers: defaults, config file, environment, prompt overrides" width="90%"></p>
@@ -138,6 +139,15 @@ meeting's notes. The sweep runs 10–25 min after the meeting, so most cards clo
 work arriving from two places (memory rewords a todo, a transcript finds what an agent already filed) becomes
 one item. Something you dropped isn't brought back under a new title. Details: [architecture](docs/ARCHITECTURE.md#duplicates-across-sources-srcserverdedupets).
 
+Set `labels.trackerUrl` and every ticket key (`PAY-123`) in a question, a card or an item becomes a link to it.
+
+### Let your reflection tune it
+
+`bin/work-hq usage --since <date>` prints how you actually used it: questions per kind and what you answered,
+items asked more than once, every typed note and what it led to (flagged if it did **nothing** or you typed it
+twice), meeting cards, merged duplicates, failed agent runs grouped by error, and what you typed into the command
+bar. Point a nightly reflection at it and have it propose fixes. That's how most of the fixes above were found.
+
 <table>
 <tr>
 <td width="50%"><img src="docs/img/drawer.png" alt="Item drawer: set state, correct it, send an agent, schedule it"><br><sub><b>The drawer.</b> Set the state, correct what's wrong (it goes to memory), send an agent, or schedule it.</sub></td>
@@ -191,5 +201,5 @@ All optional. They override the config file.
 `WORK_HQ_TZ` · `WORK_HQ_WORKSPACE` · `WORK_HQ_PROMPTS` · `WORK_HQ_MODEL` · `WORK_HQ_PI` ·
 `WORK_HQ_SWEEPS=off` · `WORK_HQ_DAY_START` / `_END` · `WORK_HQ_CALENDAR_EVERY` · `WORK_HQ_TRANSCRIPTS_EVERY` ·
 `WORK_HQ_POSTS_EVERY_DAYS` · `WORK_HQ_SWEEP_SURFACE=cmux` · `WORK_HQ_CMUX_PRUNE_HOURS` · `WORK_HQ_MEMORY_URL` · `WORK_HQ_MEMORY_TOKEN` ·
-`WORK_HQ_MEMORY_TOKEN_FILE` · `WORK_HQ_MEMORY_WRITE` · `WORK_HQ_CA_FILE` · `WORK_HQ_LAUNCHD_LABEL`
+`WORK_HQ_MEMORY_TOKEN_FILE` · `WORK_HQ_MEMORY_WRITE` · `WORK_HQ_CA_FILE` · `WORK_HQ_LAUNCHD_LABEL` · `WORK_HQ_TRACKER_URL`
 </details>

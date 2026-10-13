@@ -266,7 +266,7 @@ export interface PublicConfig {
   model: string;
   workHours: [number, number];
   owner: { name: string; aliases: string[]; speechLang: string };
-  labels: { tracker: string; chat: string; wiki: string; site: string };
+  labels: { tracker: string; chat: string; wiki: string; site: string; trackerUrl?: string };
   journalPath: string;
 }
 

@@ -80,7 +80,8 @@
   ],
 
   // Words used in prompts and the UI.
-  "labels": { "tracker": "Linear", "chat": "Slack" },
+  // trackerUrl: ticket keys like PAY-123 anywhere in the UI become links to <trackerUrl>PAY-123.
+  "labels": { "tracker": "Linear", "chat": "Slack", "trackerUrl": "https://linear.app/acme/issue/" },
 
   // Blog-post scouting and drafting. Leave site.postsDir out if you don't have a public site.
   "writing": {

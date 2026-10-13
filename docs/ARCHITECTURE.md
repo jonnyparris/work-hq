@@ -275,12 +275,20 @@ JSON can be an agent, anywhere.
 - The status beacon is a standalone pi extension; reuse it for any "run pi in a terminal and know
   when it's done" job.
 
+## Usage digest (src/cli/usage.ts)
+
+`bin/work-hq usage [--since] [--until] [--db]` reads the database read-only and prints markdown for a reflection
+to work from. The "nothing happened" check looks for a state change, schedule or dispatch on the same item within
+5 minutes of a note typed while its card was open. Notes added from the item drawer, or posted by an agent
+with no card open, are reported as context.
+
 ## Files
 
 ```
 src/shared/types.ts       shared model + AgentReport contract
 src/server/index.ts       Bun.serve: routes, websocket
-src/server/hub.ts         state transitions, journal, agent-report ingest
+src/server/hub.ts         state transitions, journal, agent-report ingest, typed notes, scanned meetings
+src/server/dedupe.ts      cross-source duplicate check (title tokens)
 src/server/prompter.ts    proactive rules
 src/server/scheduler.ts   heartbeat + cadences
 src/server/agents.ts      pi spawning: headless, cmux, triage
@@ -301,5 +309,6 @@ src/server/demo.ts        demo seed data + scripted agents/sweeps (WORK_HQ_DEMO=
 src/server/demo-sandbox.ts the live dashboard's Demo toggle: runs demo.ts as a child process
 src/cli/demo-agent.ts     plays a scripted agent run in a cmux terminal
 src/cli/config.ts         `bin/work-hq config`: print the resolved config
+src/cli/usage.ts          `bin/work-hq usage`: usage digest for reflections
 cloud/                    Durable Object scaffold (not deployed)
 ```

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CalendarEvent, Item, ItemStatus, Job, JournalEntry, Question, SyncState } from "../shared/types.ts";
 import { CalmScene } from "./calm.tsx";
 import { api } from "./store.ts";
-import { ACTIONS, Icon, KIND_LABEL, Md, Q_BADGE, ago, dictateInto, finishDictation, hhmm, people, shortUrl, stopDictation, whenLabel } from "./ui.tsx";
+import { ACTIONS, Icon, KIND_LABEL, Md, Q_BADGE, ago, dictateInto, finishDictation, hhmm, people, shortUrl, stopDictation, ticketKeys, ticketUrl, whenLabel } from "./ui.tsx";
 
 // ── Now + timeline ────────────────────────────────────────────────────────
 export function NowPanel({ now, events, workHours }: { now: Date; events: CalendarEvent[]; workHours: [number, number] }) {
@@ -191,7 +191,7 @@ export function Focus({ q, total, items, onSkip, onBack, canBack, onOpenItem }: 
         )}
         <span className="focus-count">1 of {total}</span>
       </div>
-      <h1>{q.prompt}</h1>
+      <h1><Md inline className="" text={q.prompt} /></h1>
       {q.context && <Md className="ctx md" text={q.context} />}
       {item?.notes?.length ? (
         <div className="ctx prior-notes" title="What you said about this before">
@@ -319,7 +319,7 @@ function Wrap({ items }: { items: Item[] }) {
     <div className="pick">
       {rows.map((i) => (
         <div key={i.id} className="pick-row" style={{ gridTemplateColumns: "1fr auto" }}>
-          <span style={{ fontSize: 13.5 }}>{i.title}</span>
+          <Md inline className="" text={i.title} />
           <span className="seg">
             <button className={`${i.status === "done" ? "on done" : ""}`} onClick={() => set(i, "done")}>Done</button>
             <button className={`${i.status === "scheduled" ? "on" : ""}`} onClick={() => set(i, "carry")}>Carry</button>
@@ -344,7 +344,7 @@ export function ItemRow({ it, onOpen, selected, compact }: { it: Item; onOpen: (
         <span className="glyph"><Icon name={it.kind} /></span>
       )}
       <div style={{ minWidth: 0 }}>
-        <div className="title">{it.title}</div>
+        <div className="title"><Md inline className="" text={it.title} /></div>
         <div className="meta">
           {it.project && <span className="tag proj">{it.project}</span>}
           {it.scheduledFor && it.status === "scheduled" && <span className="tag when">⏱ {whenLabel(it.scheduledFor, now)}</span>}
@@ -574,6 +574,11 @@ export function Drawer({ it, journal, jobs, onClose }: { it: Item; journal: Jour
             onBlur={(e) => { const v = e.currentTarget.textContent?.trim(); if (v && v !== it.title) api.patch(it.id, { title: v }); }}
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } }}
           >{it.title}</h2>
+          {ticketKeys(`${it.title} ${it.detail ?? ""}`).length > 0 && (
+            <div className="tickets">
+              {ticketKeys(`${it.title} ${it.detail ?? ""}`).map((k) => <a key={k} className="ticket" href={ticketUrl(k)} target="_blank" rel="noreferrer">{k} ↗</a>)}
+            </div>
+          )}
         </div>
         <div className="drawer-b">
           <div className="sec">

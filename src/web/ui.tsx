@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import type { ActionKind, ItemKind, QuestionKind } from "../shared/types.ts";
 
 const P: Record<string, ReactNode> = {
@@ -34,24 +34,49 @@ export function Icon({ name, size }: { name: string; size?: number }) {
   );
 }
 
-/** Inline markdown: links, bold, code, bare URLs. Enough for memory text. */
-export function Md({ text, className = "md" }: { text?: string; className?: string }) {
+let TRACKER = "";
+/** Where ticket keys link to (config labels.trackerUrl). Unset = keys stay plain text. */
+export function setTracker(url?: string) {
+  TRACKER = url ?? "";
+}
+/** Not ticket keys, even though they look like one. */
+const NOT_TICKETS = new Set(["UTF", "ISO", "SHA", "RFC", "GPT", "COVID", "MP", "HTTP", "TLS", "IPV", "AES", "RSA", "WCAG"]);
+const TICKET_RE = /\b([A-Z][A-Z0-9]{1,9})-(\d{1,7})\b/g;
+
+export function ticketUrl(key: string) {
+  const prefix = key.split("-")[0]!;
+  return TRACKER && !NOT_TICKETS.has(prefix) ? `${TRACKER}${key}` : undefined;
+}
+
+/** Ticket keys in a text, in order, deduped. Empty when no tracker URL is configured. */
+export function ticketKeys(text = ""): string[] {
+  if (!TRACKER) return [];
+  return [...new Set([...text.matchAll(TICKET_RE)].map((m) => m[0]).filter((k) => ticketUrl(k)))];
+}
+
+const stopClick = (e: ReactMouseEvent) => e.stopPropagation();
+
+/** Inline markdown: links, bold, code, bare URLs, ticket keys. Enough for memory text. */
+export function Md({ text, className = "md", inline }: { text?: string; className?: string; inline?: boolean }) {
   if (!text) return null;
   const out: ReactNode[] = [];
-  const re = /\[([^\]]+)\]\((https?:[^)\s]+)\)|\*\*([^*]+)\*\*|`([^`]+)`|(https?:\/\/[^\s)]+)/g;
+  const re = /\[([^\]]+)\]\((https?:[^)\s]+)\)|\*\*([^*]+)\*\*|`([^`]+)`|(https?:\/\/[^\s)]+)|\b([A-Z][A-Z0-9]{1,9}-\d{1,7})\b/g;
   let last = 0;
   let m: RegExpExecArray | null;
   let k = 0;
   while ((m = re.exec(text))) {
+    const ticket = m[6] ? ticketUrl(m[6]) : undefined;
+    if (m[6] && !ticket) continue; // looks like a key, isn't (or no tracker configured): leave as text
     if (m.index > last) out.push(text.slice(last, m.index));
-    if (m[1]) out.push(<a key={k++} href={m[2]} target="_blank" rel="noreferrer">{m[1]}</a>);
+    if (m[1]) out.push(<a key={k++} href={m[2]} target="_blank" rel="noreferrer" onClick={stopClick}>{m[1]}</a>);
     else if (m[3]) out.push(<strong key={k++}>{m[3]}</strong>);
     else if (m[4]) out.push(<code key={k++}>{m[4]}</code>);
-    else if (m[5]) out.push(<a key={k++} href={m[5]} target="_blank" rel="noreferrer">{shortUrl(m[5])}</a>);
+    else if (m[5]) out.push(<a key={k++} href={m[5]} target="_blank" rel="noreferrer" onClick={stopClick}>{shortUrl(m[5])}</a>);
+    else if (ticket) out.push(<a key={k++} className="ticket" href={ticket} target="_blank" rel="noreferrer" onClick={stopClick} title={`Open ${m[6]}`}>{m[6]}</a>);
     last = re.lastIndex;
   }
   if (last < text.length) out.push(text.slice(last));
-  return <div className={className}>{out}</div>;
+  return inline ? <span className={className}>{out}</span> : <div className={className}>{out}</div>;
 }
 
 export function shortUrl(u: string) {

@@ -63,7 +63,7 @@ export class Hub {
         workHours: config.sweeps.workHours,
         owner: { name: config.owner.name, aliases: config.owner.aliases, speechLang: config.owner.speechLang },
         journalPath: config.memory.journalPath,
-        labels: { tracker: config.labels.tracker, chat: config.labels.chat, wiki: config.writing.wiki.name, site: config.writing.site.name },
+        labels: { tracker: config.labels.tracker, chat: config.labels.chat, wiki: config.writing.wiki.name, site: config.writing.site.name, trackerUrl: config.labels.trackerUrl || undefined },
       },
     };
   }
