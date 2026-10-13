@@ -84,13 +84,20 @@ export class Scheduler {
       await this.memory.importAll().catch((e) => console.error("[memory]", e.message));
     }
     if (!config.sweeps.enabled || !this.inWorkHours()) return;
+    // Model gateway login lapsed: every pi run would fail. One retry every 30 min, else wait for the login.
+    if (this.agents.gatewayBlocked()) return;
     // Cheap shell checks, once per workday, ahead of the morning plan.
     if (this.checks && sweepOn("checks")) void this.checks.runDue().catch((e) => console.error("[checks]", e.message));
     if (sweepOn("calendar") && this.due("calendar", config.sweeps.calendarEveryMin)) {
       this.last.calendar = Date.now();
       void this.agents.sweep("calendar");
     }
-    if (sweepOn("transcripts") && this.due("transcripts", config.sweeps.transcriptsEveryMin)) {
+    // A meeting with others ended 10–25 min ago (notes usually land by then) and nothing has scanned since:
+    // scan now, so its "anything you committed to?" card closes itself instead of waiting for the next cadence.
+    if (sweepOn("transcripts") && this.meetingNotesDue()) {
+      this.last.transcripts = Date.now();
+      void this.agents.sweep("transcripts");
+    } else if (sweepOn("transcripts") && this.due("transcripts", config.sweeps.transcriptsEveryMin)) {
       this.last.transcripts = Date.now();
       void this.agents.sweep("transcripts");
     }
@@ -100,6 +107,15 @@ export class Scheduler {
     if (sweepOn("posts") && config.sweeps.postsEveryDays > 0 && age(posts.lastOkAt) > config.sweeps.postsEveryDays * 86400_000 && age(posts.lastRunAt) > 6 * 3600_000 && new Date().getHours() >= 10) {
       void this.agents.postSweep();
     }
+  }
+
+  meetingNotesDue(now = Date.now()) {
+    return this.hub.todayEvents(new Date(now)).some((ev) => {
+      const end = Date.parse(ev.end);
+      const meeting = ev.oneOnOne || (ev.attendees?.length ?? 0) > 1;
+      if (!meeting || ev.response === "declined" || now - end < 10 * 60_000 || now - end > 25 * 60_000) return false;
+      return (this.last.transcripts ?? 0) < end + 10 * 60_000 && !this.hub.wasScanned(ev);
+    });
   }
 
   /** Manual trigger from the UI. */

@@ -33,6 +33,7 @@ export class MemorySync {
       }
       const seen = this.upsert(parsed);
       const dropped = this.retire(seen);
+      this.hub.dedupeExisting();
       this.hub.putSync({ ...s, lastOkAt: nowIso(), error: undefined, cursor: `${parsed.length} items · proposals ${proposalsLabel}` });
       return { imported: parsed.length, dropped };
     } catch (e) {
@@ -60,6 +61,10 @@ export class MemorySync {
           key: p.key,
         },
       };
+      if (existing && existing.source.key !== p.key) {
+        // This todo was merged into an item from another source (or an older wording). Leave it be.
+        continue;
+      }
       if (existing) {
         // Memory is allowed to refresh the text, never to undo the owner's call.
         this.hub.updateItem(existing.id, patch, { quiet: true });
@@ -80,6 +85,8 @@ export class MemorySync {
     for (const item of this.hub.store.items()) {
       const key = item.source.key;
       if (!key?.startsWith("memory:") || seen.has(key)) continue;
+      // Memory still lists it under a newer wording that was merged into this item.
+      if (this.hub.store.aliasesFor(item.id).some((k) => seen.has(k))) continue;
       if (key.startsWith("memory:proposals:")) continue;
       if (item.confirmedAt || !["proposed", "inbox"].includes(item.status)) continue;
       this.hub.updateItem(item.id, { status: "dropped" });

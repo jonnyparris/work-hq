@@ -128,6 +128,16 @@ with bulk buttons per group and "push everything that needs your head to Thu". Y
 bar: *"skip all blog posts till Thursday"*. **`q`** sorts the normal queue quick wins first. Answering *"Doing it today"*
 won't bring the same question back tomorrow morning.
 
+No button fits? Type it in the note field and press **`⌘↵`**: *"drop it"*, *"chase Sam on Thursday"*, *"it's Joan, not Jon,
+and tighten it first"*. The note is the answer. Work HQ picks the matching option, changes the status, schedules it,
+or sends an agent with your words. If the note is only background, it's kept on the item and the question waits
+until the next working morning. **`→`** (or `s`) moves to the next card and changes nothing; **`←`** goes back.
+
+It also tries not to ask twice. A *meeting ended* card closes itself once the transcript sweep has read that
+meeting's notes. The sweep runs 10–25 min after the meeting, so most cards close before you get to them. The same
+work arriving from two places (memory rewords a todo, a transcript finds what an agent already filed) becomes
+one item. Something you dropped isn't brought back under a new title. Details: [architecture](docs/ARCHITECTURE.md#duplicates-across-sources-srcserverdedupets).
+
 <table>
 <tr>
 <td width="50%"><img src="docs/img/drawer.png" alt="Item drawer: set state, correct it, send an agent, schedule it"><br><sub><b>The drawer.</b> Set the state, correct what's wrong (it goes to memory), send an agent, or schedule it.</sub></td>
@@ -156,6 +166,7 @@ For the details and what could move to the cloud later, see [`docs/ARCHITECTURE.
 ## Safety
 
 - **You confirm every write.** Sweeps are read-only and can't use edit/write tools. Dispatched agents are told to show drafts before sending anything to a human.
+- **Model login lapses are one question, not a wall of red.** If pi's model provider login runs out (a gateway behind Cloudflare Access, say), Work HQ asks once with a **Log in now** button and pauses sweeps until it works again.
 - **Local only.** The server binds to `127.0.0.1`. The only way out is through pi's own tool access.
 - **Sandboxes can't pollute memory.** A non-default `WORK_HQ_DB` makes memory read-only unless you set `WORK_HQ_MEMORY_WRITE=on`. Test sentences are not facts.
 - **Secrets stay out of git.** Keep the memory token in a file (`memory.tokenFile`) or an env var. Your config file is gitignored if it lives in the repo.

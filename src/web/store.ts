@@ -94,6 +94,8 @@ async function call<T = any>(method: string, path: string, body?: unknown): Prom
 export const api = {
   answer: (id: string, optionId: string, note?: string, itemIds?: string[]) =>
     call("POST", `/api/questions/${id}/answer`, { optionId, note, itemIds }),
+  /** A typed note on a question. The server acts on it (answer / status / schedule / agent) or parks it till tomorrow. */
+  note: (id: string, text: string) => call<{ pending: boolean }>("POST", `/api/questions/${id}/note`, { text }),
   setStatus: (id: string, status: ItemStatus, note?: string) => call("PATCH", `/api/items/${id}`, { status, note }),
   patch: (id: string, patch: Record<string, unknown>) => call("PATCH", `/api/items/${id}`, patch),
   dispatch: (id: string, action: ActionKind, note?: string) => call("POST", `/api/items/${id}/dispatch`, { action, note }),

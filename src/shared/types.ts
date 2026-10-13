@@ -73,8 +73,30 @@ export interface Item {
   post?: PostInfo;
   /** Last time the owner confirmed the state themselves. The whole point of the app. */
   confirmedAt?: string;
+  /** What the owner typed about it. Kept apart from `detail` so memory re-imports never wipe it. */
+  notes?: ItemNote[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ItemNote {
+  at: string;
+  text: string;
+}
+
+/** What a typed note on a question means. Produced by the note reader (pi) or the cheap pattern match. */
+export interface NoteDecision {
+  /** One of the question's own option ids. Wins over everything below. */
+  pick?: string | null;
+  status?: ItemStatus | null;
+  /** Words with a time in them ("tomorrow", "Thursday"), resolved by the scheduler. */
+  when?: string | null;
+  dispatch?: { action: ActionKind; note?: string } | null;
+  /** The owner corrected the title ("it's Joan, not Jon"). */
+  title?: string | null;
+  /** What to pass to the picked option (agent instruction, status note). Defaults to the note itself. */
+  note?: string | null;
+  reply?: string;
 }
 
 export interface PostInfo {
@@ -124,6 +146,8 @@ export type Effect =
   /** The owner says when, in words ("booked Thu 14:00", "put it in Friday morning"). Needs the note. */
   | { type: "when" }
   | { type: "noop" }
+  /** Run `cloudflared access login <app>` for the model gateway pi uses (one browser tab). */
+  | { type: "gatewayLogin"; app: string }
   | { type: "multi"; effects: Effect[] };
 
 export interface Question {
@@ -291,4 +315,6 @@ export interface AgentReport {
   eventsThrough?: string;
   journal?: string[];
   cursor?: string;
+  /** Transcript sweep: every meeting whose notes it read, items or not. Closes "X just ended" questions. */
+  meetings?: Array<{ title: string; start?: string; url?: string }>;
 }

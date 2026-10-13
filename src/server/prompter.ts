@@ -152,7 +152,8 @@ export class Prompter {
       const attended = ev.response !== "needsAction" || ev.oneOnOne;
       // The calendar sweep usually leaves you off the attendee list, so a real 1-1 has one attendee.
       const meeting = ev.oneOnOne || (ev.attendees?.length ?? 0) > 1;
-      if (attended && meeting && end < now.getTime() && now.getTime() - end < 45 * MIN) {
+      // Notes already scanned by the transcript sweep: it found whatever there was. Don't ask.
+      if (attended && meeting && end < now.getTime() && now.getTime() - end < 45 * MIN && !this.hub.wasScanned(ev)) {
         this.ask({
           kind: "review",
           eventId: ev.id,

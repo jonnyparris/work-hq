@@ -7,7 +7,7 @@ import { type BulkRequest, deferHorizon } from "../shared/batch.ts";
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { ActionKind, AgentReport, Item, Job, JobKind } from "../shared/types.ts";
+import type { ActionKind, AgentReport, Item, Job, JobKind, NoteDecision } from "../shared/types.ts";
 import * as cmux from "./cmux.ts";
 import { config } from "./config.ts";
 import { newId, nowIso } from "./db.ts";
@@ -15,7 +15,7 @@ import { type DemoScript, demoActionScript, demoSweepScript, feedLine } from "./
 import type { Dispatcher, Hub } from "./hub.ts";
 import { backoffMs, isRateLimited, LaunchGate } from "./launch-gate.ts";
 import {
-  actionPrompt, calendarPrompt, calendarSweepPrompt, openUrl, postSweepPrompt, schedulePrompt, SITE_LINK, SITE_POSTS,
+  actionPrompt, calendarPrompt, calendarSweepPrompt, notePrompt, openUrl, postSweepPrompt, schedulePrompt, SITE_LINK, SITE_POSTS,
   transcriptSweepPrompt, triagePrompt, WIKI_DRAFTS,
 } from "./prompts.ts";
 
@@ -370,6 +370,7 @@ export class Agents implements Dispatcher {
         return;
       }
       const { created } = this.hub.ingestReport({ ...report, jobId: job.id, eventsThrough: through }, name === "transcripts" ? "transcript" : "calendar");
+      if (name === "transcripts") this.hub.markScanned(scannedFrom(report, this.hub.store.items().filter((i) => created.includes(i.id))));
       this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: report.summary });
       this.hub.putSync({
         ...this.hub.store.syncState(name),
@@ -452,6 +453,24 @@ export class Agents implements Dispatcher {
       if (item.scheduledFor !== c.start) this.hub.schedule(item.id, c.start, item.when ?? new Date(c.start).toLocaleString());
       void this.calendarBlock(item.id, c.start, c.durationMin ?? 30);
     }
+  }
+
+  // ── a note typed on a question: what does it mean? ─────────────────────
+  async readNote(questionId: string, text: string): Promise<NoteDecision | undefined> {
+    const q = this.hub.store.question(questionId);
+    if (!q) return undefined;
+    const item = q.itemId ? this.hub.store.item(q.itemId) : undefined;
+    const job = this.newJob("triage", "note", `Note: ${item?.title ?? q.prompt}`.slice(0, 80), "headless", item?.id);
+    const r = await this.runHeadless(job.id, notePrompt(q, item, text, { now: new Date() }), {
+      tools: false, thinking: config.pi.triageThinking, perms: false, timeoutMin: 3,
+    });
+    const out = extractJson<NoteDecision>(r.text);
+    if (!r.ok || !out) {
+      this.patch(job.id, { status: "failed", error: r.error ?? "couldn't parse note reader output", finishedAt: nowIso() });
+      return undefined;
+    }
+    this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: out.reply ?? "Read the note" });
+    return out;
   }
 
   // ── "Scheduled for…" — the owner says when, in words ──────────────────────
@@ -609,6 +628,7 @@ export class Agents implements Dispatcher {
       }
       if (this.cancelled(jobId)) return { ok: false, text: "", error: "cancelled" };
       const r = await this.runHeadlessOnce(jobId, prompt, o, resume);
+      this.noteGateway(r);
       if (r.ok || this.cancelled(jobId) || attempt >= config.pi.rateLimitRetries) return r;
       if (!isRateLimited(`${r.error ?? ""}\n${r.text}`)) return r;
       // A tool run that already did things must resume, not restart. No session → give up.
@@ -620,6 +640,72 @@ export class Agents implements Dispatcher {
       await sleep(ms);
       if (this.cancelled(jobId)) return { ok: false, text: "", error: "cancelled" };
     }
+  }
+
+  // ── model gateway auth ─────────────────────────────────────────────────
+  // pi reaches the model through the provider in pi.model. Some providers get their key from a shell
+  // command (e.g. `cloudflared access token -app=…` for a gateway behind Cloudflare Access). When that
+  // login lapses, a headless pi can't open a browser to renew it, so every sweep fails until someone
+  // logs in. Ask once, offer the login, and stop burning sweeps meanwhile.
+  private gateway: { down?: string; app?: string; lastTry?: number } = {};
+
+  /** True while the gateway login is known to be broken (sweeps hold off; one retry every 30 min). */
+  gatewayBlocked(now = Date.now()) {
+    if (!this.gateway.down) return false;
+    if (now - (this.gateway.lastTry ?? 0) > 30 * 60_000) {
+      this.gateway.lastTry = now;
+      return false;
+    }
+    return true;
+  }
+
+  private noteGateway(r: RunResult) {
+    const text = `${r.error ?? ""}\n${r.ok ? "" : r.text}`;
+    if (r.ok) {
+      if (this.gateway.down) {
+        this.gateway = {};
+        this.hub.toast("Model gateway is back. Sweeps resume.", "good");
+        for (const q of this.hub.store.questions("open").filter((q) => q.key.startsWith("gateway-auth:"))) this.hub.expireQuestion(q.id, "gateway back");
+      }
+      return;
+    }
+    const auth = gatewayAuthError(text);
+    if (!auth) return;
+    const first = !this.gateway.down;
+    this.gateway = { down: this.gateway.down ?? nowIso(), app: auth.app ?? this.gateway.app, lastTry: Date.now() };
+    if (first) this.hub.journal(`Model gateway login lapsed (${auth.provider}); sweeps paused until it's back`, { who: "hq" });
+    this.hub.ask({
+      kind: "open",
+      key: `gateway-auth:${new Date().toDateString()}`,
+      badge: "Login expired",
+      priority: 93,
+      prompt: `pi can't reach the model: your Cloudflare Access login for ${auth.app ? new URL(auth.app).host : auth.provider} lapsed`,
+      context: `Sweeps, agents and the note reader fail until you log in. Headless pi can't open the browser itself. Provider \`${auth.provider}\` is the one pi uses for the model.`,
+      options: [
+        ...(auth.app ? [{ id: "login", label: "Log in now (opens one tab)", tone: "primary" as const, effect: { type: "gatewayLogin" as const, app: auth.app } }] : []),
+        { id: "later", label: "Later", tone: "quiet" as const, effect: { type: "noop" as const } },
+      ],
+    });
+  }
+
+  async gatewayLogin(app: string) {
+    if (!/^https:\/\/[a-z0-9.-]+\/?$/i.test(app)) return;
+    const bin = existsSync("/opt/homebrew/bin/cloudflared") ? "/opt/homebrew/bin/cloudflared" : "cloudflared";
+    this.hub.toast("Opening the Access login in your browser…", "info");
+    const ok = await new Promise<boolean>((done) => {
+      const p = spawn(bin, ["access", "login", app], { stdio: "ignore" });
+      const t = setTimeout(() => { p.kill(); done(false); }, 5 * 60_000);
+      p.on("exit", (code) => { clearTimeout(t); done(code === 0); });
+      p.on("error", () => { clearTimeout(t); done(false); });
+    });
+    if (!ok) {
+      this.hub.toast("Login didn't finish. Run `cloudflared access login " + app + "` yourself.", "warn");
+      return;
+    }
+    this.gateway = {};
+    this.hub.journal(`Model gateway login renewed (${new URL(app).host})`, { who: "hq" });
+    this.hub.toast("Logged in. Sweeps resume.", "good");
+    void this.sweep("transcripts");
   }
 
   private cancelled(jobId: string) {
@@ -729,6 +815,28 @@ const ACTION_LABEL: Record<ActionKind, string> = {
   draft: "Draft",
   publish: "Publish",
 };
+
+/** "API key auth failed for provider X: … access token -app='https://…'" → which provider, which Access app. */
+export function gatewayAuthError(text: string): { provider: string; app?: string } | undefined {
+  const m = /API key auth failed for provider "?([\w.-]+)"?|Failed to resolve API key for provider "([\w.-]+)"/.exec(text);
+  if (!m) return undefined;
+  const app = /-app='?(https:\/\/[a-z0-9.-]+)\/?'?/i.exec(text)?.[1];
+  return { provider: (m[1] ?? m[2])!, app };
+}
+
+/** Meetings a transcript sweep read: what it says it read, plus the meeting named on each item it made ("Delta Weekly 15:00"). */
+export function scannedFrom(report: AgentReport, created: Item[]): Array<{ title: string; start?: string }> {
+  const out: Array<{ title: string; start?: string }> = [...(report.meetings ?? [])];
+  for (const i of created) {
+    const m = /^(.*\S)\s+(\d{1,2}):(\d{2})$/.exec(i.source.label ?? "");
+    if (!m) continue;
+    const d = new Date();
+    d.setHours(Number(m[2]), Number(m[3]), 0, 0);
+    if (d.getTime() > Date.now()) continue; // a later time today = some other day's meeting; can't place it
+    out.push({ title: m[1]!, start: d.toISOString() });
+  }
+  return out;
+}
 
 function localDay(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;

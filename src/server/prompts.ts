@@ -107,6 +107,7 @@ function itemBlock(it: Item) {
     it.post?.wikiDraft ? `Wiki draft: ${it.post.wikiDraft}` : "",
     it.post?.siteDraft ? `Site draft: ${it.post.siteDraft}` : "",
     it.detail ? `\nDetail:\n${it.detail}` : "",
+    it.notes?.length ? `\n${owner.name}'s notes on it (newest last):\n${it.notes.map((n) => `- ${n.at.slice(0, 10)}: ${n.text}`).join("\n")}` : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -142,7 +143,9 @@ ${known.slice(0, 120).map((t) => `- ${t}`).join("\n") || "- (none)"}
 ${toolRoutes()}
 
 OUTPUT: your final message must be ONLY a JSON object (no prose, no fences):
-{ "summary": "N meetings scanned, M items", "items": [...], "cursor": "<newest modifiedTime you saw, ISO>" }
+{ "summary": "N meetings scanned, M items", "items": [...], "cursor": "<newest modifiedTime you saw, ISO>",
+  "meetings": [{ "title": "<meeting title as in the notes doc>", "start": "<meeting start, ISO with offset>", "url": "<doc url>" }] }
+"meetings" lists EVERY meeting whose notes or transcript you read this run, including ones with no items for ${owner.name}.
 Do not write files or send anything. Job id: ${jobId}.`;
 }
 
@@ -240,6 +243,58 @@ OUTPUT: ONLY a JSON object, no prose, no fences:
   "journal": ["facts worth keeping, e.g. '${me}: PAY-123 closed 09-25'"],
   "question": { "prompt", "options": ["...", "..."] } | null
 }`;
+}
+
+/** A note typed on a question: which answer is it? No tools. The server applies the result. */
+export function notePrompt(q: Question, it: Item | undefined, note: string, ctx: { now: Date }) {
+  const me = owner.name;
+  const effect = (e: Question["options"][number]["effect"]): string =>
+    e.type === "status" ? `set status ${e.status}`
+    : e.type === "dispatch" ? `send an agent (${e.action})`
+    : e.type === "schedule" ? `schedule ${e.label}`
+    : e.type === "when" ? "schedule at a time they name"
+    : e.type === "snooze" ? `ask again in ${e.minutes} min`
+    : e.type === "open" ? "open a link (not an answer)"
+    : e.type === "multi" ? e.effects.map(effect).join(" + ")
+    : "acknowledge, nothing else";
+  const options = q.options.map((o) => `- ${o.id}: "${o.label}" \u2192 ${effect(o.effect)}`).join("\n");
+  return `You are Work HQ's note reader. ${me} was shown a question in their dashboard and, instead of pressing a button,
+typed a note. Work out what the note means and turn it into ONE decision. Until now these notes were ignored and the
+same question kept coming back \u2014 that is the bug you are fixing. Act on what they said.
+
+Now: ${ctx.now.toString()} (timezone ${owner.timezone})
+
+Question: ${q.prompt}${q.context ? `\nContext: ${q.context.slice(0, 600)}` : ""}
+Options:
+${options}
+
+${it ? itemBlock(it) : "(no item attached)"}
+
+Their note:
+"""
+${note}
+"""
+
+How to decide (first match wins):
+1. The note clearly matches an option ("yes", "they do", "keep that date", "already approved", "not relevant") \u2192 "pick" its id.
+   If the note adds instructions on top ("yes, and also\u2026"), still pick it and put the full instruction in "note".
+2. The note asks for something to be done ("send a message to X", "make it shorter first", "improve it", "publish it to Y")
+   \u2192 "dispatch" with action reply (messages / chasing people), email, ticket, draft (blog drafts), verify (find out), or work
+   (anything else). "note" = a clear instruction for the agent, keeping every detail and correction they gave.
+   If one of the options already dispatches the right action, "pick" it instead.
+3. The note names a time for it ("tomorrow", "Thursday", "next Monday in the X meeting", "I'll do that tomorrow",
+   "chase on Thursday") \u2192 "when" = the time words as they said them. If a "Scheduled for\u2026" option exists, pick it too.
+4. The note settles the state \u2192 "status": done ("nothing else for us to do", "already handled"), dropped ("drop",
+   "no", "we're doing it anyway", "merge it into X", "not needed", "share it in chat instead" when no work is left),
+   waiting ("assigned to X", "X owns it now", "waiting on X"), today ("doing it now").
+5. Pure background with no action, time or state in it \u2192 leave everything null.
+- "title": only if they corrected a name or fact that's in the title (e.g. "it's Joan, not Jon"); the corrected title.
+- Never invent facts. reply: \u22641 short sentence saying what you did, dry, no fluff.
+
+OUTPUT: ONLY a JSON object, no prose, no fences:
+{ "pick": "<option id>" | null, "status": "done|dropped|waiting|today|proposed" | null, "when": "time words" | null,
+  "dispatch": { "action": "reply|email|ticket|draft|verify|work", "note": "instruction" } | null,
+  "title": "corrected title" | null, "note": "instruction or reason to pass on" | null, "reply": "..." }`;
 }
 
 /** Turn "booked it for Thursday 2pm" / "put it in Friday morning" into a time. No tools. */

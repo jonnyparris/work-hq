@@ -81,6 +81,7 @@ const server = Bun.serve({
             item = hub.updateItem(item.id, { ...rest, confirmedAt: nowIso() });
             hub.journal(`Corrected: ${item.title}${rest.kind ? ` (now a ${rest.kind})` : ""}`, { itemId: item.id });
           }
+          if (note?.trim()) item = hub.updateItem(item.id, { notes: [...(item.notes ?? []), { at: nowIso(), text: note.trim() }].slice(-20) });
           if (status) item = hub.setStatus(item.id, status, note);
           else if (note) hub.journal(`Note on ${item.title}: ${note}`, { itemId: item.id });
           return item;
@@ -103,6 +104,25 @@ const server = Bun.serve({
         handle(async () => {
           const b = await body<{ at: string; label?: string }>(req);
           return hub.schedule(req.params.id, b.at, b.label ?? new Date(b.at).toLocaleString());
+        }),
+    },
+
+    // "Save note" (cmd+enter): the note is acted on, not just filed. See Hub.note.
+    "/api/questions/:id/note": {
+      POST: (req) =>
+        handle(async () => {
+          const b = await body<{ text: string }>(req);
+          const q = hub.store.question(req.params.id);
+          if (!q) throw new Error("no such question");
+          if (!b.text?.trim()) throw new Error("empty note");
+          // After a meeting the note *is* the answer: triage it and close the question.
+          if (q.kind === "review") {
+            const none = q.options.find((o) => o.id === "none") ?? q.options.at(-1)!;
+            await hub.answer(q.id, none.id, b.text.trim());
+            void agents.triage(`${q.prompt}\n${b.text.trim()}`, "review");
+            return { pending: true };
+          }
+          return hub.note(q.id, b.text);
         }),
     },
 

@@ -20,7 +20,9 @@ function App() {
   const now = useNow(15_000);
   const [view, setView] = useState<"today" | "journal">(location.pathname === "/journal" ? "journal" : "today");
   const [sel, setSel] = useState<string | undefined>();
-  const [skipped, setSkipped] = useState<string[]>([]);
+  // "Next" is navigation only: nothing is sent. Kept per tab so a reload doesn't put a skipped card back on top.
+  const [skipped, setSkipped] = useState<string[]>(() => { try { return JSON.parse(sessionStorage.getItem("whq:skipped") ?? "[]"); } catch { return []; } });
+  useEffect(() => { sessionStorage.setItem("whq:skipped", JSON.stringify(skipped.slice(-200))); }, [skipped]);
   const [deck, setDeck] = useState(false);
   const [quick, setQuick] = useState(() => localStorage.getItem("whq:quickFirst") === "1");
   useEffect(() => { localStorage.setItem("whq:quickFirst", quick ? "1" : "0"); }, [quick]);
@@ -100,6 +102,11 @@ function App() {
                   total={queue.length}
                   items={s.items}
                   onSkip={() => queue[0] && setSkipped((x) => [...x.filter((y) => y !== queue[0]!.id), queue[0]!.id])}
+                  canBack={queue.length > 1 && skipped.some((id) => queue.some((q) => q.id === id))}
+                  onBack={() => setSkipped((x) => {
+                    const last = [...x].reverse().find((id) => queue.some((q) => q.id === id));
+                    return last ? x.filter((y) => y !== last) : x;
+                  })}
                   onOpenItem={setSel}
                 />
                 {queue.length > 1 && (
@@ -114,7 +121,7 @@ function App() {
                   </div>
                 )}
                 <div className="kbd-help">
-                  <kbd>1</kbd>–<kbd>9</kbd> answer · <kbd>s</kbd> skip · <kbd>n</kbd> note · <kbd>⌘↵</kbd> save note + skip · <kbd>⌘K</kbd> talk · <kbd>⌘.</kbd> 🍍
+                  <kbd>1</kbd>–<kbd>9</kbd> answer · <kbd>→</kbd>/<kbd>s</kbd> next · <kbd>←</kbd> back · <kbd>n</kbd> note · <kbd>⌘↵</kbd> send note (acts on it) · <kbd>⌘K</kbd> talk · <kbd>⌘.</kbd> 🍍
                   {queue.length > 1 && <> · <button className="kbd-btn" onClick={() => setDeck(true)}><kbd>b</kbd> clear the deck</button></>}
                   {" · "}<button className={`kbd-btn ${quick ? "on" : ""}`} onClick={() => setQuick((x) => !x)}><kbd>q</kbd> quick wins first{quick ? " ✓" : ""}</button>
                 </div>

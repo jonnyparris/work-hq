@@ -33,6 +33,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS journal (id TEXT PRIMARY KEY, status TEXT, updated TEXT, doc TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sync (id TEXT PRIMARY KEY, status TEXT, updated TEXT, doc TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
+      -- Extra source keys that point at an existing item (a duplicate from another source was merged into it).
+      CREATE TABLE IF NOT EXISTS item_keys (key TEXT PRIMARY KEY, item_id TEXT NOT NULL);
     `);
   }
 
@@ -55,9 +57,20 @@ export class Store {
   item(id: string) {
     return this.one<Item>("items", id);
   }
+  /** By its own source key, or by a key merged into it (see aliasKey). */
   itemBySourceKey(key: string): Item | undefined {
+    // A merged key wins: the item that owned it was dropped as a duplicate of the alias target.
+    const a: any = this.db.query("SELECT item_id FROM item_keys WHERE key = ?").get(key);
+    const aliased = a ? this.item(a.item_id) : undefined;
+    if (aliased) return aliased;
     const r: any = this.db.query("SELECT doc FROM items WHERE source_key = ?").get(key);
     return r ? JSON.parse(r.doc) : undefined;
+  }
+  aliasKey(key: string, itemId: string) {
+    this.db.query("INSERT INTO item_keys (key, item_id) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET item_id=excluded.item_id").run(key, itemId);
+  }
+  aliasesFor(itemId: string): string[] {
+    return this.db.query("SELECT key FROM item_keys WHERE item_id = ?").all(itemId).map((r: any) => r.key);
   }
   putItem(item: Item) {
     this.db

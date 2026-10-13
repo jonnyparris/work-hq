@@ -216,6 +216,11 @@ a:hover { text-decoration: underline; }
 .note-in::placeholder { color: var(--text-3); }
 .skip { color: var(--text-3); font-size: 12px; padding: 6px 8px; border-radius: 8px; }
 .skip:hover { color: var(--text); background: var(--surface-2); }
+.skip.send { color: var(--text); background: rgba(242,193,78,0.14); white-space: nowrap; }
+.skip.send:hover { background: rgba(242,193,78,0.24); }
+.focus-foot .skip { white-space: nowrap; }
+.focus .prior-notes { font-size: 12.5px; color: var(--text-3); }
+.focus .prior-notes .when { color: var(--text-3); opacity: 0.8; margin-right: 4px; }
 
 .allclear { text-align: center; padding: 22px 20px 30px; overflow: hidden; }
 .allclear .big { font: 600 22px/1.2 var(--display); letter-spacing: -0.02em; animation: fade 1.2s .2s both; }

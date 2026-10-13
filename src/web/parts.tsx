@@ -83,7 +83,7 @@ export function Timeline({ now, events, items, onRefresh, sync }: { now: Date; e
 }
 
 // ── Focus: the one question ───────────────────────────────────────────────
-export function Focus({ q, total, items, onSkip, onOpenItem }: { q?: Question; total: number; items: Item[]; onSkip: () => void; onOpenItem: (id: string) => void }) {
+export function Focus({ q, total, items, onSkip, onBack, canBack, onOpenItem }: { q?: Question; total: number; items: Item[]; onSkip: () => void; onBack?: () => void; canBack?: boolean; onOpenItem: (id: string) => void }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const noteRef = useRef<HTMLInputElement>(null);
@@ -135,19 +135,24 @@ export function Focus({ q, total, items, onSkip, onOpenItem }: { q?: Question; t
   };
   const cancelWhen = () => { stopDictation(); setWhenFor(undefined); setHeard(false); setNote(""); };
 
-  // ⌘↵ in the note: save it as context/correction, then skip to the next question.
-  const saveNoteAndSkip = async () => {
+  // ⌘↵ in the note: the note is the answer. The server reads it and acts (pick an option, set status,
+  // schedule, send an agent); pure context parks the question till the next working morning.
+  // Either way it leaves the queue now and doesn't bounce straight back.
+  const [noteErr, setNoteErr] = useState<string | undefined>();
+  useEffect(() => setNoteErr(undefined), [q?.id]);
+  const saveNote = async () => {
     const text = note.trim();
     if (!q || busy || !text) return;
     setBusy(true);
+    setNoteErr(undefined);
     try {
-      if (q.kind === "review") await api.say(`${q.prompt}\n${text}`, "review");
-      else if (q.itemId) await api.patch(q.itemId, { note: text });
-      else await api.say(`Re "${q.prompt}": ${text}`);
+      await api.note(q.id, text);
       setNote("");
       noteRef.current?.blur();
-      onSkip();
-    } finally { setBusy(false); }
+    } catch (e) {
+      setNoteErr((e as Error).message);
+      setBusy(false);
+    }
   };
 
   useEffect(() => {
@@ -155,7 +160,8 @@ export function Focus({ q, total, items, onSkip, onOpenItem }: { q?: Question; t
       if (!q || whenFor || (e.target as HTMLElement)?.closest("input, textarea, [contenteditable]") || e.metaKey || e.ctrlKey || e.altKey) return;
       const n = Number(e.key);
       if (n >= 1 && n <= q.options.length) { e.preventDefault(); answer(q.options[n - 1]!.id); }
-      else if (e.key === "s") { e.preventDefault(); onSkip(); }
+      else if (e.key === "s" || e.key === "ArrowRight") { e.preventDefault(); onSkip(); }
+      else if (e.key === "ArrowLeft" && canBack) { e.preventDefault(); onBack?.(); }
       else if (e.key === "n") { e.preventDefault(); noteRef.current?.focus(); }
     };
     window.addEventListener("keydown", onKey);
@@ -187,6 +193,11 @@ export function Focus({ q, total, items, onSkip, onOpenItem }: { q?: Question; t
       </div>
       <h1>{q.prompt}</h1>
       {q.context && <Md className="ctx md" text={q.context} />}
+      {item?.notes?.length ? (
+        <div className="ctx prior-notes" title="What you said about this before">
+          {item.notes.slice(-2).map((n) => <div key={n.at}>✎ <span className="when">{relDay(n.at)}</span> {n.text}</div>)}
+        </div>
+      ) : null}
       {q.kind === "plan" && <Planner items={items} picked={picked} setPicked={setPicked} />}
       {q.kind === "wrap" && <Wrap items={items} />}
       {whenFor ? (
@@ -220,23 +231,31 @@ export function Focus({ q, total, items, onSkip, onOpenItem }: { q?: Question; t
       </div>
       )}
       <div className="focus-foot">
+        {canBack && <button className="skip" onClick={onBack} title="Previous card (←)">← Back</button>}
         <input
           ref={noteRef}
           className="note-in"
           value={note}
           onChange={(e) => setNote(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveNoteAndSkip(); }
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveNote(); }
             if (e.key === "Escape") (e.target as HTMLInputElement).blur();
           }}
-          placeholder={q.kind === "review" ? "What came out of it? (goes to triage)  ⌘↵ save + skip" : "Add context or correct me — it goes to memory  (n · ⌘↵ save + skip)"}
+          placeholder={q.kind === "review" ? "What came out of it? (goes to triage)  ⌘↵ send" : "Tell me what to do, or correct me — I'll act on it  (n · ⌘↵)"}
         />
-        {note.trim()
-          ? <button className="skip" disabled={busy} onClick={saveNoteAndSkip}>Save + skip ⌘↵</button>
-          : <button className="skip" onClick={onSkip}>Skip (s)</button>}
+        {note.trim() && <button className="skip send" disabled={busy} onClick={saveNote}>Send ⌘↵</button>}
+        <button className="skip" onClick={onSkip} title="Next card, nothing changes (s or →)">Next →</button>
       </div>
+      {noteErr && <div className="ctx" style={{ color: "var(--coral)" }}>Couldn't send: {noteErr}</div>}
     </div>
   );
+}
+
+function relDay(iso: string) {
+  const d = new Date(iso);
+  const days = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(iso).setHours(0, 0, 0, 0)) / 86400000);
+  const t = d.toTimeString().slice(0, 5);
+  return days === 0 ? t : days === 1 ? `yesterday ${t}` : d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
 function score(i: Item, now = Date.now()) {

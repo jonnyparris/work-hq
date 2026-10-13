@@ -32,6 +32,11 @@
   MCPs live inside pi; rather than scrape their tokens, Work HQ asks pi sessions to do the
   work and report back over HTTP (`bin/whq`). The memory MCP has a static token, so memory
   I/O is direct.
+- **The model login is pi's too.** pi reaches the model through whatever provider `pi.model` names
+  (a gateway behind Cloudflare Access, say). When that login lapses, headless pi can't open a browser,
+  so every sweep would fail. Work HQ spots the "API key auth failed for provider …" error, asks once
+  ("Log in now" runs `cloudflared access login <app>`, one tab), and pauses sweeps. It retries once
+  every 30 min until a run works again.
 - **Company-specific instructions are data, not code.** Which tools to call, how tickets are
   filed, what voice replies use: all in `prompts/*.md`, overridable per user (`promptsDir`).
   Output shapes the server parses stay in `src/server/prompts.ts`.
@@ -62,6 +67,8 @@
 - **Question** — one ask with 2–6 options. Each option has an **Effect** (status, schedule,
   snooze, dispatch). Keyed for dedupe with cooldowns, so answering "Doing it today" doesn't
   bring the same question back tomorrow morning.
+- **Notes** — what you typed about an item (`item.notes`). Kept apart from `detail`, so memory
+  re-imports can't wipe them. They go into every agent prompt and show under the next question.
 - **Job** — a pi run. `sweep` / `triage` headless, `action` in cmux.
 - **JournalEntry** — every decision, correction, and agent fact. Flushed to memory.
 
@@ -77,6 +84,22 @@ work-hq-journal.md ◀──flush 5 min── Journal ◀── your answers, co
 The journal (`memory.journalPath`) is capped at ~20 KB (older days spill to
 `…-archive-YYYY-MM.md`) to stay under typical embedding size limits. Its header
 (`prompts/journal-header.md`) tells reflections it outranks stale state.
+
+### Duplicates across sources (src/server/dedupe.ts)
+
+Each source has its own stable key (`memory:active-todos:<slug>`, `transcript:<doc>:<slug>`, a check's key),
+so re-imports update in place. The same work can still arrive under two keys: memory rewords a todo, a
+transcript sweep finds what an agent already filed, a proposal comes back as a todo. Before creating an
+item, `findTwin` compares title tokens with the open items and with anything you closed in the last 14 days.
+The thresholds are strict on purpose: titles that name different tickets never match.
+
+- Twin is open → the new one is merged into it (links and people added, title and status kept).
+- Twin is one you closed → it isn't re-added. The journal says so (`Not re-adding …`).
+- Either way the new key becomes an **alias** (`item_keys` table), so the next import goes to the same item.
+- Voice and 🍍 never match a closed item: saying it again means it's live again. Checks, calendar
+  items and manual adds are never merged.
+- After each memory import, `dedupeExisting` merges duplicates that already exist. It only ever drops
+  the copy you haven't confirmed.
 
 Paths are config: `memory.todosPath`, `memory.proposalsDir`, `memory.journalPath`. No memory
 server? Work HQ still runs; you just lose import and the flush.
@@ -98,6 +121,18 @@ server? Work HQ still runs; you just lose import and the flush.
 | Still waiting | waiting > 3 days | 50 |
 | Reflection proposal | unconverted proposal (kept across nights until answered) | 45 (max 2 open) |
 | Draft to review / post idea | `post` item, proposed | 42 / 38 (max 2 open) |
+
+**Meeting ended** is skipped once a transcript sweep has read that meeting's notes. The sweep reports every
+meeting it read (`meetings` in its JSON) plus the meeting named on each item it made. Those are matched to the
+calendar by title and start time, and an open card closes with "transcript scanned". So the sweep runs 10–25 min
+after a meeting with others ends (when the notes have usually arrived), not only on its 30-min cadence.
+
+**Typed notes are answers.** ⌘↵ in a question's note field posts to `/api/questions/:id/note`. "drop", "done"
+and "do it" map straight to an option. Anything else goes to a tool-less pi call (`notePrompt`). It returns one
+decision: one of the question's options, a status, a time (handled like "Scheduled for…"), or an agent with
+your words as the instruction, plus a corrected title if you fixed one. A note that's only background stays on
+the item, and the question waits until the next working morning. While pi reads the note, the question is
+hidden for 15 min, so it can't come straight back. **Next →** / `→` and **← Back** / `←` only move between cards.
 
 Total open questions are capped at 14 so it asks rather than nags. Deferred questions (see below) don't count
 against the 14, but still count against their own kind's cap.
