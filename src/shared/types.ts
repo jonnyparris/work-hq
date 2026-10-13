@@ -281,8 +281,9 @@ export interface AgentReport {
     /** Ask once per key: never re-ask after it's been answered. */
     once?: boolean;
     /** Plain labels are mapped to effects by keyword; objects say exactly what happens.
-     *  `note` rides along with `action` to the dispatched agent. */
-    options?: Array<string | { label: string; status?: ItemStatus; action?: ActionKind; note?: string }>;
+     *  `note` rides along with `action` to the dispatched agent.
+     *  `url` (http/https) opens the link and keeps the question open, e.g. a deep link to approve something. */
+    options?: Array<string | { label: string; status?: ItemStatus; action?: ActionKind; note?: string; url?: string }>;
     priority?: number;
   }>;
   events?: CalendarEvent[];

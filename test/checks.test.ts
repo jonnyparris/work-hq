@@ -91,4 +91,22 @@ describe("Checks.run", () => {
     await checks.run({ name: "esc", command: cmd });
     expect(hub.store.questions("open").filter((q) => q.itemId === it!.id).length).toBe(0);
   });
+
+  test("a url option opens the deep link and keeps the question; only http(s)", async () => {
+    const hub = new Hub(new Store(":memory:"));
+    hub.ingestReport({
+      items: [{ title: "Approve X", source: { type: "check", label: "approvals", key: "approval:opal:1" } }],
+      questions: [
+        {
+          itemKey: "approval:opal:1",
+          prompt: "Approve X?",
+          options: [{ label: "Open in Opal", url: "https://iga.example/requests/1" }, { label: "Bad", url: "file:///etc/passwd" }, { label: "Done it", status: "done" }],
+        },
+      ],
+    });
+    const [q] = hub.store.questions("open");
+    expect(q!.options[0]!.effect).toEqual({ type: "open", url: "https://iga.example/requests/1", keep: true });
+    expect(q!.options[1]!.effect).toEqual({ type: "noop" });
+    expect(q!.options[2]!.effect).toEqual({ type: "status", status: "done" });
+  });
 });

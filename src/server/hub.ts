@@ -402,7 +402,7 @@ export class Hub {
         once: q.once,
         options: opts.map((o, i) => {
           const label = typeof o === "string" ? o : o.label;
-          const effect = typeof o === "string" ? (itemId ? effectFromLabel(o) : { type: "noop" as const }) : o.action ? { type: "dispatch" as const, action: o.action, ...(o.note ? { note: o.note } : {}) } : o.status ? { type: "status" as const, status: o.status } : { type: "noop" as const };
+          const effect = typeof o === "string" ? (itemId ? effectFromLabel(o) : { type: "noop" as const }) : o.url && /^https?:\/\//.test(o.url) ? { type: "open" as const, url: o.url, keep: true } : o.action ? { type: "dispatch" as const, action: o.action, ...(o.note ? { note: o.note } : {}) } : o.status ? { type: "status" as const, status: o.status } : { type: "noop" as const };
           return { id: `o${i}`, label, tone: i === 0 ? "primary" : effect.type === "status" && effect.status === "dropped" ? "danger" : effect.type === "status" && effect.status === "done" ? "good" : "quiet", effect };
         }),
       });
