@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>dev.workhq.whq-ear</string>
+  <key>CFBundleName</key><string>whq-ear</string>
+  <key>NSMicrophoneUsageDescription</key><string>whq-ear transcribes your side of meetings on this Mac for Work HQ.</string>
+  <key>NSAudioCaptureUsageDescription</key><string>whq-ear transcribes the other side of meetings on this Mac for Work HQ.</string>
+</dict>
+</plist>

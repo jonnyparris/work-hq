@@ -177,6 +177,22 @@ meetings anyway. Worth a look only as a reference for the UX.
 }
 ```
 
+## Phase 0 results (2026-10-14)
+
+Spike code and full numbers: [`native/whq-ear`](../../native/whq-ear/README.md). Tested on synthetic and
+LibriSpeech audio, and live through the system tap and mic. Real calls are still to do (they need people and policy).
+
+- **Apple SpeechTranscriber is good enough to be the default.** WER 3.8% vs Parakeet's 3.3% on LibriSpeech.
+  3.6% vs 2.7% on a synthetic standup. It runs on the Neural Engine: 60–68× real time, ~5% of one core
+  for two live streams. Final text comes 1–2 s after speech (p50), under 4 s at p90. Drafts keep up with the audio.
+- **HEX/Parakeet is the accurate fallback, but it's not steady.** 3 of 10 runs were 75–100× real time.
+  The other 7 were 4–5× at ~40% of a core. Use it for the after-meeting pass, not live.
+- **Both miss jargon** (product names, ticket prefixes). Apple's contextual strings didn't help. Fix it in the
+  extraction prompt (a glossary), not in STT.
+- **The mic hears the speakers.** On speakers, `them` shows up again on `me`. Apple's voice processing (AEC)
+  kills the system tap, so phase 1 needs a text-level echo filter before 🍍 can trust `me`.
+- Battery not measured (on AC). CPU is the proxy.
+
 ## Plan
 
 | Phase | Scope | Size |
