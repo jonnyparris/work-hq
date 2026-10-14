@@ -222,6 +222,8 @@ Next:
 - **Speaker separation.** The laptop mic hears the call. Options: route the Meet tab's audio
   and the mic separately (two `MediaStream`s → a Whisper worker), or use Gemini's live
   transcript when it becomes available mid-meeting.
+  Proposal for any meeting, not just Meet (a local mic + sound-output helper, RealtimeKit compared):
+  [`proposals/local-meeting-listener.md`](proposals/local-meeting-listener.md).
 - **Conversation mode.** Read the focus question aloud (SpeechSynthesis), accept a spoken
   answer ("two", "done", "push it to tomorrow"), confirm with a chime. The option ids and
   triage already support it; it's a UI mode.
