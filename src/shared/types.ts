@@ -226,6 +226,8 @@ export interface JournalEntry {
   id: string;
   at: string;
   itemId?: string;
+  /** The question a typed note answered, so the usage digest can trace item-less notes. */
+  questionId?: string;
   /** "you" = the owner, "hq" = the app, "agent" = a dispatched job. */
   who: "you" | "hq" | "agent";
   text: string;

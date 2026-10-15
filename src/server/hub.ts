@@ -389,7 +389,7 @@ export class Hub {
     const t = text.trim();
     if (!t) throw new Error("empty note");
     const item = q.itemId ? this.store.item(q.itemId) : undefined;
-    this.journal(item ? `Note on ${item.title}: ${t}` : `Re "${q.prompt}": ${t}`, { itemId: item?.id });
+    this.journal(item ? `Note on ${item.title}: ${t}` : `Re "${q.prompt}": ${t}`, { itemId: item?.id, questionId: q.id });
     if (item) this.updateItem(item.id, { notes: [...(item.notes ?? []), { at: nowIso(), text: t }].slice(-20), confirmedAt: nowIso() });
     this.park(q, new Date(Date.now() + 15 * 60_000).toISOString());
 
@@ -527,11 +527,12 @@ export class Hub {
   }
 
   // ── journal ────────────────────────────────────────────────────────────
-  journal(text: string, opts: { itemId?: string; who?: JournalEntry["who"] } = {}) {
+  journal(text: string, opts: { itemId?: string; questionId?: string; who?: JournalEntry["who"] } = {}) {
     const e: JournalEntry = {
       id: newId("j"),
       at: nowIso(),
       itemId: opts.itemId,
+      ...(opts.questionId ? { questionId: opts.questionId } : {}),
       who: opts.who ?? "you",
       text,
       synced: false,

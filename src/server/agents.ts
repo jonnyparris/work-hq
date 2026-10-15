@@ -749,7 +749,12 @@ export class Agents implements Dispatcher {
       let toolsRan = Boolean(resume);
       let stderr = "";
       let session: string | undefined = resume;
-      const timer = setTimeout(() => proc.kill("SIGTERM"), o.timeoutMin * 60_000);
+      // Our own kill: say so. Otherwise the error is "pi exited 143" plus whatever stderr said last.
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        proc.kill("SIGTERM");
+      }, o.timeoutMin * 60_000);
       proc.stdout.on("data", (chunk: Buffer) => {
         buf += chunk.toString();
         let nl: number;
@@ -779,8 +784,10 @@ export class Agents implements Dispatcher {
         this.running.delete(jobId);
         if (session) this.patch(jobId, { session });
         const base = { text: lastText, session, toolsRan };
-        if (code === 0 && !lastError) done({ ok: true, ...base });
-        else done({ ok: false, ...base, error: lastError ?? `pi exited ${code}: ${stderr.trim().split("\n").pop() ?? ""}` });
+        if (code === 0 && !lastError) return done({ ok: true, ...base });
+        const lastStderr = stderr.trim().split("\n").pop() ?? "";
+        if (timedOut && lastStderr) this.line(jobId, `stderr: ${lastStderr}`); // keep it in the tail, not the label
+        done({ ok: false, ...base, error: runError({ code, timedOut, timeoutMin: o.timeoutMin, lastError, stderr }) });
       });
       proc.on("error", (e) => {
         clearTimeout(timer);
@@ -815,6 +822,12 @@ const ACTION_LABEL: Record<ActionKind, string> = {
   draft: "Draft",
   publish: "Publish",
 };
+
+/** Why a pi run failed, in words that point at the real cause. A timeout is ours, not pi's last stderr line. */
+export function runError(r: { code: number | null; timedOut: boolean; timeoutMin: number; lastError?: string; stderr: string }): string {
+  if (r.timedOut) return `timed out after ${r.timeoutMin} min`;
+  return r.lastError ?? `pi exited ${r.code}: ${r.stderr.trim().split("\n").pop() ?? ""}`;
+}
 
 /** "API key auth failed for provider X: … access token -app='https://…'" → which provider, which Access app. */
 export function gatewayAuthError(text: string): { provider: string; app?: string } | undefined {

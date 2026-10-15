@@ -115,3 +115,12 @@ describe("gateway auth", () => {
     expect(gatewayAuthError("Request timed out.")).toBeUndefined();
   });
 });
+
+test("a run we killed on timeout says so, not pi's last stderr line", async () => {
+  const { runError } = await import("../src/server/agents.ts");
+  const stderr = "Warning: Extension package builtin:mcp is slow\n";
+  expect(runError({ code: 143, timedOut: true, timeoutMin: 12, stderr })).toBe("timed out after 12 min");
+  expect(runError({ code: 143, timedOut: true, timeoutMin: 12, lastError: "Request timed out.", stderr })).toBe("timed out after 12 min");
+  expect(runError({ code: 1, timedOut: false, timeoutMin: 12, stderr })).toBe("pi exited 1: Warning: Extension package builtin:mcp is slow");
+  expect(runError({ code: 1, timedOut: false, timeoutMin: 12, lastError: "Request timed out.", stderr })).toBe("Request timed out.");
+});

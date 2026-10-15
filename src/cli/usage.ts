@@ -84,30 +84,51 @@ p();
 p("## Typed notes and what they did");
 const notes = journal.filter((j) => j.who === "you" && /^Note on |^Re "/.test(j.text));
 if (!notes.length) p("None.");
+const qById = new Map(allQuestions.map((q) => [q.id, q]));
 const after = (j: JournalEntry) =>
   journal.find((x) => x.itemId === j.itemId && x.at > j.at && Date.parse(x.at) - Date.parse(j.at) < 5 * 60_000 && !/^Note on /.test(x.text));
-const seenNote = new Map<string, number>();
+// Notes under a second apart (any notes, not just identical ones) are a replay: a script or a
+// double-fired request, not the owner typing. Show them, but don't count them as typed again.
+const ms = notes.map((j) => Date.parse(j.at));
+const replayed = new Set(notes.filter((_, i) => (i > 0 && ms[i]! - ms[i - 1]! < 1000) || (i < notes.length - 1 && ms[i + 1]! - ms[i]! < 1000)));
+const noteKey = (j: JournalEntry) => `${j.itemId ?? j.questionId ?? ""}|${j.text.toLowerCase()}`;
+const typedCount = new Map<string, number>();
+for (const j of notes) if (!replayed.has(j)) typedCount.set(noteKey(j), (typedCount.get(noteKey(j)) ?? 0) + 1);
 for (const j of notes) {
-  const key = `${j.itemId}|${j.text.toLowerCase()}`;
-  seenNote.set(key, (seenNote.get(key) ?? 0) + 1);
-}
-for (const j of notes) {
-  const next = j.itemId ? after(j) : undefined;
-  const again = (seenNote.get(`${j.itemId}|${j.text.toLowerCase()}`) ?? 0) > 1 ? " **(typed more than once)**" : "";
-  const parked = asked.some((q) => q.itemId === j.itemId && q.status === "open" && q.notBefore && q.notBefore > j.at);
-  // A note added from the item drawer or by an agent, with no card on screen, is context by design.
-  const onCard = allQuestions.some((q) => q.itemId === j.itemId && q.createdAt <= j.at && (!q.answeredAt || q.answeredAt >= j.at));
-  const fate = next ? md(cut(next.text, 80)) : parked ? "parked till morning (read as background)" : onCard ? "**nothing happened**" : "kept as context (no card open)";
-  p(`- ${hm(j.at)} ${md(cut(j.text, 140))} → ${fate}${again}`);
+  const again = replayed.has(j) ? " (replayed)" : (typedCount.get(noteKey(j)) ?? 0) > 1 ? " **(typed more than once)**" : "";
+  p(`- ${hm(j.at)} ${md(cut(j.text, 140))} → ${noteFate(j)}${again}`);
 }
 p();
 
+function noteFate(j: JournalEntry): string {
+  const next = j.itemId ? after(j) : undefined;
+  if (next) return md(cut(next.text, 80));
+  const q = j.questionId ? qById.get(j.questionId) : undefined;
+  if (q) {
+    // The card it was typed on says what happened.
+    if (q.status !== "open" && q.answeredAt && q.answeredAt >= j.at) return `card closed: ${md(cut(q.answer ?? q.status, 60))}`;
+    if (q.status === "open" && q.notBefore && q.notBefore > j.at) return "parked till morning (read as background)";
+    return "**nothing happened**";
+  }
+  // Older entries have no questionId. Without an item there's nothing to match on.
+  if (!j.itemId) return "can't trace (no item, written before notes recorded their question)";
+  const parked = asked.some((q) => q.itemId === j.itemId && q.status === "open" && q.notBefore && q.notBefore > j.at);
+  // A note added from the item drawer or by an agent, with no card on screen, is context by design.
+  const onCard = allQuestions.some((q) => q.itemId === j.itemId && q.createdAt <= j.at && (!q.answeredAt || q.answeredAt >= j.at));
+  return parked ? "parked till morning (read as background)" : onCard ? "**nothing happened**" : "kept as context (no card open)";
+}
+
 // ── meeting cards ──────────────────────────────────────────────────────────
 const reviews = created.filter((q) => q.kind === "review");
+// A wrap-up typed in the command bar while the card was up is journalled as "<prompt>\n<what they typed>",
+// and the card is then usually cleared as "Nothing new". It still counts as typed.
+const wrapUp = (j: JournalEntry) => j.who === "you" && /^.+ just ended\. Anything you committed to\?\n\s*\S/.test(j.text);
+const wrapUps = journal.filter(wrapUp);
+const typedOnCard = (q: Question) => /— /.test(q.answer ?? "") || /^Note/.test(q.answer ?? "") || wrapUps.some((j) => j.text.startsWith(`${q.prompt}\n`));
 if (reviews.length) {
   const count = (pred: (q: Question) => boolean) => reviews.filter(pred).length;
   p("## Meeting-ended cards");
-  p(`${reviews.length} asked · "Nothing new" ${count((q) => /^Nothing new/.test(q.answer ?? ""))} · scan requested ${count((q) => /^Scan/.test(q.answer ?? ""))} · typed something ${count((q) => /— /.test(q.answer ?? "") || /^Note/.test(q.answer ?? ""))} · closed by transcript scan ${count((q) => q.answer === "transcript scanned")} · expired otherwise ${count((q) => q.status === "expired" && q.answer !== "transcript scanned")}`);
+  p(`${reviews.length} asked · "Nothing new" ${count((q) => /^Nothing new/.test(q.answer ?? "") && !typedOnCard(q))} · scan requested ${count((q) => /^Scan/.test(q.answer ?? ""))} · typed something ${count(typedOnCard)} · closed by transcript scan ${count((q) => q.answer === "transcript scanned")} · expired otherwise ${count((q) => q.status === "expired" && q.answer !== "transcript scanned")}`);
   p();
 }
 
@@ -150,8 +171,9 @@ const said = journal.filter((j) => j.who === "you" && !structured.test(j.text) &
 p("## Typed into the command bar");
 if (!said.length) p("None.");
 for (const j of said) {
-  const aboutHq = /work ?hq|\bhq\b|dashboard|card|question|notif/i.test(j.text) ? " **[about Work HQ itself]**" : "";
-  p(`- ${hm(j.at)} ${md(cut(j.text, 200))}${aboutHq}`);
+  // Narrow on purpose: "card", "question" and "notification" turn up in ordinary asks too.
+  const tag = wrapUp(j) ? " [meeting wrap-up]" : /work ?hq|\bthe (app|dashboard)\b/i.test(j.text) ? " **[about Work HQ itself]**" : "";
+  p(`- ${hm(j.at)} ${md(cut(j.text, 200))}${tag}`);
 }
 p();
 p(`_Source: ${arg("db") ?? config.dbPath} (read-only)._`);
