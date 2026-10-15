@@ -258,3 +258,33 @@ test("morning plan not re-asked after it's answered", async () => {
   p.tick(at(10, 1));
   expect(plan()).toHaveLength(0);
 });
+
+describe("inbox triage while an agent works the item", () => {
+  const job = (itemId: string, status: "queued" | "running" | "done") =>
+    hub.putJob({ id: `job_${itemId}_${status}`, kind: "verify", name: "verify", title: "verify", surface: "headless", status, itemId, tail: [], createdAt: new Date().toISOString() } as any);
+
+  test("no inbox question for an item with a queued or running job", () => {
+    const a = hub.createItem({ title: "check policy", kind: "decision", status: "inbox" });
+    const b = hub.createItem({ title: "apply cuts", kind: "decision", status: "inbox" });
+    const c = hub.createItem({ title: "finished one", kind: "decision", status: "inbox" });
+    job(a.id, "queued");
+    job(b.id, "running");
+    job(c.id, "done");
+    p.tick(at(15));
+    const asked = hub.store.questions("open").filter((q) => q.key.startsWith("inbox:")).map((q) => q.itemId);
+    expect(asked).not.toContain(a.id);
+    expect(asked).not.toContain(b.id);
+    expect(asked).toContain(c.id);
+  });
+
+  test("answering 'Gather the facts' doesn't re-ask on the next ticks", async () => {
+    const it = hub.createItem({ title: "check policy", kind: "decision", status: "inbox" });
+    hub.dispatcher = { dispatch: async () => job(it.id, "done") } as any; // agent already finished, item still inbox
+    p.tick(at(15));
+    const q = hub.store.questions("open").find((q) => q.key === `inbox:${it.id}`)!;
+    expect(q.options[0]!.effect).toEqual({ type: "dispatch", action: "verify" });
+    await hub.answer(q.id, "go");
+    for (let i = 0; i < 4; i++) p.tick(at(15, i));
+    expect(hub.store.questions("open").filter((q) => q.key === `inbox:${it.id}`)).toHaveLength(0);
+  });
+});

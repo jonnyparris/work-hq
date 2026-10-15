@@ -121,6 +121,10 @@ export class Store {
   jobs(limit = 60): Job[] {
     return this.all<Job>("jobs", `ORDER BY updated DESC LIMIT ${limit}`);
   }
+  /** Jobs still in flight (queued, running or blocked). Not limited, unlike `jobs()`. */
+  liveJobs(): Job[] {
+    return this.all<Job>("jobs", "WHERE status IN ('queued', 'running', 'blocked')");
+  }
   job(id: string) {
     return this.one<Job>("jobs", id);
   }

@@ -248,8 +248,26 @@ export class Hub {
     q.answeredAt = nowIso();
     this.store.putQuestion(q);
     this.emit({ type: "question", data: q });
+    this.rememberAnswer(q, opt.label, note);
     await this.applyEffect(opt.effect, q, opt, note);
     return q;
+  }
+
+  /**
+   * Agent questions (`agent:*`, `after:*`) are answered once, then the next agent run only
+   * sees item.notes. Keep "prompt → label (— note)" there so nobody asks the same thing twice.
+   * Runs before the effect so a dispatch from this answer already sees it.
+   */
+  private rememberAnswer(q: Question, label: string, note?: string) {
+    if (!q.itemId || !/^(agent|after):/.test(q.key)) return;
+    const item = this.store.item(q.itemId);
+    if (!item) return;
+    const words = note?.trim();
+    const text = `${q.prompt} → ${label}${words ? ` — ${words}` : ""}`;
+    let notes = [...(item.notes ?? [])];
+    // A typed note already landed on its own via note(); fold it into this line rather than repeat it.
+    if (words && notes.at(-1)?.text === words) notes = notes.slice(0, -1);
+    this.updateItem(item.id, { notes: [...notes, { at: nowIso(), text }].slice(-20) });
   }
 
   async applyEffect(effect: Effect, q: Question | undefined, opt: QuestionOption | undefined, note?: string) {
