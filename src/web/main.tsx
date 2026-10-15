@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { SyncState } from "../shared/types.ts";
 import { quickFirst } from "../shared/batch.ts";
+import { type Pin, pinQueue, takePin } from "../shared/pin.ts";
 import { Deck } from "./deck.tsx";
 import { AgentsPanel, Board, Drawer, Focus, JournalPage, JournalPanel, NowPanel, Timeline, TodayPanel } from "./parts.tsx";
 import { api, useHQ, useNow } from "./store.ts";
@@ -45,13 +46,25 @@ function App() {
     return () => window.removeEventListener("pointerdown", ask);
   }, []);
 
-  const queue = useMemo(() => {
+  const order = useMemo(() => {
     const t = now.getTime();
     const ready = s.questions.filter((q) => !q.notBefore || Date.parse(q.notBefore) <= t);
     ready.sort(quick ? quickFirst : (a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt));
     // Skipped go to the back, not away.
     return [...ready.filter((q) => !skipped.includes(q.id)), ...ready.filter((q) => skipped.includes(q.id))];
   }, [s.questions, skipped, now, quick]);
+  // While you're writing on a card (note focused, note has text, or dictating), it stays in front.
+  // New arrivals queue behind it and show as "+N new". Released when you stop, answer, skip or go back.
+  const [hold, setHold] = useState(false);
+  const [pin, setPin] = useState<Pin | undefined>();
+  const { queue, fresh } = useMemo(() => pinQueue(order, pin), [order, pin]);
+  useEffect(() => {
+    if (hold && !pin) setPin(takePin(queue));
+    else if (!hold && pin) setPin(undefined);
+  }, [hold, pin, queue]);
+  // Explicit navigation: drop the pin and tell Focus to clear the note.
+  const [nav, setNav] = useState(0);
+  const navigate = (fn: () => void) => { setPin(undefined); setNav((n) => n + 1); fn(); };
   const later = s.questions.filter((q) => q.notBefore && Date.parse(q.notBefore) > now.getTime());
 
   useEffect(() => {
@@ -93,26 +106,29 @@ function App() {
                   workHours={s.config.workHours}
                   now={now}
                   onClose={() => setDeck(false)}
-                  onFocus={(id) => { setDeck(false); setSkipped(queue.filter((q) => q.id !== id).map((q) => q.id)); }}
+                  onFocus={(id) => navigate(() => { setDeck(false); setSkipped(queue.filter((q) => q.id !== id).map((q) => q.id)); })}
                 />
               ) : (
               <div>
                 <Focus
                   q={queue[0]}
                   total={queue.length}
+                  fresh={fresh}
+                  nav={nav}
+                  onHold={setHold}
                   items={s.items}
-                  onSkip={() => queue[0] && setSkipped((x) => [...x.filter((y) => y !== queue[0]!.id), queue[0]!.id])}
+                  onSkip={() => navigate(() => queue[0] && setSkipped((x) => [...x.filter((y) => y !== queue[0]!.id), queue[0]!.id]))}
                   canBack={queue.length > 1 && skipped.some((id) => queue.some((q) => q.id === id))}
-                  onBack={() => setSkipped((x) => {
+                  onBack={() => navigate(() => setSkipped((x) => {
                     const last = [...x].reverse().find((id) => queue.some((q) => q.id === id));
                     return last ? x.filter((y) => y !== last) : x;
-                  })}
+                  }))}
                   onOpenItem={setSel}
                 />
                 {queue.length > 1 && (
                   <div className="queue">
                     {queue.slice(1, 8).map((q) => (
-                      <button key={q.id} className="qchip" onClick={() => setSkipped((x) => [...x.filter((y) => y !== q.id), ...queue.slice(0, queue.indexOf(q)).map((y) => y.id)])} title={q.prompt}>
+                      <button key={q.id} className="qchip" onClick={() => navigate(() => setSkipped((x) => [...x.filter((y) => y !== q.id), ...queue.slice(0, queue.indexOf(q)).map((y) => y.id)]))} title={q.prompt}>
                         {q.prompt}
                       </button>
                     ))}

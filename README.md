@@ -134,6 +134,10 @@ and tighten it first"*. The note is the answer. Work HQ picks the matching optio
 or sends an agent with your words. If the note is only background, it's kept on the item and the question waits
 until the next working morning. **`→`** (or `s`) moves to the next card and changes nothing; **`←`** goes back.
 
+The card you're writing on stays put. While the note field has focus or text, or you're dictating, a more urgent
+question that arrives queues behind it and shows as **+N new**. The note is only cleared when you answer, send, skip
+or go back. If the card closes somewhere else, your note stays in the box, flagged, so the words aren't lost.
+
 It also tries not to ask twice. A *meeting ended* card closes itself once the transcript sweep has read that
 meeting's notes. The sweep runs 10–25 min after the meeting, so most cards close before you get to them. The same
 work arriving from two places (memory rewords a todo, a transcript finds what an agent already filed) becomes

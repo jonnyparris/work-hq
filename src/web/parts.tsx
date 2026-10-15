@@ -83,8 +83,13 @@ export function Timeline({ now, events, items, onRefresh, sync }: { now: Date; e
 }
 
 // ── Focus: the one question ───────────────────────────────────────────────
-export function Focus({ q, total, items, onSkip, onBack, canBack, onOpenItem }: { q?: Question; total: number; items: Item[]; onSkip: () => void; onBack?: () => void; canBack?: boolean; onOpenItem: (id: string) => void }) {
+export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onBack, canBack, onOpenItem }: { q?: Question; total: number; fresh?: number; nav?: number; onHold?: (hold: boolean) => void; items: Item[]; onSkip: () => void; onBack?: () => void; canBack?: boolean; onOpenItem: (id: string) => void }) {
   const [note, setNote] = useState("");
+  const [noteFocus, setNoteFocus] = useState(false);
+  // Set when you answer or send: the card leaving is expected, so the note goes with it.
+  const leaving = useRef(false);
+  // The card you were writing on closed elsewhere: the note stays, flagged, rather than vanishing.
+  const [carried, setCarried] = useState(false);
   const [busy, setBusy] = useState(false);
   const noteRef = useRef<HTMLInputElement>(null);
   const [picked, setPicked] = useState<string[]>([]);
@@ -99,7 +104,21 @@ export function Focus({ q, total, items, onSkip, onBack, canBack, onOpenItem }: 
   }, []);
   const whenRef = useRef<HTMLInputElement>(null);
   const typed = useRef(false);
-  useEffect(() => { setNote(""); setBusy(false); setWhenFor(undefined); }, [q?.id]);
+  // Never wipe words you didn't send. The note clears on answer, send, skip or back — not just because
+  // the card in front changed.
+  const noteNow = useRef(note);
+  noteNow.current = note;
+  useEffect(() => {
+    setBusy(false); setWhenFor(undefined);
+    // The input remounts with the card (key={q.id}), so it can't still have focus; onBlur doesn't fire on unmount.
+    setNoteFocus(false);
+    if (leaving.current || !noteNow.current.trim()) { setNote(""); setCarried(false); }
+    else setCarried(true);
+    leaving.current = false;
+  }, [q?.id]);
+  useEffect(() => { if (nav) { setNote(""); setCarried(false); } }, [nav]);
+  useEffect(() => { onHold?.(noteFocus || Boolean(note.trim()) || Boolean(whenFor) || phase !== "idle"); }, [noteFocus, note, whenFor, phase, onHold]);
+  useEffect(() => () => onHold?.(false), [onHold]);
   // Never leave the mic open behind a question that's gone.
   const whenOpen = useRef(false);
   whenOpen.current = Boolean(whenFor);
@@ -113,8 +132,9 @@ export function Focus({ q, total, items, onSkip, onBack, canBack, onOpenItem }: 
     // Typed or ⌘↵ submit while still dictating: release the mic now, drop the late final result.
     if (whenFor) { stopDictation(); setHeard(false); }
     setBusy(true);
+    leaving.current = true;
     try { await api.answer(q.id, optionId, text || undefined, itemIds ?? (q.kind === "plan" ? picked : undefined)); }
-    catch { setBusy(false); }
+    catch { leaving.current = false; setBusy(false); }
   };
 
   const startWhen = (optionId: string) => {
@@ -145,11 +165,13 @@ export function Focus({ q, total, items, onSkip, onBack, canBack, onOpenItem }: 
     if (!q || busy || !text) return;
     setBusy(true);
     setNoteErr(undefined);
+    leaving.current = true;
     try {
       await api.note(q.id, text);
       setNote("");
       noteRef.current?.blur();
     } catch (e) {
+      leaving.current = false;
       setNoteErr((e as Error).message);
       setBusy(false);
     }
@@ -189,6 +211,7 @@ export function Focus({ q, total, items, onSkip, onBack, canBack, onOpenItem }: 
             {KIND_LABEL[item.kind]}{item.project ? ` · ${item.project}` : ""} ↗
           </button>
         )}
+        {fresh > 0 && <span className="badge sky" title="Arrived while you were writing. They'll come up when you're done with this card.">+{fresh} new</span>}
         <span className="focus-count">1 of {total}</span>
       </div>
       <h1><Md inline className="" text={q.prompt} /></h1>
@@ -236,7 +259,9 @@ export function Focus({ q, total, items, onSkip, onBack, canBack, onOpenItem }: 
           ref={noteRef}
           className="note-in"
           value={note}
-          onChange={(e) => setNote(e.target.value)}
+          onChange={(e) => { setNote(e.target.value); setCarried(false); }}
+          onFocus={() => setNoteFocus(true)}
+          onBlur={() => setNoteFocus(false)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveNote(); }
             if (e.key === "Escape") (e.target as HTMLInputElement).blur();
@@ -246,6 +271,7 @@ export function Focus({ q, total, items, onSkip, onBack, canBack, onOpenItem }: 
         {note.trim() && <button className="skip send" disabled={busy} onClick={saveNote}>Send ⌘↵</button>}
         <button className="skip" onClick={onSkip} title="Next card, nothing changes (s or →)">Next →</button>
       </div>
+      {carried && note.trim() && <div className="ctx" style={{ color: "var(--text-2)" }}>The card you were writing on closed elsewhere. Your note is kept — ⌘↵ sends it to this card, or clear it.</div>}
       {noteErr && <div className="ctx" style={{ color: "var(--coral)" }}>Couldn't send: {noteErr}</div>}
     </div>
   );
