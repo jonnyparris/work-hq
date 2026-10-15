@@ -276,16 +276,21 @@ ${note}
 """
 
 How to decide (first match wins):
+0. The note moves the target: a different place, channel, audience or person than the question assumes ("instead",
+   "to X not Y", "just share it in\u2026", "actually, post it in X", "send it to X rather than\u2026") \u2192 "dispatch" with
+   action reply (sharing, posting or sending it somewhere) or work (anything else), never "pick". The options were
+   written for the old target, so a matching-sounding one ("Publish\u2026", "Send") would go to the wrong place.
+   "note" = the new target, what not to do any more (the old target), and every other detail they gave.
 1. The note clearly matches an option ("yes", "they do", "keep that date", "already approved", "not relevant") \u2192 "pick" its id.
    If the note adds instructions on top ("yes, and also\u2026"), still pick it and put the full instruction in "note".
-2. The note asks for something to be done ("send a message to X", "make it shorter first", "improve it", "publish it to Y")
+2. The note asks for something to be done ("send a message to X", "make it shorter first", "improve it", "chase them")
    \u2192 "dispatch" with action reply (messages / chasing people), email, ticket, draft (blog drafts), verify (find out), or work
    (anything else). "note" = a clear instruction for the agent, keeping every detail and correction they gave.
-   If one of the options already dispatches the right action, "pick" it instead.
+   If one of the options already dispatches the right action to the same target, "pick" it instead.
 3. The note names a time for it ("tomorrow", "Thursday", "next Monday in the X meeting", "I'll do that tomorrow",
    "chase on Thursday") \u2192 "when" = the time words as they said them. If a "Scheduled for\u2026" option exists, pick it too.
 4. The note settles the state \u2192 "status": done ("nothing else for us to do", "already handled"), dropped ("drop",
-   "no", "we're doing it anyway", "merge it into X", "not needed", "share it in chat instead" when no work is left),
+   "no", "we're doing it anyway", "merge it into X", "not needed", "I'll share it in chat myself"),
    waiting ("assigned to X", "X owns it now", "waiting on X"), today ("doing it now").
 5. Pure background with no action, time or state in it \u2192 leave everything null.
 - "title": only if they corrected a name or fact that's in the title (e.g. "it's Joan, not Jon"); the corrected title.
