@@ -404,18 +404,19 @@ export class Prompter {
    * in a bulk clear the next morning (10-15), but a few caught real commitments — so keep one question
    * with the titles and the typed-input path, instead of one tap per meeting.
    */
-  private foldReviews(stale: Array<{ title: string; day: string }>, now: Date) {
+  private foldReviews(stale: StaleMeeting[], now: Date) {
     if (!stale.length) return;
     const today = localDate(now);
     const key = `reviews:${today}`;
     const prev = this.hub.store.openQuestionByKey(key);
-    let seen: Array<{ title: string; day: string }> = [];
+    let seen: StaleMeeting[] = [];
     try {
       if (prev) seen = JSON.parse(this.hub.store.kv(key) ?? "[]");
     } catch {}
-    const meetings = [...seen, ...stale].filter(
-      (m, i, all) => all.findIndex((x) => x.title === m.title && x.day === m.day) === i,
-    );
+    // Chronological, not the order the open questions came back in (ORDER BY updated ties within a ms).
+    const meetings = [...seen, ...stale]
+      .filter((m, i, all) => all.findIndex((x) => x.title === m.title && x.day === m.day) === i)
+      .sort((a, b) => (a.start ?? a.day).localeCompare(b.start ?? b.day));
     this.hub.store.setKv(key, JSON.stringify(meetings));
     const q = reviewDigest(meetings, now);
     if (prev) {
@@ -433,7 +434,7 @@ export class Prompter {
   private expireMoot(open: Question[], items: Item[], now: Date) {
     const byId = new Map(items.map((i) => [i.id, i]));
     const today = localDate(now);
-    const stale: Array<{ title: string; day: string }> = [];
+    const stale: StaleMeeting[] = [];
     for (const q of open) {
       const it = q.itemId ? byId.get(q.itemId) : undefined;
       if (q.itemId && (!it || ["done", "dropped"].includes(it.status))) this.hub.expireQuestion(q.id, "moot");
@@ -448,10 +449,11 @@ export class Prompter {
       // A meeting from an earlier day: fold it into the one morning card (foldReviews).
       else if (q.kind === "review" && q.eventId) {
         const ev = this.hub.store.events().find((e) => e.id === q.eventId);
-        const day = localDate(new Date(ev?.start ?? q.createdAt));
+        const start = new Date(ev?.start ?? q.createdAt);
+        const day = localDate(start);
         if (day >= today) continue;
         this.hub.expireQuestion(q.id, "day moved on");
-        stale.push({ title: ev?.title ?? q.prompt.replace(/ just ended\. Anything you committed to\?$/, ""), day });
+        stale.push({ title: ev?.title ?? q.prompt.replace(/ just ended\. Anything you committed to\?$/, ""), day, start: start.toISOString() });
       }
     }
     return stale;
@@ -462,6 +464,9 @@ export class Prompter {
     return ev ? now.getTime() - Date.parse(ev.start) : Infinity;
   }
 }
+
+/** A meeting-ended card folded into the morning digest. `start` (ISO) orders the list; absent on older kv rows. */
+type StaleMeeting = { title: string; day: string; start?: string };
 
 /** The folded "earlier meetings" card. Titles live in the context so a typed note triages with them. */
 export function reviewDigest(meetings: Array<{ title: string; day: string }>, now = new Date()) {

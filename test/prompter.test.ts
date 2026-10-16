@@ -316,6 +316,21 @@ describe("meeting-ended cards from earlier days", () => {
     expect(hub.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(1);
   });
 
+  // Regression: the list followed the open-question order (ORDER BY updated, ties within a ms), so it flaked.
+  test("folded titles are in meeting order, not card order", async () => {
+    hub.setEvents([ev("a", "Design sync", 9), ev("b", "Jo / Alex", 14), ev("c", "Ops review", 16)], "2026-09-24");
+    // Cards created out of meeting order (restart / clock skew), each in its own ms.
+    p.tick(at(16, 40)); // Ops review
+    await Bun.sleep(3);
+    p.tick(at(9, 40)); // Design sync
+    await Bun.sleep(3);
+    p.tick(at(14, 40)); // Jo / Alex, most recently updated
+    expect(hub.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(3);
+    p.tick(thu(7));
+    const open = hub.store.questions("open").filter((q) => q.kind === "review");
+    expect(open.map((q) => q.context)).toEqual(["- Design sync\n- Jo / Alex\n- Ops review"]);
+  });
+
   test("today's meeting-ended card is left alone", () => {
     hub.setEvents([ev("t", "Standup", 9, 24)], "2026-09-24");
     p.tick(thu(9, 40));
