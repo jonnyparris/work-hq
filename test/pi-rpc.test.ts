@@ -1,5 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { rpcError } from "../src/server/agents.ts";
 import { GatewayToken, jwtExpiry } from "../src/server/gateway-token.ts";
 import { assertShortArgs, PiPool, PiRpc } from "../src/server/pi-rpc.ts";
 
@@ -61,6 +64,27 @@ test("a stalled run is aborted by the inactivity watchdog", async () => {
   const r = await w.run("SLOW", { timeoutMs: 60_000, idleMs: 300 });
   expect(r.stalled).toBe(true);
   expect(r.timedOut).toBeFalsy();
+});
+
+test("a run that goes silent after agent_start leaves rpc.jsonl ending in agent_start", async () => {
+  const logPath = resolve(mkdtempSync(resolve(tmpdir(), "whq-rpc-")), "rpc.jsonl");
+  const w = new PiRpc({ bin: FAKE, args: [], cwd: import.meta.dir, env: process.env as Record<string, string>, logPath });
+  live.push(w);
+  w.start();
+  const r = await w.run("SLOW", { timeoutMs: 60_000, idleMs: 300, killAfterMs: 500 });
+  expect(r.stalled).toBe(true);
+  expect(r.lastEvent?.type).toBe("agent_start");
+  expect(rpcError(r, 30, 10)).toMatch(/^stalled: no activity for 10 min \(last event: agent_start at \d\d:\d\d:\d\dZ\)$/);
+  const lines = readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  // Everything up to the stall: our prompt, pi's reply, agent_start. Then our abort.
+  const upToStall = lines.slice(0, lines.findIndex((l) => l.dir === "out" && l.type === "abort"));
+  expect(upToStall.map((l) => `${l.dir}:${l.type}`)).toEqual(["out:prompt", "in:response", "in:agent_start"]);
+  expect(upToStall.at(-1).type).toBe("agent_start");
+  expect(lines.every((l) => typeof l.t === "string" && !("message" in l))).toBe(true); // no prompt text in the log
+});
+
+test("stall error says when pi sent nothing at all", () => {
+  expect(rpcError({ ok: false, text: "", toolsRan: false, stalled: true, stderr: "" }, 30, 10)).toBe("stalled: no activity for 10 min (no events from pi)");
 });
 
 test("a run that ignores abort gets killed", async () => {

@@ -814,7 +814,9 @@ export class Agents implements Dispatcher {
       if (o.tools) args.push("-a", "-n", `work-hq: ${job.title}`.slice(0, 120), "-xt", config.pi.headlessDenyTools);
       else args.push(...TRIAGE_FLAGS);
       if (resume) args.push("--session", resume);
-      const rpc = new PiRpc({ bin: config.pi.bin, args, cwd: config.workspace.dir, env });
+      // Every record pi sends or gets, type and time only: says how far a stalled run got.
+      const logPath = resolve(cmux.jobDir(jobId), "rpc.jsonl");
+      const rpc = new PiRpc({ bin: config.pi.bin, args, cwd: config.workspace.dir, env, logPath });
       this.running.set(jobId, { seenWork: true, cancel: () => void rpc.stop() });
       try {
         rpc.start();
@@ -942,7 +944,7 @@ export function runError(r: { code: number | null; signal?: string | null; timed
 /** Why an rpc run failed. Our own deadlines first, then a dead process, then the model's error. */
 export function rpcError(r: RunOutcome, timeoutMin: number, stallMin: number): string {
   if (r.timedOut) return `timed out after ${timeoutMin} min`;
-  if (r.stalled) return `stalled: no activity for ${stallMin} min`;
+  if (r.stalled) return `stalled: no activity for ${stallMin} min (${r.lastEvent ? `last event: ${r.lastEvent.type} at ${new Date(r.lastEvent.at).toISOString().slice(11, 19)}Z` : "no events from pi"})`;
   if (r.exit) return runError({ code: r.exit.code, signal: r.exit.signal, timedOut: false, timeoutMin, lastError: r.lastError, stderr: r.stderr });
   if (r.lastError) return r.lastError;
   return r.aborted ? "aborted" : "pi run failed";

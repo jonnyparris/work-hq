@@ -9,7 +9,7 @@
 //   PiPool — warm, tool-less workers for triage, each with a fresh session armed for the next request.
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, realpathSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
@@ -31,6 +31,26 @@ export interface PiRpcOptions {
   args: string[];
   cwd: string;
   env: Record<string, string>;
+  /** Append one line per RPC record (in and out) to this file: type, time, a few small fields. No content. */
+  logPath?: string;
+}
+
+/** One rpc.jsonl line. Small fields only: enough to see how far pi got, never the prompt or model output. */
+export function eventSummary(dir: "in" | "out" | "err", rec: any, at = new Date()): Record<string, unknown> {
+  const o: Record<string, unknown> = { t: at.toISOString(), dir, type: rec?.type };
+  for (const k of ["id", "command", "success", "toolName", "method", "aborted", "code", "signal"]) {
+    const v = rec?.[k];
+    if (v !== undefined && (typeof v !== "string" || v.length <= 80)) o[k] = v;
+  }
+  if (rec?.type === "response" && rec.success === false && typeof rec.error === "string") o.error = rec.error.slice(0, 200);
+  if (rec?.type === "message_end" && rec.message) {
+    o.role = rec.message.role;
+    if (rec.message.stopReason) o.stopReason = rec.message.stopReason;
+    if (rec.message.errorMessage) o.error = String(rec.message.errorMessage).slice(0, 200);
+  }
+  if (rec?.type === "tool_execution_end" && rec.isError) o.isError = true;
+  if (dir === "err" && typeof rec?.text === "string") o.text = rec.text.slice(-300);
+  return o;
 }
 
 export interface RunOptions {
@@ -53,6 +73,8 @@ export interface RunOutcome {
   timedOut?: boolean;
   stalled?: boolean;
   aborted?: boolean;
+  /** The last record pi sent during the run, and when. Says how far a stalled run got. */
+  lastEvent?: { type: string; at: number };
   /** Set when the process died mid-run. */
   exit?: { code: number | null; signal: NodeJS.Signals | null };
   stderr: string;
@@ -68,6 +90,8 @@ export class PiRpc {
   private pending = new Map<string, { resolve: (d: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private listeners = new Set<(ev: any) => void>();
   private exitWaiters: Array<() => void> = [];
+  /** Last record received from pi (any kind, responses included). */
+  lastEvent?: { type: string; at: number };
   stderr = "";
   exit?: { code: number | null; signal: NodeJS.Signals | null };
   runs = 0;
@@ -86,7 +110,10 @@ export class PiRpc {
     const proc = spawn(this.opts.bin, args, { cwd: this.opts.cwd, env: this.opts.env, stdio: ["pipe", "pipe", "pipe"] });
     this.proc = proc;
     proc.stdout!.on("data", (chunk: Buffer) => this.onData(chunk));
-    proc.stderr!.on("data", (c: Buffer) => (this.stderr = (this.stderr + c.toString()).slice(-4000)));
+    proc.stderr!.on("data", (c: Buffer) => {
+      this.stderr = (this.stderr + c.toString()).slice(-4000);
+      this.log("err", { type: "stderr", text: c.toString() });
+    });
     proc.stdin!.on("error", () => {}); // EPIPE after the child died; the exit handler reports it
     const died = (code: number | null, signal: NodeJS.Signals | null) => {
       if (this.exit) return;
@@ -96,6 +123,7 @@ export class PiRpc {
         p.reject(new Error(`pi exited (${signal ?? code})`));
       }
       this.pending.clear();
+      this.log("in", { type: "__exit", code, signal });
       this.emit({ type: "__exit", code, signal });
       for (const w of this.exitWaiters.splice(0)) w();
     };
@@ -125,7 +153,16 @@ export class PiRpc {
     }
   }
 
+  private log(dir: "in" | "out" | "err", rec: any) {
+    if (!this.opts.logPath) return;
+    try {
+      appendFileSync(this.opts.logPath, `${JSON.stringify(eventSummary(dir, rec))}\n`);
+    } catch {}
+  }
+
   private onRecord(rec: any) {
+    this.lastEvent = { type: String(rec.type ?? "?"), at: Date.now() };
+    this.log("in", rec);
     if (rec.type === "response" && rec.id && this.pending.has(rec.id)) {
       const p = this.pending.get(rec.id)!;
       this.pending.delete(rec.id);
@@ -154,6 +191,7 @@ export class PiRpc {
 
   private send(obj: unknown) {
     if (!this.alive) return;
+    this.log("out", obj);
     this.proc!.stdin!.write(`${JSON.stringify(obj)}\n`);
   }
 
@@ -181,6 +219,9 @@ export class PiRpc {
     let stalled = false;
     let lastEvent = Date.now();
     let abortedAt: number | undefined;
+    const runStart = Date.now();
+    // Snapshot at the deadline: the abort we then send gets a response, and that isn't how far pi got.
+    let lastBeforeAbort: RunOutcome["lastEvent"];
 
     let off = () => false as boolean;
     const settled = new Promise<{ aborted?: boolean; exit?: RunOutcome["exit"] }>((done) => {
@@ -209,6 +250,7 @@ export class PiRpc {
       else if (!timedOut && !stalled && o.idleMs && now - lastEvent > o.idleMs) stalled = true;
       else return;
       abortedAt = now;
+      lastBeforeAbort = this.lastEvent && this.lastEvent.at >= runStart ? { ...this.lastEvent } : undefined;
       // Ask nicely first; if it won't settle, the race below kills the process.
       void this.request("abort", {}, 10_000).catch(() => this.kill());
     }, Math.min(1000, o.timeoutMs, o.idleMs ?? Infinity));
@@ -245,6 +287,7 @@ export class PiRpc {
       this.lastUsed = Date.now();
     }
 
+    const reached = abortedAt ? lastBeforeAbort : this.lastEvent && this.lastEvent.at >= runStart ? { ...this.lastEvent } : undefined;
     let session: string | undefined;
     if (this.alive) {
       try {
@@ -253,7 +296,7 @@ export class PiRpc {
       } catch {}
     }
     const ok = !fin.exit && !fin.aborted && !timedOut && !stalled && !lastError;
-    return { ok, text, lastError, session, toolsRan, timedOut, stalled, aborted: fin.aborted, exit: fin.exit, stderr: this.stderr };
+    return { ok, text, lastError, session, toolsRan, timedOut, stalled, aborted: fin.aborted, exit: fin.exit, stderr: this.stderr, lastEvent: reached };
   }
 
   private kill() {
