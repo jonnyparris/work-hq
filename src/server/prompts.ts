@@ -222,6 +222,10 @@ Rules:
   dispatch (send agents — only when asked), done, drop. Defer times: 09:30 local on the day they name;
   "later this week" = ${laterThisWeek(ctx.now)}. Prefer "kind" for kinds of work ("blog posts" → kind "post").
   "Push the rest / everything else to tomorrow" = one defer per group they didn't just handle, never "day".
+- "detail": keep the why, meaning the outcome they're after, in their words if they gave one. Mark anything you
+  inferred as inferred, and any linked page you haven't read as unread. The agent that picks it up trusts this field.
+- dispatch "note": write it as an outcome plus limits ("goal: …; done when …; don't …"), not a copy of the title.
+  Keep every detail they gave. Don't add scope they didn't ask for. The agent proposes bigger versions itself.
 - Never invent facts. If it's ambiguous, ask ONE short question.
 - reply: ≤2 short sentences, dry, no fluff — you're a bot in a terminal, not a butler.
 

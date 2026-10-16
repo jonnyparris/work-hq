@@ -1,4 +1,5 @@
 Write (or revise) the blog-post draft(s) for this item. Revise in place if a draft path exists.
+Find the post's verb, not its noun: what should the reader believe or do after reading it? Build the draft around that.
 Voice: {{owner.name}}'s, first person, short sentences, concrete examples, no marketing speak. It's their post,
 so you may write as them here. Mark anything you're unsure of with [CHECK: ...].
 - Wiki venue ({{wiki.name}}): {{wiki.draftsDir}}/<YYYY-MM-DD>-<slug>.md, plain markdown. Internal detail is fine.
