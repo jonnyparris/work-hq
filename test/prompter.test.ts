@@ -288,3 +288,58 @@ describe("inbox triage while an agent works the item", () => {
     expect(hub.store.questions("open").filter((q) => q.key === `inbox:${it.id}`)).toHaveLength(0);
   });
 });
+
+describe("meeting-ended cards from earlier days", () => {
+  const thu = (h: number, m = 0) => new Date(2026, 8, 24, h, m);
+  const ev = (id: string, title: string, h: number, day = 23) => ({
+    id, title, start: new Date(2026, 8, day, h).toISOString(), end: new Date(2026, 8, day, h, 30).toISOString(),
+    attendees: ["Sam", "Jo", "Alex"], response: "accepted" as const,
+  });
+
+  test("fold into one card the next morning, titles listed, typed input kept", () => {
+    hub.setEvents([ev("a", "Design sync", 9), ev("b", "Jo / Alex", 14), ev("c", "Ops review", 16)], "2026-09-24");
+    p.tick(at(9, 40));
+    p.tick(at(14, 40));
+    p.tick(at(16, 40));
+    expect(hub.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(3);
+    p.tick(thu(7));
+    const open = hub.store.questions("open").filter((q) => q.kind === "review");
+    expect(open).toHaveLength(1);
+    const d = open[0]!;
+    expect(d.key).toBe("reviews:2026-09-24");
+    expect(d.prompt).toBe("Yesterday's meetings (3): anything you committed to?");
+    expect(d.context).toBe("- Design sync\n- Jo / Alex\n- Ops review");
+    expect(d.options.map((o) => o.id)).toEqual(["scan", "none"]);
+    expect(Date.parse(d.notBefore!)).toBe(thu(8).getTime()); // waits for the workday
+    // Later ticks don't duplicate it.
+    p.tick(thu(10));
+    expect(hub.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(1);
+  });
+
+  test("today's meeting-ended card is left alone", () => {
+    hub.setEvents([ev("t", "Standup", 9, 24)], "2026-09-24");
+    p.tick(thu(9, 40));
+    p.tick(thu(10));
+    const open = hub.store.questions("open").filter((q) => q.kind === "review");
+    expect(open.map((q) => q.eventId)).toEqual(["t"]);
+  });
+
+  test("a late straggler merges into the open card", () => {
+    hub.setEvents([ev("a", "Design sync", 9), ev("z", "Late call", 22)], "2026-09-24");
+    p.tick(at(9, 40));
+    p.tick(thu(7)); // folds Design sync
+    p.tick(at(22, 40)); // clock skew / restart: Late call card appears with yesterday's date…
+    p.tick(thu(8)); // …and merges
+    const open = hub.store.questions("open").filter((q) => q.kind === "review");
+    expect(open).toHaveLength(1);
+    expect(open[0]!.prompt).toBe("Yesterday's meetings (2): anything you committed to?");
+  });
+
+  test("reviewUtterance carries the meeting list for a folded card only", async () => {
+    const { reviewUtterance } = await import("../src/server/prompter.ts");
+    expect(reviewUtterance({ prompt: "X just ended.", key: "review:e1", context: "Type it" }, "will do Y")).toBe("X just ended.\nwill do Y");
+    expect(reviewUtterance({ prompt: "Yesterday's meetings (1): …", key: "reviews:2026-09-24", context: "- X" }, "will do Y")).toBe(
+      "Yesterday's meetings (1): …\n- X\nwill do Y",
+    );
+  });
+});

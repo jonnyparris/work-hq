@@ -16,7 +16,7 @@
                        │  Agents ── the only place pi is spawned                  │
                        │  SQLite (~/.local/state/work-hq/work-hq.db)              │
                        └───┬──────────────┬──────────────────┬───────────────────┘
-            memory MCP     │   pi -p (headless, JSON events)  │  pi in cmux (beacon)
+            memory MCP     │   pi --mode rpc (headless, events)│  pi in cmux (beacon)
           (HTTP, token)    │   sweeps + triage                │  dispatched actions
                            ▼              ▼                   ▼
                     markdown memory   your MCPs / CLIs        same tools, human-visible
@@ -37,6 +37,19 @@
   so every sweep would fail. Work HQ spots the "API key auth failed for provider …" error, asks once
   ("Log in now" runs `cloudflared access login <app>`, one tab), and pauses sweeps. It retries once
   every 30 min until a run works again.
+- **Headless pi runs over RPC, never with the prompt in argv** (`src/server/pi-rpc.ts`). Endpoint
+  security (SentinelOne) SIGKILLs any exec whose argv holds a string over ~1 KB, so prompts go over
+  stdin (`pi --mode rpc`) and `assertShortArgs` rejects anything over 512 bytes. Each tool run gets its
+  own process (its own env, kill to cancel). Tool-less triage uses a warm worker (`pi.triageWorkers`,
+  default 1) that arms a fresh session after every run and retires itself after 50 runs, 30 min idle,
+  2 h, a crash, a timeout, or a pi/extension update. A request that finds no idle worker waits for the
+  one re-arming, or gets a one-off. Deadlines abort first (the run settles, the session is kept) and
+  SIGKILL 15 s later. A tool run with no event for `pi.stallMin` (default 10) is aborted as stalled.
+  Dialogs (permission asks) are declined, as print mode does. `pi.runner: "print"` brings back the
+  old `pi -p @file` path.
+- **One gateway token for all headless runs** (`pi.gatewayToken`, `src/server/gateway-token.ts`).
+  The server runs the token command once, passes the token in the env var the provider's key command
+  prefers, refreshes it 5 min before the JWT's `exp`, and drops it on an auth error.
 - **Company-specific instructions are data, not code.** Which tools to call, how tickets are
   filed, what voice replies use: all in `prompts/*.md`, overridable per user (`promptsDir`).
   Output shapes the server parses stay in `src/server/prompts.ts`.
@@ -294,6 +307,8 @@ src/server/dedupe.ts      cross-source duplicate check (title tokens)
 src/server/prompter.ts    proactive rules
 src/server/scheduler.ts   heartbeat + cadences
 src/server/agents.ts      pi spawning: headless, cmux, triage
+src/server/pi-rpc.ts      pi RPC client, warm triage pool, argv guard
+src/server/gateway-token.ts shared model-gateway token (JWT-expiry aware)
 src/server/launch-gate.ts launch spacing + rate-limit detection/backoff
 src/server/cmux.ts        cmux workspace + beacon plumbing
 src/server/config.ts      config file + env → typed config

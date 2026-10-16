@@ -88,7 +88,8 @@ export class Prompter {
     // Per-kind caps still count them, so "skip all posts till Thu" also stops new post questions.
     let budget = CAP.total - open.filter((q) => !q.notBefore || Date.parse(q.notBefore) <= now.getTime()).length;
 
-    this.expireMoot(open, items, now);
+    const stale = this.expireMoot(open, items, now);
+    this.foldReviews(stale, now);
 
     const hour = now.getHours() + now.getMinutes() / 60;
     const [dayStart, dayEnd] = config.sweeps.workHours;
@@ -398,9 +399,41 @@ export class Prompter {
     return created;
   }
 
-  /** Close questions whose item moved on without them. */
+  /**
+   * Fold "X just ended" cards from earlier days into one card. Nine in ten of these got "Nothing new"
+   * in a bulk clear the next morning (10-15), but a few caught real commitments — so keep one question
+   * with the titles and the typed-input path, instead of one tap per meeting.
+   */
+  private foldReviews(stale: Array<{ title: string; day: string }>, now: Date) {
+    if (!stale.length) return;
+    const today = localDate(now);
+    const key = `reviews:${today}`;
+    const prev = this.hub.store.openQuestionByKey(key);
+    let seen: Array<{ title: string; day: string }> = [];
+    try {
+      if (prev) seen = JSON.parse(this.hub.store.kv(key) ?? "[]");
+    } catch {}
+    const meetings = [...seen, ...stale].filter(
+      (m, i, all) => all.findIndex((x) => x.title === m.title && x.day === m.day) === i,
+    );
+    this.hub.store.setKv(key, JSON.stringify(meetings));
+    const q = reviewDigest(meetings, now);
+    if (prev) {
+      Object.assign(prev, { prompt: q.prompt, context: q.context });
+      this.hub.store.putQuestion(prev);
+      this.hub.emit({ type: "question", data: prev });
+      return;
+    }
+    const [h] = config.sweeps.workHours;
+    const start = atLocal(Math.floor(h), Math.round((h % 1) * 60), 0, now);
+    this.ask({ ...q, key, ...(now < start ? { notBefore: start.toISOString() } : {}) });
+  }
+
+  /** Close questions whose item moved on without them. Returns the meeting-ended cards it closed as stale. */
   private expireMoot(open: Question[], items: Item[], now: Date) {
     const byId = new Map(items.map((i) => [i.id, i]));
+    const today = localDate(now);
+    const stale: Array<{ title: string; day: string }> = [];
     for (const q of open) {
       const it = q.itemId ? byId.get(q.itemId) : undefined;
       if (q.itemId && (!it || ["done", "dropped"].includes(it.status))) this.hub.expireQuestion(q.id, "moot");
@@ -412,13 +445,45 @@ export class Prompter {
       else if (q.kind === "plan" && now.getHours() >= 14) this.hub.expireQuestion(q.id, "day moved on");
       // A snoozed wrap/plan keeps its old key; once the date rolls over it's a stale duplicate.
       else if ((q.kind === "wrap" || q.kind === "plan") && q.key !== `${q.kind}:${localDate(now)}`) this.hub.expireQuestion(q.id, "day moved on");
+      // A meeting from an earlier day: fold it into the one morning card (foldReviews).
+      else if (q.kind === "review" && q.eventId) {
+        const ev = this.hub.store.events().find((e) => e.id === q.eventId);
+        const day = localDate(new Date(ev?.start ?? q.createdAt));
+        if (day >= today) continue;
+        this.hub.expireQuestion(q.id, "day moved on");
+        stale.push({ title: ev?.title ?? q.prompt.replace(/ just ended\. Anything you committed to\?$/, ""), day });
+      }
     }
+    return stale;
   }
 
   private startedAgo(eventId: string, now: Date) {
     const ev: CalendarEvent | undefined = this.hub.todayEvents(now).find((e) => e.id === eventId);
     return ev ? now.getTime() - Date.parse(ev.start) : Infinity;
   }
+}
+
+/** The folded "earlier meetings" card. Titles live in the context so a typed note triages with them. */
+export function reviewDigest(meetings: Array<{ title: string; day: string }>, now = new Date()) {
+  const days = [...new Set(meetings.map((m) => m.day))].sort();
+  const yesterday = localDate(new Date(now.getTime() - DAY));
+  const when =
+    days.length > 1 ? "Earlier meetings" : days[0] === yesterday ? "Yesterday's meetings" : `${new Date(`${days[0]}T12:00:00`).toLocaleDateString("en-GB", { weekday: "long" })}'s meetings`;
+  return {
+    kind: "review" as const,
+    priority: 70,
+    prompt: `${when} (${meetings.length}): anything you committed to?`,
+    context: meetings.map((m) => `- ${days.length > 1 ? `${m.day.slice(5)} · ` : ""}${m.title}`).join("\n"),
+    options: [
+      opt("scan", "Scan the transcripts now", { type: "noop" }, "primary"),
+      opt("none", "Nothing new", { type: "noop" }, "quiet"),
+    ],
+  };
+}
+
+/** What a review card's typed note goes to triage with: the question, plus the meeting list for a folded card. */
+export function reviewUtterance(q: Pick<Question, "prompt" | "key" | "context">, note: string) {
+  return [q.prompt, q.key.startsWith("reviews:") ? q.context : "", note].filter(Boolean).join("\n");
 }
 
 function opt(id: string, label: string, effect: QuestionOption["effect"], tone?: QuestionOption["tone"]): QuestionOption {

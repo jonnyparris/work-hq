@@ -47,7 +47,13 @@
     "launchSpacingSec": 20,
     // On a rate-limit / 429 / 503 / overloaded error: retry this many times, waiting a random time in this range (seconds).
     "rateLimitRetries": 2,
-    "rateLimitBackoffSec": [60, 90]
+    "rateLimitBackoffSec": [60, 90],
+    // Headless runs: "rpc" (prompt over stdin, warm triage worker) or "print" (old `pi -p @file`).
+    "runner": "rpc",
+    "triageWorkers": 1,                   // warm triage workers (~190 MB each); 0 = one per request
+    "stallMin": 10                        // abort a headless tool run with no activity for this long
+    // Share one model-gateway token across runs, if your provider's key command reads an env var first:
+    // "gatewayToken": { "env": "OPENCODE_CF_TOKEN", "command": "cloudflared access token -app=https://…" }
   },
 
   // Background sweeps. Only run on weekdays inside work hours.

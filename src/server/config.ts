@@ -154,6 +154,17 @@ export const config = {
     rateLimitRetries: Number(pick("WORK_HQ_RATE_LIMIT_RETRIES", "pi.rateLimitRetries", 2)),
     /** Wait a random time in this range (seconds) before each rate-limit retry. */
     rateLimitBackoffSec: pick<[number, number]>(undefined, "pi.rateLimitBackoffSec", [60, 90]),
+    /** How headless pi runs: "rpc" (prompt over stdin, warm triage workers) or "print" (the old `pi -p @file`). */
+    runner: pick<string>("WORK_HQ_PI_RUNNER", "pi.runner", "rpc") === "print" ? ("print" as const) : ("rpc" as const),
+    /** Warm pi workers kept for triage (rpc runner). 0 = start one per request. */
+    triageWorkers: Number(pick("WORK_HQ_TRIAGE_WORKERS", "pi.triageWorkers", 1)),
+    /** Abort a headless tool run that has sent no event for this long. 0 = off. */
+    stallMin: Number(pick("WORK_HQ_STALL_MIN", "pi.stallMin", 10)),
+    /**
+     * Fetch the model-gateway token once and pass it to every run in `env`, instead of each run forking
+     * the provider's key command. Only useful if that key command reads `env` first. Unset = off.
+     */
+    gatewayToken: pick<{ env: string; command: string } | undefined>(undefined, "pi.gatewayToken", undefined),
   },
 
   sweeps: {

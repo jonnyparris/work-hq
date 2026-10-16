@@ -16,7 +16,7 @@ type Listener = (e: ServerEvent) => void;
 export interface Dispatcher {
   dispatch(itemId: string, action: import("../shared/types.ts").ActionKind, note?: string): Promise<Job | undefined>;
   scheduleFromWords(itemId: string, words: string): Promise<void>;
-  /** Read a typed note against the question it was typed on. Undefined = couldn't tell. */
+  /** Read a typed note against the question it was typed on. Throws if the read failed; undefined = question gone. */
   readNote?(questionId: string, text: string): Promise<NoteDecision | undefined>;
   gatewayLogin?(app: string): Promise<void>;
 }
@@ -416,13 +416,25 @@ export class Hub {
       await this.applyNote(q.id, quick ?? {}, t);
       return { pending: false };
     }
-    void this.dispatcher
-      .readNote(q.id, t)
-      .then((d) => this.applyNote(q.id, d ?? {}, t))
-      .catch((e) => {
-        this.toast(`Couldn't read that note: ${(e as Error).message}`, "warn");
-        return this.applyNote(q.id, {}, t);
-      });
+    const read = this.dispatcher.readNote.bind(this.dispatcher);
+    void (async () => {
+      let d: NoteDecision | undefined;
+      try {
+        d = await read(q.id, t).catch((e) => {
+          if (!isCrash(e)) throw e;
+          this.journal(`Note reader crashed (${errText(e)}), retrying once`, { itemId: item?.id, questionId: q.id, who: "hq" });
+          return read(q.id, t);
+        });
+      } catch (e) {
+        // Never apply an empty decision here: a crash is not "you typed background".
+        this.park(q, new Date(Date.now() + 15 * 60_000).toISOString());
+        this.journal(`Couldn't read note (${errText(e)}), card back in 15 min`, { itemId: item?.id, questionId: q.id, who: "hq" });
+        this.toast(`Couldn't read that note (${errText(e)}). Card back in 15 min.`, "warn");
+        return;
+      }
+      if (!d) return; // question gone
+      await this.applyNote(q.id, d, t).catch((e) => this.toast(`Couldn't act on that note: ${errText(e)}`, "warn"));
+    })();
     return { pending: true };
   }
 
@@ -697,6 +709,15 @@ export function meetingMatches(m: { title: string; start?: string; at: string },
 }
 
 /** Next working morning at the start of work hours (+30 min). After midnight but before work, that's today. */
+/** A pi run that died rather than answered: worth one retry. Timeouts and parse failures aren't. */
+export function isCrash(e: unknown) {
+  return /pi exited|pi killed|\bSIG[A-Z]+\b|server restarted/i.test(errText(e));
+}
+
+function errText(e: unknown) {
+  return e instanceof Error ? e.message : String(e);
+}
+
 export function nextMorning(now = new Date()) {
   const d = new Date(now);
   if (now.getHours() >= config.sweeps.workHours[0]) d.setDate(d.getDate() + 1);

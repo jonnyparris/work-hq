@@ -187,7 +187,7 @@ to act ("file a ticket for…"). Explicit requests to act count as confirmation 
 Below is the rolling live transcript up to the trigger (laptop mic; other voices may be in it). Extract the
 action(s) from the discussion immediately before the keyword. Mark new items with signals {"pineapple": true},
 status "inbox", and put the verbatim words in source.quote. One item is typical; zero is fine if nothing is actionable.`,
-    review: `A meeting just ended and ${me} jotted what came out of it. Turn it into items (status "today" if they say
+    review: `A meeting just ended (or, for a list of earlier meetings, one of those) and ${me} jotted what came out of it. Turn it into items (status "today" if they say
 they'll do it today, else "inbox"), and correct any existing items they mention.`,
   }[mode];
 

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { Store } from "../src/server/db.ts";
-import { type Dispatcher, Hub, nextMorning, quickNote } from "../src/server/hub.ts";
+import { type Dispatcher, Hub, isCrash, nextMorning, quickNote } from "../src/server/hub.ts";
 import { Prompter } from "../src/server/prompter.ts";
 import type { NoteDecision } from "../src/shared/types.ts";
 
@@ -22,7 +22,7 @@ beforeEach(() => {
   const d: Dispatcher = {
     dispatch: async (itemId, action, note) => { dispatched.push({ itemId, action, note }); return undefined; },
     scheduleFromWords: async (itemId, words) => { scheduled.push({ itemId, words }); },
-    readNote: async () => decision,
+    readNote: async () => decision ?? {}, // {} = context only; undefined now means the question is gone
   };
   hub.dispatcher = d;
 });
@@ -40,7 +40,7 @@ function inboxQuestion(title = "Send spec to Jon for review") {
 describe("notes on questions", () => {
   test("the note is kept on the item and the question leaves the queue at once", async () => {
     const { it, q } = inboxQuestion();
-    decision = undefined; // reader can't tell → context only
+    decision = {}; // reader read it as context only
     await hub.note(q.id, "some background");
     await flush();
     const after = hub.store.question(q.id)!;
@@ -103,6 +103,53 @@ describe("notes on questions", () => {
     release();
     await flush();
     expect(hub.store.item(it.id)!.status).toBe("today");
+  });
+
+  // 10-15 09:54–09:59Z: seven note-reader crashes each parked a typed instruction till next morning.
+  test("a crashed read retries once and then acts on the note", async () => {
+    const { it, q } = inboxQuestion();
+    let calls = 0;
+    hub.dispatcher!.readNote = async () => {
+      calls++;
+      if (calls === 1) throw new Error("pi killed by SIGKILL (not us; endpoint security?)");
+      return { dispatch: { action: "work", note: "check grafana" } };
+    };
+    await hub.note(q.id, "check grafana for me");
+    await flush(); await flush();
+    expect(calls).toBe(2);
+    expect(dispatched).toEqual([{ itemId: it.id, action: "work", note: "check grafana" }]);
+  });
+
+  test("a read that keeps failing parks for 15 min, never till morning", async () => {
+    const { it, q } = inboxQuestion();
+    let calls = 0;
+    hub.dispatcher!.readNote = async () => { calls++; throw new Error("pi exited 1: boom"); };
+    await hub.note(q.id, "ask Maryna in chat");
+    await flush(); await flush();
+    expect(calls).toBe(2);
+    const after = hub.store.question(q.id)!;
+    expect(after.status).toBe("open");
+    expect(Date.parse(after.notBefore!)).toBeLessThan(Date.now() + 16 * 60_000);
+    expect(hub.store.journal().some((j) => j.text === "Couldn't read note (pi exited 1: boom), card back in 15 min")).toBe(true);
+    expect(hub.store.item(it.id)!.status).toBe("inbox");
+  });
+
+  test("a non-crash failure (timeout) doesn't retry", async () => {
+    const { q } = inboxQuestion();
+    let calls = 0;
+    hub.dispatcher!.readNote = async () => { calls++; throw new Error("timed out after 3 min"); };
+    await hub.note(q.id, "check the team chat first");
+    await flush(); await flush();
+    expect(calls).toBe(1);
+    expect(Date.parse(hub.store.question(q.id)!.notBefore!)).toBeLessThan(Date.now() + 16 * 60_000);
+  });
+
+  test("isCrash: exits, signals, restarts yes; timeouts and parse failures no", () => {
+    expect(isCrash(new Error("pi exited 143: x"))).toBe(true);
+    expect(isCrash(new Error("pi killed by SIGTERM"))).toBe(true);
+    expect(isCrash(new Error("server restarted mid-run"))).toBe(true);
+    expect(isCrash(new Error("timed out after 3 min"))).toBe(false);
+    expect(isCrash(new Error("couldn't parse note reader output"))).toBe(false);
   });
 
   test("quickNote only matches short, unambiguous notes", () => {

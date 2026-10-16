@@ -123,4 +123,6 @@ test("a run we killed on timeout says so, not pi's last stderr line", async () =
   expect(runError({ code: 143, timedOut: true, timeoutMin: 12, lastError: "Request timed out.", stderr })).toBe("timed out after 12 min");
   expect(runError({ code: 1, timedOut: false, timeoutMin: 12, stderr })).toBe("pi exited 1: Warning: Extension package builtin:mcp is slow");
   expect(runError({ code: 1, timedOut: false, timeoutMin: 12, lastError: "Request timed out.", stderr })).toBe("Request timed out.");
+  expect(runError({ code: null, signal: "SIGKILL", timedOut: false, timeoutMin: 12, stderr: "" })).toStartWith("pi killed by SIGKILL");
+  expect(runError({ code: null, signal: "SIGTERM", timedOut: false, timeoutMin: 12, stderr: "" })).toBe("pi killed by SIGTERM");
 });

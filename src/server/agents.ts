@@ -13,7 +13,9 @@ import { config } from "./config.ts";
 import { newId, nowIso } from "./db.ts";
 import { type DemoScript, demoActionScript, demoSweepScript, feedLine } from "./demo.ts";
 import type { Dispatcher, Hub } from "./hub.ts";
+import { GatewayToken } from "./gateway-token.ts";
 import { backoffMs, isRateLimited, LaunchGate } from "./launch-gate.ts";
+import { assertShortArgs, PiPool, PiRpc, piStamp, type RunOutcome } from "./pi-rpc.ts";
 import {
   actionPrompt, calendarPrompt, calendarSweepPrompt, notePrompt, openUrl, postSweepPrompt, schedulePrompt, SITE_LINK, SITE_POSTS,
   transcriptSweepPrompt, triagePrompt, WIKI_DRAFTS,
@@ -22,6 +24,9 @@ import {
 const modelArgs = () => (config.pi.model ? ["--model", config.pi.model] : []);
 const backoff = () => backoffMs({ minSec: config.pi.rateLimitBackoffSec[0] ?? 60, maxSec: config.pi.rateLimitBackoffSec[1] ?? 90 });
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** Tool-less triage: no tools, no context files, skills or prompt templates, no session file. */
+const TRIAGE_FLAGS = ["-nt", "-nc", "-ns", "-np", "--no-session"];
+const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
 const RESUME_NUDGE = "Your last request failed on a provider rate limit. Carry on from where you stopped.";
 
 type RunResult = { ok: boolean; text: string; error?: string; session?: string; toolsRan?: boolean };
@@ -30,6 +35,8 @@ interface Running {
   statusPath?: string;
   seenWork: boolean;
   proc?: ReturnType<typeof spawn>;
+  /** rpc runner: abort this run (and stop its process if it's not a shared worker). */
+  cancel?: () => void;
   /** cmux: rate-limit nudges sent so far, and the pending one (if any). */
   rateRetries?: number;
   retry?: { at: number; seq: number; sent?: number };
@@ -456,6 +463,7 @@ export class Agents implements Dispatcher {
   }
 
   // ── a note typed on a question: what does it mean? ─────────────────────
+  /** Throws when the run fails or its output won't parse: a crash must never read as "context only". Undefined = the question is gone. */
   async readNote(questionId: string, text: string): Promise<NoteDecision | undefined> {
     const q = this.hub.store.question(questionId);
     if (!q) return undefined;
@@ -466,8 +474,9 @@ export class Agents implements Dispatcher {
     });
     const out = extractJson<NoteDecision>(r.text);
     if (!r.ok || !out) {
-      this.patch(job.id, { status: "failed", error: r.error ?? "couldn't parse note reader output", finishedAt: nowIso() });
-      return undefined;
+      const error = r.error ?? "couldn't parse note reader output";
+      this.patch(job.id, { status: "failed", error, finishedAt: nowIso() });
+      throw new Error(error);
     }
     this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: out.reply ?? "Read the note" });
     return out;
@@ -712,34 +721,135 @@ export class Agents implements Dispatcher {
     return this.hub.store.job(jobId)?.error === "cancelled";
   }
 
-  private runHeadlessOnce(
+  private async runHeadlessOnce(
     jobId: string,
     prompt: string,
     o: { tools: boolean; thinking: string; perms: boolean; timeoutMin: number },
     resume?: string,
   ): Promise<RunResult> {
     // Belt and braces: demo mode never gives pi tools (sweeps and actions are scripted above).
-    if (config.demo && o.tools) return Promise.resolve({ ok: false, text: "", error: "demo mode: no tool runs" });
-    const job = this.hub.store.job(jobId)!;
-    const args = ["-p", "--mode", "json", ...modelArgs(), "--thinking", o.thinking];
-    if (o.tools) args.push("-a", "-n", `work-hq: ${job.title}`, "-xt", config.pi.headlessDenyTools);
-    else args.push("-nt", "-nc", "-ns", "-np", "--no-session");
-    if (resume) args.push("--session", resume);
+    if (config.demo && o.tools) return { ok: false, text: "", error: "demo mode: no tool runs" };
     const promptPath = resolve(cmux.jobDir(jobId), "prompt.md");
-    writeFileSync(promptPath, prompt);
-    args.push(resume ? RESUME_NUDGE : `Read ${promptPath} and follow the instructions in it exactly.`);
-    if (!o.tools) args[args.length - 1] = prompt; // no read tool without tools
+    writeFileSync(promptPath, prompt); // the print runner reads it; the rpc runner keeps it for debugging
+    const env = await this.headlessEnv(jobId, o.perms);
+    this.patch(jobId, { status: "running", startedAt: nowIso() });
+    let r: RunResult;
+    try {
+      r = config.pi.runner === "print" ? await this.runPrint(jobId, promptPath, o, env, resume) : await this.runRpc(jobId, prompt, o, env, resume);
+    } catch (e) {
+      r = { ok: false, text: "", error: (e as Error).message };
+    }
+    this.running.delete(jobId);
+    if (r.session) this.patch(jobId, { session: r.session });
+    if (!r.ok && isAuthFailure(`${r.error ?? ""}\n${r.text}`)) this.token.invalidate();
+    return r;
+  }
 
+  // ── env shared by every headless run ─────────────────────────────────────
+  readonly token = new GatewayToken(config.pi.gatewayToken);
+
+  private async headlessEnv(jobId: string | undefined, perms: boolean) {
     const env: Record<string, string> = {
       ...(process.env as Record<string, string>),
       ...cmux.tlsEnv(),
       PATH: `${process.env.HOME}/.local/bin:${process.env.HOME}/.bun/bin:/opt/homebrew/bin:${process.env.PATH ?? "/usr/bin:/bin"}`,
-      WORK_HQ_JOB: jobId,
       WORK_HQ_URL: `http://127.0.0.1:${config.port}`,
+      // Not a terminal: cmux hooks mustn't treat this pi as the surface the server happened to start in.
+      CMUX_PI_HOOKS_DISABLED: "1",
+      ...(await this.token.env()),
     };
-    if (o.perms) Object.assign(env, config.pi.headlessEnv);
+    for (const k of ["CMUX_SURFACE_ID", "CMUX_WORKSPACE_ID", "CMUX_PANEL_ID", "CMUX_PANE_ID", "CMUX_TAB_ID"]) delete env[k];
+    if (jobId) env.WORK_HQ_JOB = jobId;
+    if (perms) Object.assign(env, config.pi.headlessEnv);
+    return env;
+  }
 
-    this.patch(jobId, { status: "running", startedAt: nowIso() });
+  // ── rpc runner: prompt over stdin, warm workers for triage ────────────────
+  private pool?: PiPool;
+  private poolEnv: Record<string, string> = {};
+
+  private triagePool() {
+    this.pool ??= new PiPool({
+      size: config.pi.triageWorkers,
+      make: () => new PiRpc({ bin: config.pi.bin, args: [...modelArgs(), "--thinking", config.pi.triageThinking, ...TRIAGE_FLAGS], cwd: config.workspace.dir, env: this.poolEnv }),
+      // A pi/extension update or a new gateway token retires the warm workers.
+      stamp: () => `${piStamp(config.pi.bin)}:${config.pi.gatewayToken ? (this.poolEnv[config.pi.gatewayToken.env] ?? "").slice(-16) : ""}`,
+    });
+    return this.pool;
+  }
+
+  /** Start the warm triage workers so the first question of the day doesn't wait on pi starting. */
+  async warm() {
+    if (config.pi.runner !== "rpc" || config.pi.triageWorkers <= 0 || config.demo) return;
+    this.poolEnv = await this.headlessEnv(undefined, false);
+    this.triagePool().warm();
+  }
+
+  async stop() {
+    await this.pool?.stop();
+  }
+
+  private async runRpc(
+    jobId: string,
+    prompt: string,
+    o: { tools: boolean; thinking: string; perms: boolean; timeoutMin: number },
+    env: Record<string, string>,
+    resume?: string,
+  ): Promise<RunResult> {
+    const onEvent = (ev: any) => {
+      if (ev.type === "tool_execution_start") this.line(jobId, `▸ ${describeTool(ev.toolName, ev.args)}`);
+      else if (ev.type === "extension_ui_request" && DIALOG_METHODS.has(ev.method)) {
+        this.line(jobId, `⊘ declined a prompt nobody can answer: ${String(ev.title ?? ev.message ?? ev.method).slice(0, 80)}`);
+      }
+    };
+    const timeoutMs = o.timeoutMin * 60_000;
+    let out: RunOutcome;
+    if (!o.tools && o.thinking === config.pi.triageThinking) {
+      // Shared workers carry no job id and no perms env: tool-less triage needs neither.
+      this.poolEnv = (({ WORK_HQ_JOB, ...rest }) => rest)(env);
+      out = await this.triagePool().run(prompt, { timeoutMs, onEvent, onStart: (cancel) => this.running.set(jobId, { seenWork: true, cancel }) });
+    } else {
+      const job = this.hub.store.job(jobId)!;
+      const args = [...modelArgs(), "--thinking", o.thinking];
+      if (o.tools) args.push("-a", "-n", `work-hq: ${job.title}`.slice(0, 120), "-xt", config.pi.headlessDenyTools);
+      else args.push(...TRIAGE_FLAGS);
+      if (resume) args.push("--session", resume);
+      const rpc = new PiRpc({ bin: config.pi.bin, args, cwd: config.workspace.dir, env });
+      this.running.set(jobId, { seenWork: true, cancel: () => void rpc.stop() });
+      try {
+        rpc.start();
+        const idleMs = o.tools && config.pi.stallMin > 0 ? config.pi.stallMin * 60_000 : undefined;
+        out = await rpc.run(resume ? RESUME_NUDGE : prompt, { timeoutMs, idleMs, onEvent });
+      } finally {
+        await rpc.stop();
+      }
+    }
+    const session = out.session ?? resume;
+    const toolsRan = out.toolsRan || Boolean(resume);
+    if (out.ok) return { ok: true, text: out.text, session, toolsRan };
+    const lastStderr = out.stderr.trim().split("\n").pop() ?? "";
+    if ((out.timedOut || out.stalled) && lastStderr) this.line(jobId, `stderr: ${lastStderr}`);
+    return { ok: false, text: out.text, session, toolsRan, error: rpcError(out, o.timeoutMin, config.pi.stallMin) };
+  }
+
+  // ── print runner (`pi -p`): the old path, kept behind pi.runner = "print" ──
+  private runPrint(
+    jobId: string,
+    promptPath: string,
+    o: { tools: boolean; thinking: string; perms: boolean; timeoutMin: number },
+    env: Record<string, string>,
+    resume?: string,
+  ): Promise<RunResult> {
+    const job = this.hub.store.job(jobId)!;
+    const args = ["-p", "--mode", "json", ...modelArgs(), "--thinking", o.thinking];
+    if (o.tools) args.push("-a", "-n", `work-hq: ${job.title}`, "-xt", config.pi.headlessDenyTools);
+    else args.push(...TRIAGE_FLAGS);
+    if (resume) args.push("--session", resume);
+    // Without tools pi can't read the file itself, so attach it with @file. Never put the prompt in argv.
+    if (o.tools) args.push(resume ? RESUME_NUDGE : `Read ${promptPath} and follow the instructions in it exactly.`);
+    else args.push(`@${promptPath}`, "Follow the instructions in the attached file exactly.");
+    assertShortArgs(args);
+
     return new Promise((done) => {
       const proc = spawn(config.pi.bin, args, { cwd: config.workspace.dir, env, stdio: ["ignore", "pipe", "pipe"] });
       this.running.set(jobId, { seenWork: true, proc });
@@ -779,19 +889,16 @@ export class Agents implements Dispatcher {
         }
       });
       proc.stderr.on("data", (c: Buffer) => (stderr = (stderr + c.toString()).slice(-2000)));
-      proc.on("close", (code) => {
+      proc.on("close", (code, signal) => {
         clearTimeout(timer);
-        this.running.delete(jobId);
-        if (session) this.patch(jobId, { session });
         const base = { text: lastText, session, toolsRan };
         if (code === 0 && !lastError) return done({ ok: true, ...base });
         const lastStderr = stderr.trim().split("\n").pop() ?? "";
         if (timedOut && lastStderr) this.line(jobId, `stderr: ${lastStderr}`); // keep it in the tail, not the label
-        done({ ok: false, ...base, error: runError({ code, timedOut, timeoutMin: o.timeoutMin, lastError, stderr }) });
+        done({ ok: false, ...base, error: runError({ code, signal, timedOut, timeoutMin: o.timeoutMin, lastError, stderr }) });
       });
       proc.on("error", (e) => {
         clearTimeout(timer);
-        this.running.delete(jobId);
         done({ ok: false, text: "", error: String(e) });
       });
     });
@@ -800,6 +907,7 @@ export class Agents implements Dispatcher {
   cancel(jobId: string) {
     const r = this.running.get(jobId);
     r?.proc?.kill("SIGTERM");
+    r?.cancel?.();
     const job = this.hub.store.job(jobId);
     if (job?.workspace) cmux.closeWorkspace(job.workspace);
     this.running.delete(jobId);
@@ -824,9 +932,25 @@ const ACTION_LABEL: Record<ActionKind, string> = {
 };
 
 /** Why a pi run failed, in words that point at the real cause. A timeout is ours, not pi's last stderr line. */
-export function runError(r: { code: number | null; timedOut: boolean; timeoutMin: number; lastError?: string; stderr: string }): string {
+export function runError(r: { code: number | null; signal?: string | null; timedOut: boolean; timeoutMin: number; lastError?: string; stderr: string }): string {
   if (r.timedOut) return `timed out after ${r.timeoutMin} min`;
+  if (r.code === null && r.signal === "SIGKILL") return "pi killed by SIGKILL (not us; endpoint security? check `log stream` for sentineld)";
+  if (r.code === null && r.signal) return `pi killed by ${r.signal}`;
   return r.lastError ?? `pi exited ${r.code}: ${r.stderr.trim().split("\n").pop() ?? ""}`;
+}
+
+/** Why an rpc run failed. Our own deadlines first, then a dead process, then the model's error. */
+export function rpcError(r: RunOutcome, timeoutMin: number, stallMin: number): string {
+  if (r.timedOut) return `timed out after ${timeoutMin} min`;
+  if (r.stalled) return `stalled: no activity for ${stallMin} min`;
+  if (r.exit) return runError({ code: r.exit.code, signal: r.exit.signal, timedOut: false, timeoutMin, lastError: r.lastError, stderr: r.stderr });
+  if (r.lastError) return r.lastError;
+  return r.aborted ? "aborted" : "pi run failed";
+}
+
+/** The gateway rejected the token (or couldn't get one): drop the cached token. */
+export function isAuthFailure(text: string) {
+  return Boolean(gatewayAuthError(text)) || /\b401\b|unauthori[sz]ed|invalid (api )?key|token (is )?expired/i.test(text);
 }
 
 /** "API key auth failed for provider X: … access token -app='https://…'" → which provider, which Access app. */
