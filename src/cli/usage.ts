@@ -172,7 +172,7 @@ p("## Typed into the command bar");
 if (!said.length) p("None.");
 for (const j of said) {
   // Narrow on purpose: "card", "question" and "notification" turn up in ordinary asks too.
-  const tag = wrapUp(j) ? " [meeting wrap-up]" : /work ?hq|\bthe (app|dashboard)\b/i.test(j.text) ? " **[about Work HQ itself]**" : "";
+  const tag = wrapUp(j) ? " [meeting wrap-up]" : /work[ -]?hq|\bthe (app|dashboard)\b/i.test(j.text) ? " **[about Work HQ itself]**" : "";
   p(`- ${hm(j.at)} ${md(cut(j.text, 200))}${tag}`);
 }
 p();

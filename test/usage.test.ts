@@ -66,6 +66,7 @@ test("usage digest: command-bar wrap-ups count as typed, and the Work HQ tag is 
   hub.journal(`${prompt}\nSam owns the upstream library contributions`);
   hub.journal("Can you review this question in the RFC before the card deadline?");
   hub.journal("Work HQ should keep focus while I dictate");
+  hub.journal("adapt our work-hq prompting to the new flow");
   const cur = hub.store.question(q.id)!;
   hub.store.putQuestion({ ...cur, status: "answered", answer: "Nothing new", answeredAt: new Date().toISOString() });
   hub.store.db.close();
@@ -76,4 +77,5 @@ test("usage digest: command-bar wrap-ups count as typed, and the Work HQ tag is 
   expect(out).toContain("[meeting wrap-up]");
   expect(out).toMatch(/before the card deadline\?\n/);
   expect(out).toMatch(/keep focus while I dictate \*\*\[about Work HQ itself\]\*\*/);
+  expect(out).toMatch(/work-hq prompting to the new flow \*\*\[about Work HQ itself\]\*\*/);
 });
