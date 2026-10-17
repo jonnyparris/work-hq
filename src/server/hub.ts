@@ -19,6 +19,7 @@ export interface Dispatcher {
   /** Read a typed note against the question it was typed on. Throws if the read failed; undefined = question gone. */
   readNote?(questionId: string, text: string): Promise<NoteDecision | undefined>;
   gatewayLogin?(app: string): Promise<void>;
+  triage?(text: string, mode: "chat" | "pineapple" | "review"): Promise<unknown>;
 }
 
 export class Hub {
@@ -322,6 +323,10 @@ export class Hub {
         break;
       case "gatewayLogin":
         void this.dispatcher?.gatewayLogin?.(effect.app);
+        break;
+      case "triage":
+        // Not awaited: triage takes seconds and the card has already been answered.
+        void this.dispatcher?.triage?.(effect.text, effect.mode)?.catch((e) => this.toast(`Triage failed again: ${errText(e)}`, "warn"));
         break;
       case "multi":
         for (const e of effect.effects) await this.applyEffect(e, q, opt, note);

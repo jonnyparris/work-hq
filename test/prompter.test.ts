@@ -63,6 +63,55 @@ describe("prompter", () => {
     expect(hub.store.questions("open").filter((q) => q.itemId === it.id)).toHaveLength(0);
   });
 
+  test("after two 'Push 1 hour' taps today, lead with tomorrow 09:30 and drop the hourly push", async () => {
+    const it = hub.createItem({ title: "reply to Sam", kind: "message", status: "scheduled", scheduledFor: new Date(Date.now() - 60_000).toISOString() });
+    const due = () => hub.store.questions("open").find((q) => q.itemId === it.id)!;
+    const push = async () => {
+      p.tick(new Date());
+      await hub.answer(due().id, "1h");
+      hub.schedule(it.id, new Date(Date.now() - 5 * 60_000).toISOString(), "now"); // the hour is up (new slot, new key)
+    };
+    await push();
+    p.tick(new Date());
+    expect(due().options.map((o) => o.id)).toContain("1h"); // one push: still offered
+    await hub.answer(due().id, "1h");
+    hub.schedule(it.id, new Date(Date.now() - 10 * 60_000).toISOString(), "now");
+    p.tick(new Date());
+    const q = due();
+    expect(q.options.map((o) => o.id)).not.toContain("1h");
+    expect(q.options[0]).toMatchObject({ id: "am", tone: "primary", effect: { type: "schedule" } });
+    expect(q.options.filter((o) => o.tone === "primary")).toHaveLength(1);
+    const at = new Date((q.options[0]!.effect as { at: string }).at);
+    expect([at.getHours(), at.getMinutes()]).toEqual([9, 30]);
+    expect(at.getDay()).not.toBe(0);
+    expect(at.getDay()).not.toBe(6);
+    // Other items aren't affected.
+    const other = hub.createItem({ title: "other", kind: "message", status: "scheduled", scheduledFor: new Date(Date.now() - 60_000).toISOString() });
+    p.tick(new Date());
+    expect(hub.store.questions("open").find((x) => x.itemId === other.id)!.options.map((o) => o.id)).toContain("1h");
+  });
+
+  test("yesterday's pushes don't count", () => {
+    const it = hub.createItem({ title: "reply to Sam", kind: "message", status: "scheduled", scheduledFor: new Date(Date.now() - 60_000).toISOString() });
+    const old = new Date(Date.now() - 86_400_000);
+    old.setHours(12);
+    for (const n of [1, 2, 3]) {
+      hub.store.putQuestion({ id: `q${n}`, kind: "when", itemId: it.id, key: `due:${it.id}:old${n}`, prompt: "x", options: [], priority: 90,
+        status: "answered", answer: "Push 1 hour", createdAt: old.toISOString(), answeredAt: old.toISOString() });
+    }
+    p.tick(new Date());
+    expect(hub.store.questions("open").find((q) => q.itemId === it.id)!.options.map((o) => o.id)).toContain("1h");
+  });
+
+  test("next work morning skips the weekend", async () => {
+    const { dueOptions, nextWorkMorning } = await import("../src/server/prompter.ts");
+    expect(nextWorkMorning(new Date(2026, 8, 25, 16)).getDay()).toBe(1); // Fri → Mon
+    expect(nextWorkMorning(new Date(2026, 8, 23, 16)).getDate()).toBe(24); // Wed → Thu
+    expect(dueOptions(undefined, 2, new Date(2026, 8, 25, 16))[0]!.label).toBe("Mon 09:30");
+    expect(dueOptions(undefined, 2, new Date(2026, 8, 23, 16))[0]!.label).toBe("Tomorrow 09:30");
+    expect(dueOptions(undefined, 1, new Date(2026, 8, 23, 16)).map((o) => o.id)).toEqual(["doing", "done", "1h", "when"]);
+  });
+
   test("'Scheduled for…' on a due prompt doesn't re-ask while the time is being parsed", async () => {
     const it = hub.createItem({ title: "reply to Sam", kind: "message", status: "scheduled", scheduledFor: new Date(Date.now() - 60_000).toISOString() });
     p.tick(new Date());

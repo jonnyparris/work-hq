@@ -12,7 +12,7 @@ import * as cmux from "./cmux.ts";
 import { config } from "./config.ts";
 import { newId, nowIso } from "./db.ts";
 import { type DemoScript, demoActionScript, demoSweepScript, feedLine } from "./demo.ts";
-import type { Dispatcher, Hub } from "./hub.ts";
+import { type Dispatcher, type Hub, isCrash } from "./hub.ts";
 import { GatewayToken } from "./gateway-token.ts";
 import { backoffMs, isRateLimited, LaunchGate } from "./launch-gate.ts";
 import { assertShortArgs, PiPool, PiRpc, piStamp, type RunOutcome } from "./pi-rpc.ts";
@@ -95,6 +95,9 @@ const realCmux: CmuxDeps = { available: () => Boolean(config.cmux.bin) && cmux.c
 
 /** Prompt saved at dispatch, so a restart while the job waits on the launch gate can still launch it. */
 const promptFile = (jobId: string) => resolve(cmux.jobDir(jobId), "prompt.md");
+/** The owner's words for a triage job, so a restart mid-triage can still offer them back. */
+const triageFile = (jobId: string) => resolve(cmux.jobDir(jobId), "triage.json");
+type TriageMode = "chat" | "pineapple" | "review";
 
 export class Agents implements Dispatcher {
   private running = new Map<string, Running>();
@@ -113,6 +116,7 @@ export class Agents implements Dispatcher {
         this.running.set(job.id, { statusPath: resolve(cmux.jobDir(job.id), "status.json"), seenWork: true });
       } else if (job.surface === "headless" && ["running", "queued"].includes(job.status)) {
         hub.putJob({ ...job, status: "failed", error: "server restarted mid-run", finishedAt: nowIso() });
+        if (job.kind === "triage") this.reaskTriage(job.id, "server restarted mid-run");
       }
     }
   }
@@ -436,18 +440,60 @@ export class Agents implements Dispatcher {
   }
 
   // ── triage (headless, no tools) ────────────────────────────────────────
-  async triage(utterance: string, mode: "chat" | "pineapple" | "review" = "chat"): Promise<TriageResult & { jobId: string }> {
+  /**
+   * A crash (pi died, signal, restart) gets one silent rerun: triage has no tools, so a rerun can't
+   * repeat side effects. If it still fails, the words come back as a card with Retry / Drop —
+   * a failed triage must never leave the ask only in the journal (10-15: lost for 35 hours).
+   */
+  async triage(utterance: string, mode: TriageMode = "chat"): Promise<TriageResult & { jobId: string }> {
     const job = this.newJob("triage", mode, mode === "pineapple" ? `🍍 ${utterance.slice(-60)}` : utterance.slice(0, 80), "headless");
+    writeFileSync(triageFile(job.id), JSON.stringify({ text: utterance, mode }));
     const prompt = triagePrompt(utterance, { now: new Date(), items: this.hub.store.items(), events: this.hub.todayEvents(), questions: this.hub.store.questions("open") }, mode);
-    const r = await this.runHeadless(job.id, prompt, { tools: false, thinking: config.pi.triageThinking, perms: false, timeoutMin: 4 });
-    const result = extractJson<TriageResult>(r.text);
+    const run = () => this.runHeadless(job.id, prompt, { tools: false, thinking: config.pi.triageThinking, perms: false, timeoutMin: 4 });
+    let r = await run();
+    if (!r.ok && !this.cancelled(job.id) && isCrash(r.error ?? "")) {
+      this.line(job.id, `↻ pi crashed (${r.error}), retrying once`);
+      this.hub.journal(`Triage crashed (${r.error}), retrying once`, { who: "hq" });
+      r = await run();
+    }
+    const result = r.ok ? extractJson<TriageResult>(r.text) : undefined;
     if (!r.ok || !result) {
-      this.patch(job.id, { status: "failed", error: r.error ?? "couldn't parse triage output", finishedAt: nowIso() });
-      return { jobId: job.id, reply: "Triage failed — kept your words in the journal." };
+      const error = r.error ?? "couldn't parse triage output";
+      this.patch(job.id, { status: "failed", error, finishedAt: nowIso() });
+      if (this.cancelled(job.id)) return { jobId: job.id, reply: "Triage cancelled." };
+      this.reaskTriage(job.id, error, { text: utterance, mode });
+      return { jobId: job.id, reply: "Triage failed — your words are on a card to retry." };
     }
     await this.applyTriage(result, mode);
     this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: result.reply });
     return { ...result, jobId: job.id };
+  }
+
+  /** Put a failed triage's words back in front of the owner: Retry runs triage again, Drop lets them go. */
+  private reaskTriage(jobId: string, error: string, saved?: { text: string; mode: TriageMode }) {
+    if (!saved) {
+      try {
+        saved = JSON.parse(readFileSync(triageFile(jobId), "utf8"));
+      } catch {
+        return; // triage from before words were saved: nothing to offer back
+      }
+    }
+    const text = saved?.text?.trim();
+    if (!text) return;
+    const mode = saved!.mode ?? "chat";
+    const quote = text.length > 80 ? `${text.slice(0, 80)}…` : text;
+    this.hub.ask({
+      kind: "open",
+      key: `triage-failed:${jobId}`,
+      badge: "Triage failed",
+      priority: 85,
+      prompt: `Couldn't triage: "${quote}"`,
+      context: `${mode === "pineapple" ? "🍍 capture" : mode === "review" ? "Review note" : "Command bar"} · ${error}. Your words are in the journal; nothing was acted on.`,
+      options: [
+        { id: "retry", label: "Retry", tone: "primary", effect: { type: "triage", text, mode } },
+        { id: "drop", label: "Drop", tone: "quiet", effect: { type: "noop" } },
+      ],
+    });
   }
 
   private async applyTriage(t: TriageResult, mode: string) {

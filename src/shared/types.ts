@@ -148,6 +148,8 @@ export type Effect =
   | { type: "noop" }
   /** Run `cloudflared access login <app>` for the model gateway pi uses (one browser tab). */
   | { type: "gatewayLogin"; app: string }
+  /** Run triage again on words a failed triage kept (command bar, 🍍, review notes). */
+  | { type: "triage"; text: string; mode: "chat" | "pineapple" | "review" }
   | { type: "multi"; effects: Effect[] };
 
 export interface Question {

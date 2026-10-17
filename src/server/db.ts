@@ -101,6 +101,14 @@ export class Store {
       .get(key);
     return r ? JSON.parse(r.doc) : undefined;
   }
+  /** Answered questions whose key starts with `prefix`, answered at or after `since` (ISO). */
+  answeredByPrefix(prefix: string, since: string): Question[] {
+    const esc = prefix.replace(/[\\%_]/g, (c) => `\\${c}`);
+    return this.db
+      .query("SELECT doc FROM questions WHERE key LIKE ? ESCAPE '\\' AND status = 'answered' AND updated >= ?")
+      .all(`${esc}%`, since)
+      .map((r: any) => JSON.parse(r.doc));
+  }
   putQuestion(q: Question) {
     this.db
       .query(`INSERT INTO questions (id, status, key, updated, doc) VALUES (?, ?, ?, ?, ?)

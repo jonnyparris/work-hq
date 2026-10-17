@@ -108,13 +108,7 @@ export class Prompter {
           priority: 90,
           prompt: `It's time: ${it.title}`,
           context: it.when ? `You said ${it.when}.` : undefined,
-          options: [
-            ...(act ? [opt("go", act.label, { type: "dispatch", action: act.action }, "primary")] : []),
-            opt("doing", "I'm on it", { type: "status", status: "doing" }, act ? "quiet" : "primary"),
-            opt("done", "Already done", { type: "status", status: "done" }, "good"),
-            opt("1h", "Push 1 hour", { type: "schedule", at: new Date(now.getTime() + 60 * MIN).toISOString(), inMin: 60, label: "in an hour" }),
-            WHEN_OPT,
-          ],
+          options: dueOptions(act, this.pushesToday(it.id, now), now),
           // "Scheduled for…" resolves async; don't re-ask this slot while the new time is landing.
           cooldownMin: 15,
         },
@@ -390,6 +384,12 @@ export class Prompter {
 
   private open: Question[] = [];
 
+  /** "Push 1 hour" taps since local midnight on this item's due prompts (any slot). */
+  private pushesToday(itemId: string, now: Date) {
+    const since = atLocal(0, 0, 0, now).toISOString();
+    return this.hub.store.answeredByPrefix(`due:${itemId}:`, since).filter((q) => q.answer?.startsWith(PUSH_1H)).length;
+  }
+
   private ask(q: Omit<Question, "id" | "status" | "createdAt"> & { cooldownMin?: number; once?: boolean }, notify = false) {
     const created = this.hub.ask(q);
     if (created) this.open.push(created);
@@ -489,6 +489,34 @@ export function reviewDigest(meetings: Array<{ title: string; day: string }>, no
 /** What a review card's typed note goes to triage with: the question, plus the meeting list for a folded card. */
 export function reviewUtterance(q: Pick<Question, "prompt" | "key" | "context">, note: string) {
   return [q.prompt, q.key.startsWith("reviews:") ? q.context : "", note].filter(Boolean).join("\n");
+}
+
+const PUSH_1H = "Push 1 hour";
+
+/** Next workday at 09:30: tomorrow, or Monday from Friday/the weekend. */
+export function nextWorkMorning(now: Date) {
+  const d = atLocal(9, 30, 1, now);
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+  return d;
+}
+
+/**
+ * Options for an "It's time" prompt. After two "Push 1 hour" taps today the hour clearly isn't working:
+ * lead with the next work morning and drop the hourly push.
+ */
+export function dueOptions(act: { action: ActionKind; label: string } | undefined, pushes: number, now: Date): QuestionOption[] {
+  const tired = pushes >= 2;
+  const morning = nextWorkMorning(now);
+  const tomorrow = localDate(morning) === localDate(atLocal(12, 0, 1, now));
+  const label = `${tomorrow ? "Tomorrow" : morning.toLocaleDateString("en-GB", { weekday: "short" })} 09:30`;
+  return [
+    ...(tired ? [opt("am", label, { type: "schedule", at: morning.toISOString(), label: label.toLowerCase() }, "primary")] : []),
+    ...(act ? [opt("go", act.label, { type: "dispatch", action: act.action }, tired ? "quiet" : "primary")] : []),
+    opt("doing", "I'm on it", { type: "status", status: "doing" }, act || tired ? "quiet" : "primary"),
+    opt("done", "Already done", { type: "status", status: "done" }, "good"),
+    ...(tired ? [] : [opt("1h", PUSH_1H, { type: "schedule", at: new Date(now.getTime() + 60 * MIN).toISOString(), inMin: 60, label: "in an hour" })]),
+    WHEN_OPT,
+  ];
 }
 
 function opt(id: string, label: string, effect: QuestionOption["effect"], tone?: QuestionOption["tone"]): QuestionOption {
