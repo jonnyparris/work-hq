@@ -86,25 +86,67 @@ export function extractJson<T = any>(text: string): T | undefined {
   return undefined;
 }
 
+/** The cmux seams, swappable in tests (a real ping/launch would reach the owner's cmux). */
+export interface CmuxDeps {
+  available(): boolean;
+  launch: typeof cmux.launchInCmux;
+}
+const realCmux: CmuxDeps = { available: () => Boolean(config.cmux.bin) && cmux.cmuxAvailable(), launch: cmux.launchInCmux };
+
+/** Prompt saved at dispatch, so a restart while the job waits on the launch gate can still launch it. */
+const promptFile = (jobId: string) => resolve(cmux.jobDir(jobId), "prompt.md");
+
 export class Agents implements Dispatcher {
   private running = new Map<string, Running>();
   /** Every pi launch goes through here, so bursts can't trip per-minute provider limits. */
   readonly gate = new LaunchGate(() => config.pi.launchSpacingSec * 1000);
 
-  constructor(private hub: Hub) {
+  constructor(private hub: Hub, private cmuxDeps: CmuxDeps = realCmux) {
     hub.dispatcher = this;
     ensureSiteLink();
     // Pick up cmux jobs that were running when the server restarted.
     for (const job of hub.store.jobs(100)) {
       if (job.surface === "cmux" && job.status === "queued" && !job.workspace) {
-        // Was waiting on the launch gate; never started.
-        hub.putJob({ ...job, status: "failed", error: "server restarted before launch", finishedAt: nowIso() });
+        // Was waiting on the launch gate; never started, so it's safe to launch again.
+        this.relaunchUnstarted(job);
       } else if (job.surface === "cmux" && ["running", "blocked", "queued"].includes(job.status)) {
         this.running.set(job.id, { statusPath: resolve(cmux.jobDir(job.id), "status.json"), seenWork: true });
       } else if (job.surface === "headless" && ["running", "queued"].includes(job.status)) {
         hub.putJob({ ...job, status: "failed", error: "server restarted mid-run", finishedAt: nowIso() });
       }
     }
+  }
+
+  /**
+   * A cmux job a restart caught on the launch gate. Put it back on the gate with the prompt
+   * saved at dispatch. If that can't work (no cmux, no saved prompt, item gone, demo), fail it
+   * and hand the item back with a card to send it again — never leave the item stuck on `doing`.
+   */
+  private relaunchUnstarted(job: Job) {
+    const item = job.itemId ? this.hub.store.item(job.itemId) : undefined;
+    const prompt = existsSync(promptFile(job.id)) ? readFileSync(promptFile(job.id), "utf8") : undefined;
+    if (item && prompt && job.kind === "action" && !config.demo && this.cmuxDeps.available()) {
+      this.hub.putJob({ ...job, tail: [...job.tail, "▸ server restarted before launch — queued again"].slice(-12) });
+      void this.launchAction(job.id, job.title, prompt, true);
+      return;
+    }
+    this.hub.putJob({ ...job, status: "failed", error: "server restarted before launch", finishedAt: nowIso() });
+    if (!item || job.kind !== "action") return;
+    if (item.status === "doing") this.hub.updateItem(item.id, { status: "proposed" });
+    const action = job.name as ActionKind;
+    this.hub.ask({
+      kind: "dispatch",
+      itemId: item.id,
+      key: `restart:${job.id}`,
+      badge: "Didn't run",
+      priority: 80,
+      prompt: `Restart killed this before it ran: ${item.title}. Send it again?`,
+      context: `The server restarted while "${ACTION_LABEL[action] ?? action}" was waiting to launch.`,
+      options: [
+        { id: "again", label: "Send it again", tone: "primary", effect: { type: "dispatch", action } },
+        { id: "later", label: "Not now", tone: "quiet", effect: { type: "noop" } },
+      ],
+    });
   }
 
   private newJob(kind: JobKind, name: string, title: string, surface: Job["surface"], itemId?: string): Job {
@@ -126,7 +168,7 @@ export class Agents implements Dispatcher {
     const item = this.hub.store.item(itemId);
     if (!item) return undefined;
     const title = `${ACTION_LABEL[action]} · ${item.title}`.slice(0, 80);
-    const useCmux = Boolean(config.cmux.bin) && cmux.cmuxAvailable();
+    const useCmux = this.cmuxDeps.available();
     const job = this.newJob("action", action, title, useCmux ? "cmux" : "headless", itemId);
     // Verifying doesn't change what the item *is*; everything else means someone's on it.
     if (action !== "verify") this.hub.updateItem(itemId, { status: "doing" });
@@ -135,6 +177,7 @@ export class Agents implements Dispatcher {
       return this.hub.store.job(job.id);
     }
     const prompt = actionPrompt(job.id, item, action, note);
+    if (useCmux) writeFileSync(promptFile(job.id), prompt);
     // Launch in the background: the gate may hold it for a while and callers shouldn't wait.
     void this.launchAction(job.id, title, prompt, useCmux);
     return this.hub.store.job(job.id);
@@ -149,7 +192,7 @@ export class Agents implements Dispatcher {
       }
       await this.gate.acquire();
       if (this.hub.store.job(jobId)?.status !== "queued") return; // cancelled while waiting
-      const launched = cmux.launchInCmux({
+      const launched = this.cmuxDeps.launch({
         jobId: jobId,
         title,
         prompt,
