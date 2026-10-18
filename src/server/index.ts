@@ -138,7 +138,7 @@ const server = Bun.serve({
           const b = await body<{ optionId: string; note?: string; itemIds?: string[] }>(req);
           const q = hub.store.question(req.params.id);
           if (!q) throw new Error("no such question");
-          const answered = await hub.answer(q.id, b.optionId, b.note);
+          const answered = await hub.answer(q.id, b.optionId, b.note, { journalOpen: true });
           // Kind-specific follow-through that doesn't fit a plain Effect.
           if (q.kind === "plan" && b.optionId === "plan") {
             for (const id of b.itemIds ?? []) hub.setStatus(id, "today", "picked in morning plan");
@@ -151,7 +151,6 @@ const server = Bun.serve({
             if (job) agents.focus(job.id);
             else hub.toast("That session was closed after sitting idle. `pi --resume` in your workspace brings it back.", "warn");
           }
-          if (q.kind === "open") hub.journal(`${q.prompt} → ${answered.answer}`);
           return answered;
         }),
     },

@@ -239,7 +239,11 @@ export class Hub {
     this.emit({ type: "question", data: q });
   }
 
-  async answer(questionId: string, optionId: string, note?: string) {
+  /**
+   * `journalOpen`: also journal "prompt → answer" for an `open` question, unless the effect
+   * already wrote that line (item-less status/open/noop do). The answer route sets it.
+   */
+  async answer(questionId: string, optionId: string, note?: string, opts: { journalOpen?: boolean } = {}) {
     const q = this.store.question(questionId);
     if (!q || q.status !== "open") throw new Error("question not open");
     const opt = q.options.find((o) => o.id === optionId);
@@ -250,7 +254,8 @@ export class Hub {
     this.store.putQuestion(q);
     this.emit({ type: "question", data: q });
     this.rememberAnswer(q, opt.label, note);
-    await this.applyEffect(opt.effect, q, opt, note);
+    const journaled = await this.applyEffect(opt.effect, q, opt, note);
+    if (opts.journalOpen && q.kind === "open" && !journaled) this.journal(`${q.prompt} → ${q.answer}`);
     return q;
   }
 
@@ -271,8 +276,14 @@ export class Hub {
     this.updateItem(item.id, { notes: [...notes, { at: nowIso(), text }].slice(-20) });
   }
 
-  async applyEffect(effect: Effect, q: Question | undefined, opt: QuestionOption | undefined, note?: string) {
+  /** Returns true when it journaled the "prompt → answer" line itself. */
+  async applyEffect(effect: Effect, q: Question | undefined, opt: QuestionOption | undefined, note?: string): Promise<boolean> {
     let itemId = q?.itemId;
+    let journaled = false;
+    const answerLine = () => {
+      this.journal(`${q?.prompt} → ${opt?.label}${note ? ` — ${note}` : ""}`);
+      journaled = true;
+    };
     // Meeting questions have no item until the owner wants something done about them.
     if (!itemId && q?.eventId && effect.type === "dispatch") {
       const ev = this.store.events().find((e) => e.id === q.eventId);
@@ -290,7 +301,7 @@ export class Hub {
     switch (effect.type) {
       case "status":
         if (itemId) this.setStatus(itemId, effect.status, note ?? effect.note);
-        else this.journal(`${q?.prompt} → ${opt?.label}${note ? ` — ${note}` : ""}`);
+        else answerLine();
         break;
       case "schedule":
         if (itemId) this.schedule(itemId, effect.inMin ? new Date(Date.now() + effect.inMin * 60_000).toISOString() : effect.at, effect.label);
@@ -316,10 +327,10 @@ export class Hub {
       case "open":
         openLocal(effect.url);
         if (effect.keep && q) this.reopen(q, 0);
-        else if (q && !itemId) this.journal(`${q.prompt} → ${opt?.label}${note ? ` — ${note}` : ""}`);
+        else if (q && !itemId) answerLine();
         break;
       case "noop":
-        if (q && !itemId) this.journal(`${q.prompt} → ${opt?.label}${note ? ` — ${note}` : ""}`);
+        if (q && !itemId) answerLine();
         break;
       case "gatewayLogin":
         void this.dispatcher?.gatewayLogin?.(effect.app);
@@ -330,9 +341,10 @@ export class Hub {
         void this.dispatcher?.triage?.(note?.trim() ? `${effect.text}\nThey added: ${note.trim()}` : effect.text, effect.mode)?.catch((e) => this.toast(`Triage failed again: ${errText(e)}`, "warn"));
         break;
       case "multi":
-        for (const e of effect.effects) await this.applyEffect(e, q, opt, note);
+        for (const e of effect.effects) if (await this.applyEffect(e, q, opt, note)) journaled = true;
         break;
     }
+    return journaled;
   }
 
   /**
