@@ -130,10 +130,13 @@ describe("prompter", () => {
     expect(hub.store.questions("open").filter((q) => q.itemId === it.id)).toHaveLength(0);
   });
 
-  test("meeting prep 15 minutes before a small meeting", () => {
+  test("meeting prep 15 minutes before a small meeting: card only, no desktop ping", () => {
+    const seen: string[] = [];
+    hub.subscribe((e) => e.type === "notify" && seen.push(e.data.body));
     hub.setEvents([{ id: "e1", title: "1-1 Sam", start: at(10, 15).toISOString(), end: at(10, 45).toISOString(), attendees: ["Sam", "Alex"], oneOnOne: true }]);
     p.tick(at(10));
     expect(hub.store.questions("open").some((q) => q.kind === "prep")).toBe(true);
+    expect(seen.some((b) => b.startsWith("1-1 Sam"))).toBe(false);
   });
 
   test("no prep for solo holds", () => {

@@ -132,7 +132,8 @@ export class Prompter {
             eventId: ev.id,
             key: `prep:${ev.id}`,
             once: true,
-            priority: 85,
+            // Card only, no desktop ping: 41 pings to 09-25..10-16, 37 expired untouched (10-17 reflection).
+            priority: 75,
             prompt: `${ev.title} in ${Math.round((start - now.getTime()) / MIN)} min. Want a brief?`,
             context: ev.attendees?.length ? `With ${ev.attendees.slice(0, 5).join(", ")}` : undefined,
             options: [
@@ -140,7 +141,6 @@ export class Prompter {
               opt("no", "I'm good", { type: "noop" }, "quiet"),
             ],
           },
-          true,
         );
       }
       // Never RSVP'd = probably didn't go. 1-1s are the exception: plenty of real ones never get accepted.
