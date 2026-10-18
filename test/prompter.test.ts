@@ -3,6 +3,7 @@ import { Store } from "../src/server/db.ts";
 import { Hub } from "../src/server/hub.ts";
 import { isOwner, Prompter } from "../src/server/prompter.ts";
 import { config } from "../src/server/config.ts";
+import { type MrInfo, MrStates, parseMrRef } from "../src/server/mr-state.ts";
 
 let hub: Hub;
 let p: Prompter;
@@ -409,4 +410,87 @@ describe("meeting-ended cards from earlier days", () => {
       "Yesterday's meetings (1): …\n- X\nwill do Y",
     );
   });
+});
+
+describe("state cards check the item's MR first", () => {
+  const MR = "https://gitlab.example.com/me/agent-relay-mcp/-/merge_requests/1";
+  const MR2 = "https://gitlab.example.com/me/agent-relay-mcp/-/merge_requests/2#note_9";
+  const stub = (states: Record<string, MrInfo>) => {
+    const calls: string[] = [];
+    const mrs = new MrStates(async (r) => (calls.push(r.url), states[r.url] ?? { state: "unknown" }));
+    return { mrs, calls, p: new Prompter(hub, mrs) };
+  };
+  const merged: MrInfo = { state: "merged", mergedAt: "2026-10-14T08:49:37Z" };
+
+  test("state-unknown item with a merged MR: 'Done (merged MM-DD)' is the primary option", async () => {
+    const { mrs, p } = stub({ [MR]: merged });
+    const it = hub.createItem({ title: "events MR", status: "proposed", links: [MR], signals: { stateUnknown: true } });
+    p.tick(at(15));
+    expect(hub.store.questions("open").filter((q) => q.itemId === it.id)).toHaveLength(0); // held until glab replies
+    await mrs.settled();
+    p.tick(at(15, 1));
+    const q = hub.store.questions("open").find((q) => q.key === `state:${it.id}`)!;
+    expect(q.options[0]).toMatchObject({ label: "Done (merged 10-14)", tone: "primary", effect: { type: "status", status: "done" } });
+    expect(q.options.filter((o) => o.tone === "primary")).toHaveLength(1);
+    expect(q.context).toContain("agent-relay-mcp!1 merged 10-14");
+    await hub.answer(q.id, "done");
+    expect(hub.store.item(it.id)!.status).toBe("done");
+  });
+
+  test("long-waiting item with a merged MR leads with Done, not 'Chase them'", async () => {
+    const { mrs, p } = stub({ [MR]: merged });
+    const it = hub.createItem({ title: "waiting on review", status: "waiting", links: [MR] });
+    const later = new Date(Date.now() + 4 * 86_400_000);
+    p.tick(later);
+    await mrs.settled();
+    p.tick(later);
+    const q = hub.store.questions("open").find((q) => q.key === `wait:${it.id}`)!;
+    expect(q.badge).toBe("MR merged");
+    expect(q.options[0]).toMatchObject({ label: "Done (merged 10-14)", tone: "primary" });
+    expect(q.options.find((o) => o.id === "chase")!.tone).toBe("quiet");
+  });
+
+  test("an open MR (or one of two still open) keeps the usual card", async () => {
+    const { mrs, p } = stub({ [MR]: merged, [MR2.split("#")[0]!]: { state: "opened" } });
+    const it = hub.createItem({ title: "two MRs", status: "proposed", links: [MR, MR2], signals: { stateUnknown: true } });
+    p.tick(at(15));
+    await mrs.settled();
+    p.tick(at(15, 1));
+    const q = hub.store.questions("open").find((q) => q.key === `state:${it.id}`)!;
+    expect(q.options[0]!.label).toBe("Done");
+    expect(q.context).toStartWith("Memory doesn't know");
+  });
+
+  test("glab failing falls back to the usual card; non-MR items never call glab", async () => {
+    const { mrs, p, calls } = stub({});
+    const a = hub.createItem({ title: "MR, glab down", status: "proposed", links: [MR], signals: { stateUnknown: true } });
+    const b = hub.createItem({ title: "no MR", status: "proposed", links: ["https://jira.example.com/browse/X-1"], signals: { stateUnknown: true } });
+    p.tick(at(15));
+    expect(hub.store.questions("open").some((q) => q.itemId === b.id)).toBe(true); // asked straight away
+    await mrs.settled();
+    p.tick(at(15, 1));
+    expect(hub.store.questions("open").find((q) => q.itemId === a.id)!.options[0]!.label).toBe("Done");
+    expect(calls).toEqual([MR]);
+  });
+
+  test("one lookup per MR, not one per tick", async () => {
+    const { mrs, p, calls } = stub({ [MR]: merged });
+    hub.createItem({ title: "x", status: "proposed", links: [MR, `${MR}#note_1`], signals: { stateUnknown: true } });
+    for (let i = 0; i < 5; i++) p.tick(at(15, i));
+    await mrs.settled();
+    for (let i = 5; i < 10; i++) p.tick(at(15, i));
+    expect(calls).toHaveLength(1);
+  });
+});
+
+test("parseMrRef reads MR URLs and ignores everything else", () => {
+  expect(parseMrRef("https://gitlab.example.com/a/b/c/-/merge_requests/12#note_3")).toEqual({
+    url: "https://gitlab.example.com/a/b/c/-/merge_requests/12",
+    host: "gitlab.example.com",
+    project: "a/b/c",
+    iid: 12,
+  });
+  expect(parseMrRef("https://gitlab.example.com/a/b/-/merge_requests/12/diffs")).toBeUndefined();
+  expect(parseMrRef("https://jira.example.com/browse/X-1")).toBeUndefined();
+  expect(parseMrRef("not a url")).toBeUndefined();
 });

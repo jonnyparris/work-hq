@@ -6,6 +6,7 @@ import type { ActionKind, CalendarEvent, Item, Question, QuestionOption } from "
 import { config } from "./config.ts";
 import type { Hub } from "./hub.ts";
 import { localDate } from "./memory-sync.ts";
+import { type MrVerdict, MrStates } from "./mr-state.ts";
 import { openUrl } from "./prompts.ts";
 
 const MIN = 60_000;
@@ -76,7 +77,11 @@ export const WHEN_OPT: QuestionOption = {
 };
 
 export class Prompter {
-  constructor(private hub: Hub) {}
+  constructor(
+    private hub: Hub,
+    /** MR state for items whose ref is an MR. Tests pass a stubbed fetch. */
+    readonly mrs = new MrStates(),
+  ) {}
 
   tick(now = new Date()) {
     const store = this.hub.store;
@@ -271,17 +276,21 @@ export class Prompter {
       .sort((a, b) => rank(a) - rank(b) || a.createdAt.localeCompare(b.createdAt));
     for (const it of unknown) {
       if (budget <= 0 || openCount("state", (q) => q.key.startsWith("state:")) >= CAP.state) break;
+      // An MR ref answers the question better than memory can. Hold the card until glab has replied.
+      const mr = this.mrs.verdict(it);
+      if (mr === "pending") continue;
       if (
         this.ask({
           kind: "state",
           itemId: it.id,
           key: `state:${it.id}`,
+          ...(mr ? { badge: "MR merged" } : {}),
           priority: 60,
           prompt: it.title,
-          context: `Memory doesn't know where this stands.${it.detail ? ` ${excerpt(it.detail)}` : ""}`,
+          context: mr ? `${mergedLine(mr)} Probably done.` : `Memory doesn't know where this stands.${it.detail ? ` ${excerpt(it.detail)}` : ""}`,
           options: [
-            opt("done", "Done", { type: "status", status: "done" }, "good"),
-            opt("today", "Doing it today", { type: "status", status: "today" }, "primary"),
+            opt("done", mr ? mergedLabel(mr) : "Done", { type: "status", status: "done", ...(mr ? { note: mergedLine(mr) } : {}) }, mr ? "primary" : "good"),
+            opt("today", "Doing it today", { type: "status", status: "today" }, mr ? "quiet" : "primary"),
             opt("wait", "Waiting on someone", { type: "status", status: "waiting" }),
             opt("check", "Check for me", { type: "dispatch", action: "verify" }),
             WHEN_OPT,
@@ -322,18 +331,22 @@ export class Prompter {
     // 9. Waiting too long.
     for (const it of items.filter((i) => i.status === "waiting" && now.getTime() - Date.parse(i.updatedAt) > 3 * DAY)) {
       if (budget <= 0 || openCount("state", (q) => q.key.startsWith("wait:")) >= CAP.waiting) break;
+      const mr = this.mrs.verdict(it);
+      if (mr === "pending") continue;
+      const waited = `You've been waiting on this for ${Math.round((now.getTime() - Date.parse(it.updatedAt)) / DAY)} days.`;
       if (
         this.ask({
           kind: "state",
           itemId: it.id,
           key: `wait:${it.id}`,
-          badge: "Still waiting",
+          badge: mr ? "MR merged" : "Still waiting",
           priority: 50,
           prompt: it.title,
-          context: `You've been waiting on this for ${Math.round((now.getTime() - Date.parse(it.updatedAt)) / DAY)} days.`,
+          context: mr ? `${waited} ${mergedLine(mr)}` : waited,
           options: [
-            opt("chase", "Chase them", { type: "dispatch", action: "reply" }, "primary"),
-            opt("done", "Resolved", { type: "status", status: "done" }, "good"),
+            ...(mr ? [opt("done", mergedLabel(mr), { type: "status", status: "done", note: mergedLine(mr) }, "primary")] : []),
+            opt("chase", "Chase them", { type: "dispatch", action: "reply" }, mr ? "quiet" : "primary"),
+            ...(mr ? [] : [opt("done", "Resolved", { type: "status", status: "done" }, "good")]),
             opt("keep", "Keep waiting", { type: "status", status: "waiting" }),
             WHEN_OPT,
           ],
@@ -517,6 +530,21 @@ export function dueOptions(act: { action: ActionKind; label: string } | undefine
     ...(tired ? [] : [opt("1h", PUSH_1H, { type: "schedule", at: new Date(now.getTime() + 60 * MIN).toISOString(), inMin: 60, label: "in an hour" })]),
     WHEN_OPT,
   ];
+}
+
+type Merged = Exclude<MrVerdict, "pending" | undefined>;
+
+/** "10-14" (local), or "" when GitLab gave no date. */
+function mergedDay(mr: Merged) {
+  return mr.mergedAt ? localDate(new Date(mr.mergedAt)).slice(5) : "";
+}
+
+const mergedLabel = (mr: Merged) => `Done (merged${mr.mergedAt ? ` ${mergedDay(mr)}` : ""})`;
+
+/** "agent-relay-mcp!1 merged 10-14." */
+function mergedLine(mr: Merged) {
+  const names = mr.refs.map((r) => `${r.project.split("/").pop()}!${r.iid}`).join(", ");
+  return `${names} ${mr.refs.length > 1 ? "all merged" : "merged"}${mr.mergedAt ? ` ${mergedDay(mr)}` : ""}.`;
 }
 
 function opt(id: string, label: string, effect: QuestionOption["effect"], tone?: QuestionOption["tone"]): QuestionOption {
