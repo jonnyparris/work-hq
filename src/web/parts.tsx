@@ -500,7 +500,7 @@ function JobCard({ j }: { j: Job }) {
 }
 
 // ── Journal ───────────────────────────────────────────────────────────────
-export function JournalPanel({ journal, onAll }: { journal: JournalEntry[]; onAll: () => void }) {
+export function JournalPanel({ journal, onAll, onOpenItem }: { journal: JournalEntry[]; onAll: () => void; onOpenItem?: (id: string) => void }) {
   const pending = journal.filter((j) => !j.synced).length;
   return (
     <div className="panel">
@@ -509,22 +509,33 @@ export function JournalPanel({ journal, onAll }: { journal: JournalEntry[]; onAl
         {pending > 0 && <span className="count" title="Not yet written to memory" style={{ color: "var(--gold)" }}>{pending} unsaved</span>}
         <button className="act" onClick={onAll}>All →</button>
       </div>
-      {journal.slice(0, 10).map((j) => <JRow key={j.id} j={j} />)}
+      {journal.slice(0, 10).map((j) => <JRow key={j.id} j={j} onOpen={onOpenItem} />)}
       {!journal.length && <div className="empty">Every decision you make here is written down, then saved to memory.</div>}
     </div>
   );
 }
 
-function JRow({ j }: { j: JournalEntry }) {
+/** A row tied to an item opens its drawer, so you can reopen or redispatch something closed by mistake. */
+export function JRow({ j, onOpen }: { j: JournalEntry; onOpen?: (id: string) => void }) {
+  const id = j.itemId;
+  const link = id && onOpen
+    ? {
+        role: "button",
+        tabIndex: 0,
+        title: "Open item",
+        onClick: () => onOpen(id),
+        onKeyDown: (e: { key: string; preventDefault: () => void }) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(id); } },
+      }
+    : {};
   return (
-    <div className="jr">
+    <div className={id && onOpen ? "jr link" : "jr"} {...link}>
       <time>{hhmm(j.at)}</time>
       <div className={`who-${j.who}`}>{j.text}{!j.synced && <span className="unsynced" title="Not in memory yet" />}</div>
     </div>
   );
 }
 
-export function JournalPage({ journal, journalPath }: { journal: JournalEntry[]; journalPath?: string }) {
+export function JournalPage({ journal, journalPath, onOpenItem }: { journal: JournalEntry[]; journalPath?: string; onOpenItem?: (id: string) => void }) {
   const byDay = new Map<string, JournalEntry[]>();
   for (const j of journal) {
     const d = new Date(j.at).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
@@ -543,7 +554,7 @@ export function JournalPage({ journal, journalPath }: { journal: JournalEntry[];
       {[...byDay.entries()].map(([d, list]) => (
         <div key={d}>
           <div className="day-h">{d}</div>
-          {list.map((j) => <JRow key={j.id} j={j} />)}
+          {list.map((j) => <JRow key={j.id} j={j} onOpen={onOpenItem} />)}
         </div>
       ))}
     </div>

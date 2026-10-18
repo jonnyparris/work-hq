@@ -32,7 +32,15 @@ const asked = allQuestions.filter((q) => inWin(q.createdAt) || inWin(q.answeredA
 const journal = docs<JournalEntry>("SELECT doc FROM journal WHERE updated >= ? AND updated < ? ORDER BY updated", since, until);
 const jobs = docs<Job>("SELECT doc FROM jobs").filter((j) => inWin(j.createdAt));
 const title = (id?: string) => (id ? items.get(id)?.title ?? id : "—");
-const hm = (iso?: string) => (iso ? new Date(iso).toTimeString().slice(0, 5) : "--:--");
+// Over a day, a bare HH:MM makes 10-13 and 10-15 read like one batch: add the date.
+const multiDay = Date.parse(until) - Date.parse(since) > 86400_000;
+const pad = (n: number) => String(n).padStart(2, "0");
+const hm = (iso?: string) => {
+  if (!iso) return multiDay ? "--:-- --:--" : "--:--";
+  const d = new Date(iso);
+  const t = d.toTimeString().slice(0, 5);
+  return multiDay ? `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${t}` : t;
+};
 const md = (s: string) => s.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
 const cut = (s: string, n = 110) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const out: string[] = [];
@@ -163,6 +171,32 @@ if (errors.size) {
   p("\nFailures:");
   for (const [e, n] of [...errors].sort((a, b) => b[1] - a[1])) p(`- ×${n} ${md(e)}`);
 }
+p();
+
+// ── taps that should have started something ────────────────────────────
+// A command-bar follow-up ("Want an agent to…?") answered yes with no agent or triage run after it:
+// the button looked like it worked and did nothing. "Any job within 15 min" is too loose: taps come
+// in batches, and on 10-14 forty other jobs started in the 15 min after a dead tap. What counts:
+// a triage run started within 2 min (the tap's own effect), or a note run on this card within 15.
+p("## Yes taps that started nothing");
+const yes = /\b(yes|send|draft|dispatch|research|verify)\b/i;
+const allJobs = docs<Job>("SELECT doc FROM jobs").filter((j) => j.kind === "triage");
+const followed = (q: Question) => {
+  const t = Date.parse(q.answeredAt!);
+  return allJobs.some((j) => {
+    const dt = Date.parse(j.createdAt) - t;
+    if (dt < -1000) return false;
+    if (j.name === "note") return dt <= 15 * 60_000 && j.title.startsWith(`Note: ${q.prompt}`.slice(0, 40));
+    return ["chat", "pineapple", "review"].includes(j.name) && dt <= 2 * 60_000;
+  });
+};
+const dead = asked.filter((q) => {
+  if (!q.key.startsWith("triage:") || q.status !== "answered" || !inWin(q.answeredAt)) return false;
+  return yes.test((q.answer ?? "").split(" — ")[0]!) && !followed(q);
+});
+if (!dead.length) p("None.");
+for (const q of dead.sort((a, b) => a.answeredAt!.localeCompare(b.answeredAt!)))
+  p(`- ${hm(q.answeredAt)} **${md(cut(q.prompt, 120))}** → ${md(cut(q.answer ?? "", 60))}: **no triage run after it**`);
 p();
 
 // ── what the owner typed that wasn't an answer ─────────────────────────────

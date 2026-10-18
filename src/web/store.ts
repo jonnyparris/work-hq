@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import type { BulkRequest } from "../shared/batch.ts";
-import type { ActionKind, ItemStatus, ServerEvent, Snapshot } from "../shared/types.ts";
+import type { ActionKind, Item, ItemStatus, ServerEvent, Snapshot } from "../shared/types.ts";
 import { setProfile, setTracker } from "./ui.tsx";
 
 type State = Snapshot & { connected: boolean; toasts: Array<{ id: number; text: string; tone?: string }> };
@@ -97,6 +97,7 @@ export const api = {
     call("POST", `/api/questions/${id}/answer`, { optionId, note, itemIds }),
   /** A typed note on a question. The server acts on it (answer / status / schedule / agent) or parks it till tomorrow. */
   note: (id: string, text: string) => call<{ pending: boolean }>("POST", `/api/questions/${id}/note`, { text }),
+  item: (id: string) => call<Item>("GET", `/api/items/${id}`),
   setStatus: (id: string, status: ItemStatus, note?: string) => call("PATCH", `/api/items/${id}`, { status, note }),
   patch: (id: string, patch: Record<string, unknown>) => call("PATCH", `/api/items/${id}`, patch),
   dispatch: (id: string, action: ActionKind, note?: string) => call("POST", `/api/items/${id}/dispatch`, { action, note }),

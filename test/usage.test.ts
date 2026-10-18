@@ -79,3 +79,33 @@ test("usage digest: command-bar wrap-ups count as typed, and the Work HQ tag is 
   expect(out).toMatch(/keep focus while I dictate \*\*\[about Work HQ itself\]\*\*/);
   expect(out).toMatch(/work-hq prompting to the new flow \*\*\[about Work HQ itself\]\*\*/);
 });
+
+test("usage digest: a yes on a command-bar follow-up with no job after it is flagged; dates show over a day", async () => {
+  const path = `${tmpdir()}/whq-usage-dead-${Date.now()}.db`;
+  const hub = new Hub(new Store(path));
+  const now = Date.now();
+  const iso = (ago: number) => new Date(now - ago * 60_000).toISOString();
+  const put = (key: string, prompt: string, answer: string, ago: number) =>
+    hub.store.putQuestion({ id: `q_${key}`, kind: "open", key, prompt, answer, status: "answered", priority: 80, options: [], createdAt: iso(ago + 5), answeredAt: iso(ago) });
+  put("triage:1", "Want an agent to find both and update them to M5?", "Yes, dispatch", 26 * 60); // nothing after it
+  put("triage:2", "Send an agent to find the owner?", "Yes, research it", 120); // a job followed
+  put("triage:3", "Draft the usage report?", "No", 90); // not a yes
+  put("triage-failed:4", "Couldn't triage: \"x\"", "Retry", 60); // not a follow-up card
+  const job = { id: "j1", kind: "triage", name: "chat", title: "find the owner", surface: "headless", status: "done", tail: [], createdAt: iso(119.5) } as any;
+  hub.store.putJob(job); // the tap's own triage run
+  hub.store.putJob({ ...job, id: "j2", kind: "sweep", name: "transcripts", createdAt: iso(26 * 60 - 1) }); // a sweep doesn't count
+  hub.store.putJob({ ...job, id: "j3", kind: "action", name: "work", createdAt: iso(26 * 60 - 1) }); // nor does another item's dispatch
+  hub.store.putJob({ ...job, id: "j4", kind: "triage", name: "chat", createdAt: iso(26 * 60 - 10) }); // nor a triage 10 min later
+  hub.store.db.close();
+  const p = Bun.spawn(["bun", "src/cli/usage.ts", "--db", path, "--since", new Date(now - 2 * 86400_000).toISOString(), "--until", new Date(now + 60_000).toISOString()], {
+    stdout: "pipe",
+    env: { ...process.env, WORK_HQ_CONFIG: "none" },
+  });
+  const out = await new Response(p.stdout).text();
+  rmSync(path, { force: true });
+  const section = out.split("## Yes taps that started nothing")[1]!.split("\n## ")[0]!;
+  expect(section).toMatch(/- \d\d-\d\d \d\d:\d\d \*\*Want an agent to find both/);
+  expect(section).not.toContain("find the owner");
+  expect(section).not.toContain("usage report");
+  expect(section).not.toContain("Couldn't triage");
+});

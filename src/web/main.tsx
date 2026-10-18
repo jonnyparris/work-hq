@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { SyncState } from "../shared/types.ts";
+import type { Item, SyncState } from "../shared/types.ts";
 import { quickFirst } from "../shared/batch.ts";
 import { type Pin, pinQueue, takePin } from "../shared/pin.ts";
 import { Deck } from "./deck.tsx";
@@ -81,14 +81,20 @@ function App() {
   }, []);
 
   const go = (v: "today" | "journal") => { setView(v); history.replaceState(null, "", v === "today" ? "/" : "/journal"); };
-  const selected = sel ? s.items.find((i) => i.id === sel) : undefined;
+  // The snapshot drops items closed more than 3 days ago; a journal row can still point at one, so fetch it.
+  const [fetched, setFetched] = useState<Item | undefined>();
+  const openItem = useCallback((id: string) => {
+    setSel(id);
+    if (!s.items.some((i) => i.id === id)) api.item(id).then(setFetched, () => setSel(undefined));
+  }, [s.items]);
+  const selected = sel ? s.items.find((i) => i.id === sel) ?? (fetched?.id === sel ? fetched : undefined) : undefined;
 
   return (
     <div className={`app ${s.config.demo ? "demo-mode" : ""}`}>
       <TopBar sync={s.sync} connected={s.connected} memoryOn={s.config.memory} view={view} go={go} now={now} demo={s.config.demo} liveUrl={s.config.liveUrl} />
       <div className="main" style={view === "journal" ? { gridTemplateColumns: "1fr" } : undefined}>
         {view === "journal" ? (
-          <div className="col"><JournalPage journal={s.journal} journalPath={s.config.memory ? s.config.journalPath : undefined} /></div>
+          <div className="col"><JournalPage journal={s.journal} journalPath={s.config.memory ? s.config.journalPath : undefined} onOpenItem={openItem} /></div>
         ) : (
           <>
             <div className="col left">
@@ -148,7 +154,7 @@ function App() {
             <div className="col right">
               <TodayPanel items={s.items} onOpen={setSel} selected={sel} />
               <AgentsPanel jobs={s.jobs} cmux={s.config.cmux} />
-              <JournalPanel journal={s.journal} onAll={() => go("journal")} />
+              <JournalPanel journal={s.journal} onAll={() => go("journal")} onOpenItem={openItem} />
             </div>
           </>
         )}

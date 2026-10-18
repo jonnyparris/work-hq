@@ -71,6 +71,12 @@ const server = Bun.serve({
     },
 
     "/api/items/:id": {
+      GET: (req) =>
+        handle(() => {
+          const item = hub.store.item(req.params.id);
+          if (!item) throw new Error("no such item");
+          return item;
+        }),
       PATCH: (req) =>
         handle(async () => {
           const b = await body<{ status?: ItemStatus; note?: string; title?: string; detail?: string; kind?: any; project?: string }>(req);
