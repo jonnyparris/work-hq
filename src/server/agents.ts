@@ -464,7 +464,7 @@ export class Agents implements Dispatcher {
       this.reaskTriage(job.id, error, { text: utterance, mode });
       return { jobId: job.id, reply: "Triage failed — your words are on a card to retry." };
     }
-    await this.applyTriage(result, mode);
+    await this.applyTriage(result, mode, utterance);
     this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: result.reply });
     return { ...result, jobId: job.id };
   }
@@ -496,7 +496,7 @@ export class Agents implements Dispatcher {
     });
   }
 
-  private async applyTriage(t: TriageResult, mode: string) {
+  private async applyTriage(t: TriageResult, mode: TriageMode, utterance: string) {
     const created: Item[] = [];
     for (const raw of t.items ?? []) {
       created.push(
@@ -524,17 +524,27 @@ export class Agents implements Dispatcher {
         this.hub.toast(`Batch ${b.op}: ${(e as Error).message}`, "warn");
       }
     }
+    // A follow-up tap goes back through triage with the original words plus the answer, so
+    // "Yes, dispatch" dispatches. Until 10-17 every option was a noop: the tap wrote a journal
+    // line and the work was silently dropped (3 times in a week).
     if (t.question?.prompt) {
+      const prompt = t.question.prompt;
       this.hub.ask({
         kind: "open",
         key: `triage:${Date.now()}`,
         priority: 80,
-        prompt: t.question.prompt,
+        prompt,
         options: (t.question.options?.length ? t.question.options : ["Yes", "No"]).map((l, i) => ({
           id: `o${i}`,
           label: l,
           tone: i === 0 ? "primary" : "quiet",
-          effect: { type: "noop" },
+          effect: {
+            type: "multi",
+            effects: [
+              { type: "noop" }, // keeps the "prompt → answer" journal line
+              { type: "triage", text: `${utterance}\n\nYou asked: ${prompt}\nThey answered: ${l}`, mode },
+            ],
+          },
         })),
       });
     }

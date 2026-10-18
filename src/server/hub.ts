@@ -326,7 +326,8 @@ export class Hub {
         break;
       case "triage":
         // Not awaited: triage takes seconds and the card has already been answered.
-        void this.dispatcher?.triage?.(effect.text, effect.mode)?.catch((e) => this.toast(`Triage failed again: ${errText(e)}`, "warn"));
+        // A note typed with the tap is part of the answer ("Yes — but only the Q3 numbers").
+        void this.dispatcher?.triage?.(note?.trim() ? `${effect.text}\nThey added: ${note.trim()}` : effect.text, effect.mode)?.catch((e) => this.toast(`Triage failed again: ${errText(e)}`, "warn"));
         break;
       case "multi":
         for (const e of effect.effects) await this.applyEffect(e, q, opt, note);

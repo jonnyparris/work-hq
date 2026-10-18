@@ -84,3 +84,25 @@ test("restart caught a triage mid-run: its words come back on a card", () => {
   expect(q?.context).toContain("server restarted mid-run");
   expect(q?.options[0]?.effect).toEqual({ type: "triage", text: "do the thing after lunch", mode: "chat" });
 });
+
+// 10-13, 10-14, 10-17: triage asked a follow-up ("Send an agent?"), the owner tapped "Yes", and
+// nothing happened: every option was a noop. A tap now re-runs triage with the words + the answer.
+test("follow-up question from triage: tapping an option re-runs triage with the answer", async () => {
+  const ASK = JSON.stringify({ reply: "Want me to?", question: { prompt: "Send an agent?", options: ["Yes", "No"] } });
+  const { hub, agents, calls } = setup([ok(ASK), ok(GOOD)]);
+  const seen: Array<[string, string]> = [];
+  const a = agents as any;
+  const triage = a.triage.bind(agents);
+  a.triage = (text: string, mode: string) => (seen.push([text, mode]), triage(text, mode));
+  await triage("pull last quarter's usage report", "chat");
+  const [q] = hub.store.questions("open");
+  expect(q?.options.map((o) => o.label)).toEqual(["Yes", "No"]);
+  await hub.answer(q!.id, "o0", "only Q3");
+  for (let i = 0; i < 50 && calls.apply < 2; i++) await Bun.sleep(5);
+  expect(seen).toHaveLength(1);
+  expect(seen[0]![1]).toBe("chat");
+  expect(seen[0]![0]).toBe("pull last quarter's usage report\n\nYou asked: Send an agent?\nThey answered: Yes\nThey added: only Q3");
+  expect(calls.apply).toBe(2);
+  expect(hub.store.items().map((i) => i.title)).toContain("Chase the vendor");
+  expect(hub.store.journal().some((j) => j.text === "Send an agent? → Yes — only Q3")).toBe(true);
+});
