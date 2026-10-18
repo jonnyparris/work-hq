@@ -608,10 +608,18 @@ export class Agents implements Dispatcher {
     const label = out.label ?? new Date(at).toLocaleString();
     this.hub.schedule(itemId, at, label);
     this.hub.journal(`${out.calendar === "exists" ? "Already booked" : "Will do"} ${label}: ${item.title} — “${words}”`, { itemId });
+    // 10-16 20:55Z: the model's reply said "Booked a 30-min 1-1 with Kevin" and the calendar write failed 16s later.
+    // The write hasn't run yet here, and it only ever makes a private block. calendarBlock toasts the real outcome.
+    if (out.calendar === "create") {
+      const msg = `Scheduled ${label} — adding a private block to your calendar`;
+      this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: msg });
+      this.hub.toast(msg, "good");
+      void this.calendarBlock(itemId, at, out.durationMin ?? 30);
+      return;
+    }
     this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: out.reply ?? `Scheduled ${label}` });
-    const cal = out.calendar === "create" ? " — adding it to your calendar" : out.calendar === "exists" ? " — I'll remind you then" : " — I'll remind you";
+    const cal = out.calendar === "exists" ? " — I'll remind you then" : " — I'll remind you";
     this.hub.toast(`${out.reply ?? `Scheduled ${label}`}${out.reply ? "" : cal}`, "good");
-    if (out.calendar === "create") void this.calendarBlock(itemId, at, out.durationMin ?? 30);
   }
 
   /** A private block in the owner's own calendar. No attendees, no invites. */
