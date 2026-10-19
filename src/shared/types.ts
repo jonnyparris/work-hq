@@ -138,7 +138,8 @@ export interface QuestionOption {
 }
 
 export type Effect =
-  | { type: "status"; status: ItemStatus; note?: string }
+  /** `itemId` targets another item than the question's (a batched card's "mark all done" is a multi of these). */
+  | { type: "status"; status: ItemStatus; note?: string; itemId?: string }
   /** `inMin` is relative to when it's answered (wins over `at`, which is fixed when asked). */
   | { type: "schedule"; at: string; label: string; inMin?: number }
   | { type: "snooze"; minutes: number }
@@ -249,6 +250,24 @@ export interface SyncState {
   through?: string;
 }
 
+/** The nightly reflection's coaching block: this week's signal and the one move to try next. */
+export interface Coaching {
+  /** Date of the reflection file it came from (YYYY-MM-DD). */
+  date: string;
+  /** "Mixed", "Strong", … as written. Empty if the block didn't say. */
+  signal: string;
+  /** The bit after "One thing to try", e.g. "tomorrow (Tue 10-20, before the 09:30 blog slot)". */
+  when: string;
+  /** Markdown body of "One thing to try": bullets, numbered steps. */
+  move: string;
+  /** Bold lead of each "what you did well" / "operating below" bullet. */
+  wins: string[];
+  gaps: string[];
+  /** Memory path of the source file, and a link that opens it. */
+  file?: string;
+  url?: string;
+}
+
 export interface Snapshot {
   items: Item[];
   questions: Question[];
@@ -258,6 +277,7 @@ export interface Snapshot {
   upcoming: CalendarEvent[];
   journal: JournalEntry[];
   sync: SyncState[];
+  coaching?: Coaching;
   config: PublicConfig;
 }
 
@@ -287,6 +307,7 @@ export type ServerEvent =
   | { type: "upcoming"; data: CalendarEvent[] }
   | { type: "journal"; data: JournalEntry }
   | { type: "sync"; data: SyncState }
+  | { type: "coaching"; data: Coaching }
   | { type: "toast"; data: { text: string; tone?: "good" | "warn" | "info" } }
   | { type: "notify"; data: { title: string; body: string; questionId?: string } };
 

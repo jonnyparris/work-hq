@@ -1,7 +1,7 @@
 // Turn the memory markdown that reflections write into structured items.
 // Pure functions; no I/O. Tested in test/parse.test.ts.
 
-import type { ItemKind } from "../shared/types.ts";
+import type { Coaching, ItemKind } from "../shared/types.ts";
 
 export interface ParsedItem {
   key: string;
@@ -177,4 +177,50 @@ export function parseProposals(md: string, date: string): ParsedItem[] {
     });
   }
   return out;
+}
+
+/**
+ * The "## EM Coaching" block the nightly reflection writes into `*-improvement-proposals.md`:
+ * the week's signal, the one move to try next, and the bold lead of each win / gap bullet.
+ * Undefined when the file has no such block or no "One thing to try".
+ */
+export function parseCoaching(md: string, date: string): Omit<Coaching, "url" | "file"> | undefined {
+  const start = /^##\s+EM Coaching\b.*$/m.exec(md);
+  if (!start) return undefined;
+  const rest = md.slice(start.index + start[0].length);
+  const end = rest.search(/^##\s/m);
+  const block = end < 0 ? rest : rest.slice(0, end);
+  const lines = block.split("\n");
+  // Blocks open on a bold line at column 0: "**What you did well (M5-aligned):**", "**One thing to try tomorrow (…):**".
+  const sections: Array<{ head: string; body: string[] }> = [];
+  for (const line of lines) {
+    const h = /^\*\*(.+?)\*\*\s*(.*)$/.exec(line);
+    if (h) sections.push({ head: h[1]!.replace(/:$/, "").trim(), body: h[2]!.trim() ? [h[2]!.trim()] : [] });
+    else sections.at(-1)?.body.push(line);
+  }
+  const signal = /M5 signal:?\s*\**\s*([^*\n]+)/i.exec(block)?.[1]?.trim().replace(/[.:]$/, "");
+  const tryIt = sections.find((s) => /^one thing to try/i.test(s.head));
+  if (!tryIt) return undefined;
+  const move = tryIt.body.join("\n").replace(/^\n+|\s+$/g, "");
+  if (!move) return undefined;
+  const leads = (re: RegExp) => {
+    const s = sections.find((x) => re.test(x.head));
+    if (!s) return [];
+    return s.body
+      .filter((l) => /^-\s+/.test(l)) // top-level bullets only
+      .map((l) => {
+        const b = /^-\s+\*\*(.+?)\*\*/.exec(l);
+        return plain(b ? b[1]! : l.replace(/^-\s+/, "").split(/(?<=[a-z)])\.\s/)[0]!).replace(/[.:]$/, "");
+      })
+      .filter(Boolean)
+      .slice(0, 6);
+  };
+  return {
+    date,
+    signal: signal || "",
+    when: tryIt.head.replace(/^one thing to try\s*/i, "").replace(/^\((.*)\)$/, "$1").trim(),
+    move,
+    wins: leads(/did well/i),
+    gaps: leads(/below m5|operating below/i),
+  };
 }

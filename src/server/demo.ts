@@ -102,6 +102,15 @@ export function seedDemo(hub: Hub) {
     hub.store.putJournal({ ...e, synced: true }); // pretend it was saved already: no "unsaved" dots
   }
 
+  hub.setCoaching({
+    date: day(-1),
+    signal: "Mixed",
+    when: "today, before the 1-1 with Sam",
+    move: "- Spend ten minutes on the two things only you can do:\n  1. Answer Priya's staffing question in the thread.\n  2. Hand the vendor escalations to Tom, with a boundary: no new feature work.",
+    wins: ["You cleared the queue with decisions, not snoozes", "Tom owns the incident review without you as the relay"],
+    gaps: ["Three people have waited more than a week on a two-line reply", "Your review comments are all agent-written"],
+  });
+
   for (const [name, ago] of [["memory", -10], ["transcripts", -18], ["calendar", -45], ["journal", -2]] as const) {
     hub.putSync({ name, lastRunAt: at(ago), lastOkAt: at(ago), cursor: "demo" });
   }

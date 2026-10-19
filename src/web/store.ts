@@ -43,6 +43,7 @@ function reducer(s: State, e: ServerEvent | { type: "conn"; up: boolean } | { ty
     case "events": return { ...s, events: e.data };
     case "upcoming": return { ...s, upcoming: e.data };
     case "journal": return { ...s, journal: upsert(s.journal, e.data).slice(0, 300) };
+    case "coaching": return { ...s, coaching: e.data };
     case "sync": return { ...s, sync: upsert(s.sync.map((x) => ({ ...x, id: x.name })), { ...e.data, id: e.data.name }) };
     case "toast": return { ...s, toasts: [...s.toasts, { id: ++toastId, ...e.data }].slice(-4) };
     case "toast:drop": return { ...s, toasts: s.toasts.filter((t) => t.id !== e.id) };

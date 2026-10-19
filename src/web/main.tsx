@@ -4,7 +4,7 @@ import type { Item, SyncState } from "../shared/types.ts";
 import { quickFirst } from "../shared/batch.ts";
 import { type Pin, pinQueue, takePin } from "../shared/pin.ts";
 import { Deck } from "./deck.tsx";
-import { AgentsPanel, Board, Drawer, Focus, JournalPage, JournalPanel, NowPanel, Timeline, TodayPanel } from "./parts.tsx";
+import { AgentsPanel, Board, CoachingPanel, Drawer, Focus, JournalPage, JournalPanel, NowPanel, Timeline, TodayPanel } from "./parts.tsx";
 import { api, useHQ, useNow } from "./store.ts";
 import { Icon, ago } from "./ui.tsx";
 import { Voice, chime, micSupported, speechSupported } from "./voice.ts";
@@ -153,6 +153,7 @@ function App() {
             </div>
             <div className="col right">
               <TodayPanel items={s.items} onOpen={setSel} selected={sel} />
+              <CoachingPanel c={s.coaching} now={now} />
               <AgentsPanel jobs={s.jobs} cmux={s.config.cmux} />
               <JournalPanel journal={s.journal} onAll={() => go("journal")} onOpenItem={openItem} />
             </div>

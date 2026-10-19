@@ -4,7 +4,7 @@
 
 import type {
   AgentReport, CalendarEvent, Effect, Item, ItemKind, ItemStatus, Job, JournalEntry, NoteDecision, Question,
-  QuestionOption, ServerEvent, Snapshot, SyncState,
+  QuestionOption, ServerEvent, Snapshot, SyncState, Coaching,
 } from "../shared/types.ts";
 import { type BulkRequest, deckGroup, deferHorizon, localDay, optionFor } from "../shared/batch.ts";
 import { config, memoryOn } from "./config.ts";
@@ -54,6 +54,7 @@ export class Hub {
       upcoming: this.upcomingEvents(),
       journal: this.store.journal(120),
       sync: this.store.syncStates(),
+      coaching: this.coaching(),
       config: {
         port: config.port,
         demo: config.demo,
@@ -300,7 +301,11 @@ export class Hub {
     }
     switch (effect.type) {
       case "status":
-        if (itemId) this.setStatus(itemId, effect.status, note ?? effect.note);
+        if (effect.itemId) {
+          // A batched card: skip items that moved on since it was asked (closed on their own card).
+          const it = this.store.item(effect.itemId);
+          if (it && !["done", "dropped"].includes(it.status)) this.setStatus(it.id, effect.status, note ?? effect.note);
+        } else if (itemId) this.setStatus(itemId, effect.status, note ?? effect.note);
         else answerLine();
         break;
       case "schedule":
@@ -607,6 +612,23 @@ export class Hub {
     this.store.putJob(job);
     this.emit({ type: "job", data: job });
     return job;
+  }
+
+  /** Latest nightly coaching block (from the memory import). */
+  coaching(): Coaching | undefined {
+    try {
+      const v = this.store.kv("coaching");
+      return v ? (JSON.parse(v) as Coaching) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  setCoaching(c: Coaching) {
+    const prev = this.store.kv("coaching");
+    const next = JSON.stringify(c);
+    if (prev === next) return;
+    this.store.setKv("coaching", next);
+    this.emit({ type: "coaching", data: c });
   }
 
   putSync(s: SyncState) {

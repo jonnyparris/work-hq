@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CalendarEvent, Item, ItemStatus, Job, JournalEntry, Question, SyncState } from "../shared/types.ts";
+import type { CalendarEvent, Coaching, Item, ItemStatus, Job, JournalEntry, Question, SyncState } from "../shared/types.ts";
 import { CalmScene } from "./calm.tsx";
 import { api } from "./store.ts";
 import { ACTIONS, Icon, KIND_LABEL, Md, Q_BADGE, ago, dictateInto, finishDictation, hhmm, people, shortUrl, stopDictation, ticketKeys, ticketUrl, whenLabel } from "./ui.tsx";
@@ -454,6 +454,57 @@ export function TodayPanel({ items, onOpen, selected }: { items: Item[]; onOpen:
         onChange={(e) => setAdding(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Enter" && adding.trim()) { api.add(adding.trim()); setAdding(""); } }}
       />
+    </div>
+  );
+}
+
+// ── Coaching ──────────────────────────────────────────────────────────────
+/** The nightly reflection's "one thing to try", so the tip doesn't depend on a briefing running. */
+export function CoachingPanel({ c, now }: { c?: Coaching; now: Date }) {
+  const [open, setOpen] = useState(false);
+  const [added, setAdded] = useState(false);
+  if (!c) return null;
+  const age = Math.round((now.getTime() - Date.parse(`${c.date}T12:00:00`)) / 86_400_000);
+  const stale = age > 2;
+  const tone = /^(strong|on track|good)/i.test(c.signal) ? "leaf" : /^(weak|below|off)/i.test(c.signal) ? "coral" : "violet";
+  const lines = c.move.split("\n").filter((l) => l.trim());
+  const first = lines.map((l) => l.replace(/^\s*(?:[-*]|\d+\.)\s+/, "").replace(/\*\*|`/g, "").trim()).find(Boolean) ?? "";
+  return (
+    <div className="panel coaching">
+      <div className="panel-h">
+        <h3>One thing to try</h3>
+        {c.signal && <span className={`badge ${tone}`} title="This week's M5 signal, from the nightly reflection">{c.signal}</span>}
+        <a className="act" href={c.url} title={c.file}>{stale ? <span style={{ color: "var(--coral)" }}>{c.date.slice(5)} · stale</span> : c.date.slice(5)}</a>
+      </div>
+      {c.when && <div className="coach-when">{c.when}</div>}
+      <div className="coach-move">
+        {lines.map((l, i) => {
+          const depth = Math.min(3, Math.floor((/^\s*/.exec(l)![0].length) / 2));
+          const num = /^\s*(\d+)\.\s+/.exec(l)?.[1];
+          const text = l.replace(/^\s*(?:[-*]|\d+\.)\s+/, "");
+          return (
+            <div key={i} className="coach-line" style={{ paddingLeft: depth * 14 }}>
+              <span className="coach-mark">{num ? `${num}.` : /^\s*[-*]\s/.test(l) ? "•" : ""}</span>
+              <Md text={text} inline />
+            </div>
+          );
+        })}
+      </div>
+      <div className="coach-foot">
+        {(c.wins.length > 0 || c.gaps.length > 0) && (
+          <button className="kbd-btn" onClick={() => setOpen((x) => !x)}>{open ? "Hide" : "Why"} ({c.wins.length} wins · {c.gaps.length} gaps)</button>
+        )}
+        <span className="spacer" />
+        <button className="kbd-btn" disabled={added || !first} title="Add it to Committed" onClick={() => { api.add(`M5: ${first}`.slice(0, 160)); setAdded(true); }}>
+          {added ? "Committed ✓" : "+ Commit"}
+        </button>
+      </div>
+      {open && (
+        <div className="coach-why">
+          {c.wins.length > 0 && <><div className="coach-h">Did well</div>{c.wins.map((w, i) => <div key={i} className="coach-line"><span className="coach-mark" style={{ color: "var(--leaf)" }}>+</span><Md text={w} inline /></div>)}</>}
+          {c.gaps.length > 0 && <><div className="coach-h">Below M5</div>{c.gaps.map((w, i) => <div key={i} className="coach-line"><span className="coach-mark" style={{ color: "var(--coral)" }}>−</span><Md text={w} inline /></div>)}</>}
+        </div>
+      )}
     </div>
   );
 }

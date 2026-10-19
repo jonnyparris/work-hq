@@ -8,8 +8,9 @@ import { config } from "./config.ts";
 import { nowIso } from "./db.ts";
 import type { Hub } from "./hub.ts";
 import type { MemoryClient } from "./memory.ts";
-import { parseActiveTodos, parseProposals, type ParsedItem } from "./parse.ts";
-import { template } from "./prompts.ts";
+import { resolve } from "node:path";
+import { parseActiveTodos, parseCoaching, parseProposals, type ParsedItem } from "./parse.ts";
+import { openUrl, template } from "./prompts.ts";
 
 
 export class MemorySync {
@@ -30,6 +31,14 @@ export class MemorySync {
         const date = /(\d{4}-\d{2}-\d{2})/.exec(latest.path)![1]!;
         proposalsLabel = date;
         if (md) parsed.push(...parseProposals(md, date));
+        // The coaching block rides in the same file. If the newest one lacks it, look back two more.
+        for (const f of plans.slice(-3).reverse()) {
+          const text = f === latest ? md : await this.memory.read(f.path);
+          const c = text ? parseCoaching(text, /(\d{4}-\d{2}-\d{2})/.exec(f.path)![1]!) : undefined;
+          if (!c) continue;
+          this.hub.setCoaching({ ...c, file: f.path, url: openUrl(resolve(config.workspace.dir, f.path)) });
+          break;
+        }
       }
       const seen = this.upsert(parsed);
       const dropped = this.retire(seen);
