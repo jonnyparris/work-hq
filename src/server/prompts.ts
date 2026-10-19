@@ -107,7 +107,7 @@ function itemBlock(it: Item) {
     it.post?.wikiDraft ? `Wiki draft: ${it.post.wikiDraft}` : "",
     it.post?.siteDraft ? `Site draft: ${it.post.siteDraft}` : "",
     it.detail ? `\nDetail:\n${it.detail}` : "",
-    it.notes?.length ? `\n${owner.name}'s notes on it (newest last):\n${it.notes.map((n) => `- ${n.at.slice(0, 10)}: ${n.text}`).join("\n")}` : "",
+    it.notes?.length ? `\n${owner.name}'s notes on it (newest last):\n${it.notes.map((n) => `- ${n.at.slice(0, 10)}${n.who === "hq" ? " (Work HQ's reply)" : ""}: ${n.text}`).join("\n")}` : "",
   ]
     .filter(Boolean)
     .join("\n");

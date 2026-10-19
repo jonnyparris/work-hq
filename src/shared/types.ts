@@ -82,6 +82,8 @@ export interface Item {
 export interface ItemNote {
   at: string;
   text: string;
+  /** "hq" = Work HQ's own reply to a note (an ELI5, an answer). Absent = the owner typed it. */
+  who?: "hq";
 }
 
 /** What a typed note on a question means. Produced by the note reader (pi) or the cheap pattern match. */

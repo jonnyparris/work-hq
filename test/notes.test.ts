@@ -163,6 +163,34 @@ describe("notes on questions", () => {
     expect(quickNote("drop this, we're doing it anyway each day", { options: opts })).toBeUndefined();
   });
 
+  test("a question in a note keeps its answer: on the item, in the journal, on the card (10-15 'eli5' lost to a toast)", async () => {
+    const { it, q } = inboxQuestion();
+    await hub.applyNote(q.id, { reply: "ELI5: x" }, "eli5", at(15));
+    const item = hub.store.item(it.id)!;
+    expect(item.notes?.filter((n) => n.text === "ELI5: x" && n.who === "hq")).toHaveLength(1);
+    expect(hub.store.journal().filter((j) => j.who === "hq" && j.text.includes("ELI5: x"))).toHaveLength(1);
+    const after = hub.store.question(q.id)!;
+    expect(after.status).toBe("open");
+    expect(after.context).toContain("ELI5: x");
+    expect(Date.parse(after.notBefore!)).toBeGreaterThan(at(15).getTime());
+    expect(dispatched).toHaveLength(0);
+  });
+
+  test("the same reply twice isn't stacked on the card", async () => {
+    const { q } = inboxQuestion();
+    await hub.applyNote(q.id, { reply: "ELI5: x" }, "eli5", at(15));
+    await hub.applyNote(q.id, { reply: "ELI5: x" }, "eli5", at(15, 30));
+    expect(hub.store.question(q.id)!.context!.split("ELI5: x")).toHaveLength(2);
+  });
+
+  test("context-only with no reply adds nothing hq-authored", async () => {
+    const { it, q } = inboxQuestion();
+    const ctx = q.context;
+    await hub.applyNote(q.id, {}, "some background", at(15));
+    expect(hub.store.item(it.id)!.notes?.some((n) => n.who === "hq") ?? false).toBe(false);
+    expect(hub.store.question(q.id)!.context).toBe(ctx);
+  });
+
   test("nextMorning skips the weekend", () => {
     const fri = new Date(2026, 8, 25, 16);
     expect(nextMorning(fri).getDay()).toBe(1);

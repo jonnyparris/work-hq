@@ -305,7 +305,10 @@ export class Prompter {
     // 8. Reflection proposals — the ones that never turn into anything.
     const proposals = items
       .filter((i) => i.kind === "idea" && i.status === "proposed" && i.source.label?.startsWith("Proposals"))
-      .sort((a, b) => propDate(b).localeCompare(propDate(a))); // newest reflection first, file order within a day
+      // Newest reflection first; within it High Priority before Medium/Low, then file order. createdAt is the
+      // file order. memory sync writes rows top to bottom, so `updated` creeps up in file order, and store.items() is
+      // ORDER BY updated DESC: without a tiebreak a day's proposals came out last-first (10-18: #9 and #8 asked, #1 never).
+      .sort((a, b) => propDate(b).localeCompare(propDate(a)) || propRank(a) - propRank(b) || a.createdAt.localeCompare(b.createdAt));
     for (const it of proposals) {
       if (budget <= 0 || openCount("dispatch") >= CAP.proposal) break;
       if (
@@ -569,4 +572,11 @@ function hasDraft(i: Item) {
 
 function propDate(i: { source: { label?: string } }): string {
   return /\d{4}-\d{2}-\d{2}/.exec(i.source.label ?? "")?.[0] ?? "";
+}
+
+/** "Proposals 2026-10-18 · High Priority (…)" → 0; Medium → 1; Low → 2; anything else → 3. */
+function propRank(i: { source: { label?: string } }): number {
+  const section = (i.source.label ?? "").split(" · ")[1] ?? "";
+  const r = ["high", "medium", "low"].findIndex((w) => section.toLowerCase().startsWith(w));
+  return r < 0 ? 3 : r;
 }

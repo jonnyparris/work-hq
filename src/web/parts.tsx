@@ -216,9 +216,9 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
       </div>
       <h1><Md inline className="" text={q.prompt} /></h1>
       {q.context && <Md className="ctx md" text={q.context} />}
-      {item?.notes?.length ? (
+      {item?.notes?.some((n) => !(n.who === "hq" && q.context?.includes(n.text))) ? (
         <div className="ctx prior-notes" title="What you said about this before">
-          {item.notes.slice(-2).map((n) => <div key={n.at}>✎ <span className="when">{relDay(n.at)}</span> {n.text}</div>)}
+          {item.notes.filter((n) => !(n.who === "hq" && q.context?.includes(n.text))).slice(-2).map((n, i) => <div key={`${n.at}-${i}`}>{n.who === "hq" ? "↳ HQ" : "✎"} <span className="when">{relDay(n.at)}</span> {n.text}</div>)}
         </div>
       ) : null}
       {q.kind === "plan" && <Planner items={items} picked={picked} setPicked={setPicked} />}

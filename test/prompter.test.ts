@@ -494,3 +494,35 @@ test("parseMrRef reads MR URLs and ignores everything else", () => {
   expect(parseMrRef("https://jira.example.com/browse/X-1")).toBeUndefined();
   expect(parseMrRef("not a url")).toBeUndefined();
 });
+
+describe("reflection proposals", () => {
+  // Memory sync writes a file's proposals top to bottom, so `updated` creeps up a millisecond at a time in file
+  // order (10-19 prod: #1-#3 at …25.816Z, #4-#9 at …25.817Z) and store.items()' ORDER BY updated DESC reverses them.
+  // createdAt carries the file order.
+  let tick = 0;
+  const proposal = (title: string, label: string, createdAt: string) => {
+    const it = hub.createItem({ title, kind: "idea", status: "proposed", source: { type: "memory", label, key: `memory:proposals:${title}` } });
+    hub.store.putItem({ ...it, createdAt, updatedAt: new Date(Date.parse("2026-10-19T15:22:25.816Z") + tick++).toISOString() });
+    return it;
+  };
+
+  test("same-day proposals are asked in file order, not last-synced first", () => {
+    const a = proposal("a", "Proposals 2026-10-18 · High Priority (High Value, Low Effort)", "2026-10-18T00:41:37.565Z");
+    const b = proposal("b", "Proposals 2026-10-18 · High Priority (High Value, Low Effort)", "2026-10-18T00:41:37.569Z");
+    const c = proposal("c", "Proposals 2026-10-18 · High Priority (High Value, Low Effort)", "2026-10-18T00:41:37.573Z");
+    p.tick(at(15));
+    const ids = hub.store.questions("open").filter((q) => q.key.startsWith("proposal:")).map((q) => q.itemId);
+    expect(ids.sort()).toEqual([a.id, b.id].sort()); // CAP.proposal = 2: the first two, not the last two
+    expect(ids).not.toContain(c.id);
+  });
+
+  test("High Priority beats an older Medium row within a day; a newer reflection beats an older one", () => {
+    proposal("old", "Proposals 2026-10-17 · High Priority (High Value, Low Effort)", "2026-10-17T00:00:00.000Z");
+    proposal("med", "Proposals 2026-10-18 · Medium Priority", "2026-10-16T23:00:30.687Z"); // re-proposed, row from 10-16
+    const h1 = proposal("h1", "Proposals 2026-10-18 · High Priority (High Value, Low Effort)", "2026-10-18T00:41:37.565Z");
+    const h2 = proposal("h2", "Proposals 2026-10-18 · High Priority (High Value, Low Effort)", "2026-10-18T00:41:37.569Z");
+    p.tick(at(15));
+    const ids = hub.store.questions("open").filter((q) => q.key.startsWith("proposal:")).map((q) => q.itemId);
+    expect(ids.sort()).toEqual([h1.id, h2.id].sort());
+  });
+});

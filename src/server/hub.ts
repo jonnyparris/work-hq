@@ -498,6 +498,18 @@ export class Hub {
     }
     // Context only. Keep it, ask again next working morning.
     const back = nextMorning(now);
+    // A question in the note ("eli5") gets its answer in d.reply. A toast alone loses it (10-15): keep it
+    // on the item, in the journal and on the card, so the card that comes back still explains itself.
+    const reply = d.reply?.trim();
+    if (reply) {
+      if (item) this.updateItem(item.id, { notes: [...(item.notes ?? []), { at: nowIso(), text: reply, who: "hq" as const }].slice(-20) });
+      this.journal(item ? `Reply on ${item.title}: ${reply}` : `Reply re "${q.prompt}": ${reply}`, { itemId: item?.id, questionId: q.id, who: "hq" });
+      const cur = this.store.question(q.id);
+      if (cur && !cur.context?.includes(reply)) {
+        cur.context = [cur.context, `**You asked:** ${text}\n**HQ:** ${reply}`].filter(Boolean).join("\n\n");
+        this.store.putQuestion(cur);
+      }
+    }
     this.park(q, back.toISOString());
     this.toast(d.reply ? `${d.reply} Back ${fmtDay(back)}.` : `Noted. Back ${fmtDay(back)}.`, "info");
   }
