@@ -120,6 +120,7 @@ and cheap to run every 30 seconds. The model decides what things *mean*. The rul
 | **Meeting ended** | ≤ 45 min after a meeting with others | "anything come out of it?" |
 | **State unknown** | your notes admit they don't know | max 3 open |
 | **Still waiting** | waiting on someone for > 3 days | |
+| **MR merged** | waiting items whose GitLab MRs all merged | one card for all, at most daily: mark all done, one by one, or keep waiting |
 | **Wrap up** | 90 min before end of day | what actually happened |
 | **Post idea / Draft to review** | the weekly writing scout found something | never nags |
 

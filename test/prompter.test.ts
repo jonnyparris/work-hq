@@ -4,6 +4,7 @@ import { Hub } from "../src/server/hub.ts";
 import { isOwner, Prompter } from "../src/server/prompter.ts";
 import { config } from "../src/server/config.ts";
 import { type MrInfo, MrStates, parseMrRef } from "../src/server/mr-state.ts";
+import { optionFor } from "../src/shared/batch.ts";
 
 let hub: Hub;
 let p: Prompter;
@@ -437,13 +438,18 @@ describe("state cards check the item's MR first", () => {
     expect(hub.store.item(it.id)!.status).toBe("done");
   });
 
-  test("long-waiting item with a merged MR leads with Done, not 'Chase them'", async () => {
+  test("long-waiting item with a merged MR, kept waiting on the batch card, leads with Done, not 'Chase them'", async () => {
     const { mrs, p } = stub({ [MR]: merged });
     const it = hub.createItem({ title: "waiting on review", status: "waiting", links: [MR] });
+    p.tick(new Date());
+    await mrs.settled();
+    p.tick(new Date());
+    const batch = hub.store.questions("open").find((q) => q.key === "wait:merged")!;
+    await hub.answer(batch.id, "keep");
+    expect(hub.store.item(it.id)!.status).toBe("waiting");
     const later = new Date(Date.now() + 4 * 86_400_000);
     p.tick(later);
-    await mrs.settled();
-    p.tick(later);
+    expect(hub.store.questions("open").some((q) => q.key === "wait:merged")).toBe(false); // kept: not batched again
     const q = hub.store.questions("open").find((q) => q.key === `wait:${it.id}`)!;
     expect(q.badge).toBe("MR merged");
     expect(q.options[0]).toMatchObject({ label: "Done (merged 10-14)", tone: "primary" });
@@ -480,6 +486,109 @@ describe("state cards check the item's MR first", () => {
     await mrs.settled();
     for (let i = 5; i < 10; i++) p.tick(at(15, i));
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe("waiting items whose MRs merged: one daily card", () => {
+  const mr = (n: number) => `https://gitlab.example.com/me/incident-call-agent/-/merge_requests/${n}`;
+  const merged = (d: string): MrInfo => ({ state: "merged", mergedAt: d });
+  const states: Record<string, MrInfo> = { [mr(1)]: merged("2026-10-14T10:00:00Z"), [mr(2)]: merged("2026-10-15T10:00:00Z"), [mr(3)]: { state: "opened" } };
+  const setup = () => {
+    const calls: string[] = [];
+    const mrs = new MrStates(async (r) => (calls.push(r.url), states[r.url] ?? { state: "unknown" }));
+    return { mrs, calls, p: new Prompter(hub, mrs) };
+  };
+  const card = () => hub.store.questions("open").find((q) => q.key === "wait:merged");
+  const run = async (p: Prompter, mrs: MrStates, now = new Date()) => {
+    p.tick(now);
+    await mrs.settled();
+    p.tick(now);
+  };
+
+  test("fresh waiting items with merged MRs go on one card, no 3-day wait; open MRs and MR-less items stay off it", async () => {
+    const { mrs, p } = setup();
+    const a = hub.createItem({ title: "adapter", status: "waiting", links: [mr(1)] });
+    const b = hub.createItem({ title: "dedupe", status: "waiting", links: [mr(2), mr(1)] });
+    hub.createItem({ title: "still open", status: "waiting", links: [mr(3)] });
+    hub.createItem({ title: "no MR", status: "waiting" });
+    hub.createItem({ title: "not waiting", status: "proposed", links: [mr(1)] });
+    p.tick(new Date());
+    expect(card()).toBeUndefined(); // held until glab answers
+    await mrs.settled();
+    p.tick(new Date());
+    const q = card()!;
+    expect(q.prompt).toBe("2 waiting items: their MRs merged. Mark all done?");
+    expect(q.badge).toBe("MR merged");
+    expect(q.context).toContain("- adapter — incident-call-agent!1 merged 10-14.");
+    expect(q.context).toContain("- dedupe — incident-call-agent!2, incident-call-agent!1 all merged 10-15.");
+    expect(q.options.map((o) => o.id)).toEqual(["done", "split", "keep"]);
+    expect(q.options[0]!.label).toBe("Mark all 2 done");
+    expect(hub.store.questions("open").some((x) => x.key === `wait:${a.id}` || x.key === `wait:${b.id}`)).toBe(false);
+    await hub.answer(q.id, "done");
+    expect(hub.store.item(a.id)!.status).toBe("done");
+    expect(hub.store.item(b.id)!.status).toBe("done");
+    expect(hub.store.journal().some((j) => j.text === "Done: dedupe — incident-call-agent!2, incident-call-agent!1 all merged 10-15.")).toBe(true);
+  });
+
+  test("once a day: answered → no new card for 20 hours, even for a new item", async () => {
+    const { mrs, p } = setup();
+    hub.createItem({ title: "adapter", status: "waiting", links: [mr(1)] });
+    await run(p, mrs);
+    await hub.answer(card()!.id, "done");
+    hub.createItem({ title: "another", status: "waiting", links: [mr(2)] });
+    await run(p, mrs, new Date(Date.now() + 2 * 3600_000));
+    expect(card()).toBeUndefined();
+    await run(p, mrs, new Date(Date.now() + 21 * 3600_000));
+    expect(card()!.prompt).toBe("Waiting on this, but its MRs merged: another");
+    expect(card()!.options[0]!.label).toBe("Done (merged 10-15)");
+  });
+
+  test("an open card follows items closed on their own, and expires when none are left", async () => {
+    const { mrs, p } = setup();
+    const a = hub.createItem({ title: "adapter", status: "waiting", links: [mr(1)] });
+    const b = hub.createItem({ title: "dedupe", status: "waiting", links: [mr(2)] });
+    await run(p, mrs);
+    hub.setStatus(a.id, "done");
+    p.tick(new Date());
+    expect(card()!.context).not.toContain("adapter");
+    expect(card()!.options[0]!.label).toBe("Done (merged 10-15)");
+    hub.setStatus(b.id, "dropped");
+    p.tick(new Date());
+    expect(card()).toBeUndefined();
+  });
+
+  test("'Mark all done' skips an item closed after the card was drawn", async () => {
+    const { mrs, p } = setup();
+    const a = hub.createItem({ title: "adapter", status: "waiting", links: [mr(1)] });
+    hub.createItem({ title: "dedupe", status: "waiting", links: [mr(2)] });
+    await run(p, mrs);
+    hub.setStatus(a.id, "dropped");
+    await hub.answer(card()!.id, "done");
+    expect(hub.store.item(a.id)!.status).toBe("dropped");
+  });
+
+  test("'One by one' hands each item to its own card straight away (2 at a time), and never batches them again", async () => {
+    const { mrs, p } = setup();
+    const ids = [1, 2, 1].map((n, i) => hub.createItem({ title: `item ${i}`, status: "waiting", links: [mr(n)] }).id);
+    await run(p, mrs);
+    await hub.answer(card()!.id, "split");
+    await run(p, mrs, new Date(Date.now() + 21 * 3600_000));
+    expect(card()).toBeUndefined();
+    const each = hub.store.questions("open").filter((q) => q.key.startsWith("wait:") && q.key !== "wait:merged");
+    expect(each).toHaveLength(2);
+    expect(each[0]!.options[0]!.label).toMatch(/^Done \(merged 10-1[45]\)$/);
+    expect(ids).toContain(each[0]!.itemId!);
+  });
+
+  test("bulk 'done' and a typed 'done' both pick 'Mark all done'", async () => {
+    const { mrs, p } = setup();
+    const a = hub.createItem({ title: "adapter", status: "waiting", links: [mr(1)] });
+    hub.createItem({ title: "dedupe", status: "waiting", links: [mr(2)] });
+    await run(p, mrs);
+    expect(optionFor(card()!, "done")?.id).toBe("done");
+    expect(optionFor(card()!, "dismiss")?.id).toBe("keep");
+    await hub.note(card()!.id, "done");
+    expect(hub.store.item(a.id)!.status).toBe("done");
   });
 });
 

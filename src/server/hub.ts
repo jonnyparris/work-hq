@@ -6,7 +6,7 @@ import type {
   AgentReport, CalendarEvent, Effect, Item, ItemKind, ItemStatus, Job, JournalEntry, NoteDecision, Question,
   QuestionOption, ServerEvent, Snapshot, SyncState, Coaching,
 } from "../shared/types.ts";
-import { type BulkRequest, deckGroup, deferHorizon, localDay, optionFor } from "../shared/batch.ts";
+import { type BulkRequest, deckGroup, deferHorizon, localDay, optionFor, setsStatus } from "../shared/batch.ts";
 import { config, memoryOn } from "./config.ts";
 import { newId, nowIso, type Store } from "./db.ts";
 import { findTwin, isOpen } from "./dedupe.ts";
@@ -736,7 +736,7 @@ export function effectFromLabel(label: string): Effect {
 export function quickNote(text: string, q: Pick<Question, "options">): NoteDecision | undefined {
   const t = text.trim().toLowerCase().replace(/[.!\s]+$/, "");
   if (t.split(/\s+/).length > 4) return undefined;
-  const statusOpt = (s: ItemStatus) => q.options.find((o) => o.effect.type === "status" && o.effect.status === s)?.id ?? null;
+  const statusOpt = (s: ItemStatus) => q.options.find((o) => setsStatus(o.effect, s))?.id ?? null;
   if (/^(drop|drop it|drop this|drop that|kill|kill it|reject|bin it|not mine|not real|not relevant)$/.test(t)) return { pick: statusOpt("dropped"), status: "dropped" };
   if (/^(done|already done|it'?s done|resolved|handled|sorted|closed)$/.test(t)) return { pick: statusOpt("done"), status: "done" };
   if (/^(do it|go|go ahead|yes,? do it|send an agent)$/.test(t)) {

@@ -335,9 +335,17 @@ export class Prompter {
         budget--;
     }
 
-    // 9. Waiting too long.
-    for (const it of items.filter((i) => i.status === "waiting" && now.getTime() - Date.parse(i.updatedAt) > 3 * DAY)) {
-      if (budget <= 0 || openCount("state", (q) => q.key.startsWith("wait:")) >= CAP.waiting) break;
+    // 9. Waiting on work whose MRs all merged: one card for all of them, daily, instead of one per item after 3 days.
+    const batched = budget > 0 ? this.sweepMergedWaiting(items, now) : this.mergedCardItems();
+    if (batched.asked) budget--;
+
+    // 10. Waiting too long.
+    // "One by one" on the merged card skips the 3-day wait, until the item is touched.
+    const { split } = this.mergedAnswers();
+    const overdue = (i: Item) => now.getTime() - Date.parse(i.updatedAt) > 3 * DAY || (split[i.id] !== undefined && i.updatedAt <= split[i.id]!);
+    for (const it of items.filter((i) => i.status === "waiting" && overdue(i))) {
+      if (budget <= 0 || openCount("state", (q) => q.key.startsWith("wait:") && q.key !== MERGED_KEY) >= CAP.waiting) break;
+      if (batched.ids.has(it.id)) continue;
       const mr = this.mrs.verdict(it);
       if (mr === "pending") continue;
       const waited = `You've been waiting on this for ${Math.round((now.getTime() - Date.parse(it.updatedAt)) / DAY)} days.`;
@@ -363,7 +371,7 @@ export class Prompter {
         budget--;
     }
 
-    // 10. Blog posts — drafts to review first, then bare ideas. Low priority, never nags.
+    // 11. Blog posts — drafts to review first, then bare ideas. Low priority, never nags.
     const posts = items
       .filter((i) => i.kind === "post" && i.status === "proposed")
       .sort((a, b) => Number(hasDraft(b)) - Number(hasDraft(a)) || b.createdAt.localeCompare(a.createdAt));
@@ -403,6 +411,77 @@ export class Prompter {
   }
 
   private open: Question[] = [];
+
+  /**
+   * Waiting items whose MRs all merged, on one card ("N waiting items: their MRs merged"), at most once a day.
+   * 10-18: eight items sat in Waiting on MRs merged 10-14/10-15, and the per-item card only fires after 3 days, two at a time.
+   * "Keep waiting" remembers those items (per merge date), so the card doesn't come back for them; the per-item card still can.
+   * An open card is refreshed as items close on their own, and expires when none are left.
+   */
+  private sweepMergedWaiting(items: Item[], now: Date): { asked: boolean; ids: Set<string> } {
+    const store = this.hub.store;
+    const { kept } = this.mergedAnswers();
+    const prev = store.openQuestionByKey(MERGED_KEY);
+    if (!prev) {
+      const last = store.lastAnswered(MERGED_KEY);
+      if (last?.answeredAt && now.getTime() - Date.parse(last.answeredAt) < MERGED_COOLDOWN_MIN * MIN) return { asked: false, ids: new Set() };
+    }
+    const found: Array<{ it: Item; mr: Merged }> = [];
+    let pending = false;
+    for (const it of items) {
+      if (it.status !== "waiting") continue;
+      const mr = this.mrs.verdict(it);
+      if (mr === "pending") pending = true;
+      else if (mr && !(kept[it.id] !== undefined && (mr.mergedAt ?? "") <= kept[it.id]!)) found.push({ it, mr });
+    }
+    // Hold until every lookup has landed, so the card doesn't grow one item per tick.
+    if (pending) return { asked: false, ids: new Set(mergedIds(prev)) };
+    found.sort((a, b) => (a.mr.mergedAt ?? "").localeCompare(b.mr.mergedAt ?? "") || a.it.createdAt.localeCompare(b.it.createdAt));
+    const ids = new Set(found.map((f) => f.it.id));
+    if (prev) {
+      if (!found.length) this.hub.expireQuestion(prev.id, "nothing left");
+      else if (mergedIds(prev).join() !== [...ids].join()) {
+        Object.assign(prev, mergedCard(found));
+        store.putQuestion(prev);
+        this.hub.emit({ type: "question", data: prev });
+      }
+      return { asked: false, ids };
+    }
+    if (!found.length) return { asked: false, ids };
+    return { asked: Boolean(this.ask({ ...mergedCard(found), kind: "state", key: MERGED_KEY })), ids };
+  }
+
+  /** Items on the open merged-MRs card, when the sweep doesn't run this tick. */
+  private mergedCardItems() {
+    return { asked: false, ids: new Set(mergedIds(this.hub.store.openQuestionByKey(MERGED_KEY))) };
+  }
+
+  /**
+   * What the owner said on earlier merged-MRs cards. `kept`: item → when they chose to keep waiting or go one by one
+   * (the card skips it unless a newer merge lands). `split`: item → when they asked for one card each (section 10 asks
+   * without the 3-day wait until the item is touched). Folds in the latest answer once.
+   */
+  private mergedAnswers(): { kept: Record<string, string>; split: Record<string, string> } {
+    const store = this.hub.store;
+    let saved: { kept: Record<string, string>; split: Record<string, string>; seen?: string } = { kept: {}, split: {} };
+    try {
+      saved = { ...saved, ...JSON.parse(store.kv(KEPT_KEY) ?? "{}") };
+    } catch {}
+    const last = store.lastAnswered(MERGED_KEY);
+    const keep = last?.answer?.startsWith(KEEP_LABEL);
+    const split = last?.answer?.startsWith(SPLIT_LABEL);
+    if (last?.status === "answered" && (keep || split) && saved.seen !== last.id) {
+      // Everything on the card had merged by the answer; a later merge (a new MR on the item) puts it back on the card.
+      const at = last.answeredAt ?? last.createdAt;
+      for (const id of mergedIds(last)) {
+        saved.kept[id] = at;
+        if (split) saved.split[id] = at;
+      }
+      saved.seen = last.id;
+      store.setKv(KEPT_KEY, JSON.stringify(saved));
+    }
+    return saved;
+  }
 
   /** "Push 1 hour" taps since local midnight on this item's due prompts (any slot). */
   private pushesToday(itemId: string, now: Date) {
@@ -552,6 +631,39 @@ const mergedLabel = (mr: Merged) => `Done (merged${mr.mergedAt ? ` ${mergedDay(m
 function mergedLine(mr: Merged) {
   const names = mr.refs.map((r) => `${r.project.split("/").pop()}!${r.iid}`).join(", ");
   return `${names} ${mr.refs.length > 1 ? "all merged" : "merged"}${mr.mergedAt ? ` ${mergedDay(mr)}` : ""}.`;
+}
+
+const MERGED_KEY = "wait:merged";
+const KEPT_KEY = "wait:merged:kept";
+const KEEP_LABEL = "Keep waiting";
+const SPLIT_LABEL = "One by one";
+/** Once a day, give or take: a card answered at 09:40 can come back the next morning. */
+const MERGED_COOLDOWN_MIN = 20 * 60;
+
+/** Item ids on a merged-MRs card, read back from its "mark all done" option. */
+function mergedIds(q: Question | undefined): string[] {
+  const e = q?.options.find((o) => o.id === "done")?.effect;
+  return e?.type === "multi" ? e.effects.flatMap((x) => (x.type === "status" && x.itemId ? [x.itemId] : [])) : [];
+}
+
+/** The batched card: titles and MR lines in the context, one tap closes them all. */
+export function mergedCard(found: Array<{ it: Pick<Item, "id" | "title">; mr: Merged }>) {
+  const n = found.length;
+  const each = (status: "done" | "waiting", note: (mr: Merged) => string): QuestionOption["effect"] => ({
+    type: "multi",
+    effects: found.map((f) => ({ type: "status", status, itemId: f.it.id, note: note(f.mr) })),
+  });
+  return {
+    badge: "MR merged",
+    priority: 55,
+    prompt: n === 1 ? `Waiting on this, but its MRs merged: ${found[0]!.it.title}` : `${n} waiting items: their MRs merged. Mark all done?`,
+    context: found.map((f) => `- ${f.it.title} — ${mergedLine(f.mr)}`).join("\n"),
+    options: [
+      opt("done", n === 1 ? mergedLabel(found[0]!.mr) : `Mark all ${n} done`, each("done", mergedLine), "primary"),
+      ...(n > 1 ? [opt("split", SPLIT_LABEL, { type: "noop" })] : []),
+      opt("keep", n > 1 ? `${KEEP_LABEL} on all` : KEEP_LABEL, each("waiting", (mr) => `kept waiting: ${mergedLine(mr)}`), "quiet"),
+    ],
+  };
 }
 
 function opt(id: string, label: string, effect: QuestionOption["effect"], tone?: QuestionOption["tone"]): QuestionOption {

@@ -3,7 +3,7 @@
 // push the head-work to later. Shared by server (bulk ops, triage) and web (Deck).
 // Keep it dependency-free.
 
-import type { CalendarEvent, Item, ItemKind, Question, QuestionOption } from "./types.ts";
+import type { CalendarEvent, Effect, Item, ItemKind, ItemStatus, Question, QuestionOption } from "./types.ts";
 
 export type DeckGroup = "review" | "inbox" | "waiting" | "due" | "state" | "proposal" | "agent" | "post" | "day";
 
@@ -62,6 +62,12 @@ export function quickFirst(a: Question, b: Question) {
 /** Bulk dispatch never publishes or (re)drafts — those need a human read first. */
 const BULK_ACTIONS = new Set(["ticket", "reply", "email", "prep", "work", "verify"]);
 
+/** The effect sets this status: directly, or on every item of a batched card (a multi of status effects). */
+export function setsStatus(e: Effect, s: ItemStatus): boolean {
+  if (e.type === "status") return e.status === s;
+  return e.type === "multi" && e.effects.length > 0 && e.effects.every((x) => x.type === "status" && x.status === s);
+}
+
 /** Which of this question's own options a bulk op means. Undefined = op doesn't apply here. */
 export function optionFor(q: Pick<Question, "key" | "kind" | "options">, op: Exclude<BulkOp, "defer">): QuestionOption | undefined {
   const o = q.options;
@@ -69,9 +75,9 @@ export function optionFor(q: Pick<Question, "key" | "kind" | "options">, op: Exc
     case "dispatch":
       return o.find((x) => x.effect.type === "dispatch" && BULK_ACTIONS.has(x.effect.action));
     case "done":
-      return o.find((x) => x.effect.type === "status" && x.effect.status === "done");
+      return o.find((x) => setsStatus(x.effect, "done"));
     case "drop":
-      return o.find((x) => x.effect.type === "status" && x.effect.status === "dropped");
+      return o.find((x) => setsStatus(x.effect, "dropped"));
     case "dismiss": {
       const g = deckGroup(q);
       if (g === "review") return o.find((x) => x.id === "none");
