@@ -101,9 +101,15 @@ export class Prompter {
     const workday = now.getDay() !== 0 && now.getDay() !== 6;
     const today = localDate(now);
 
+    // Items an agent is already working on (verify leaves them in inbox): don't re-ask and re-dispatch.
+    const busy = new Set(store.liveJobs().map((j) => j.itemId).filter(Boolean));
+
     // 1. Scheduled items that are due. Always ask — these are promises.
     for (const it of items) {
       if (it.status !== "scheduled" || !it.scheduledFor || Date.parse(it.scheduledFor) > now.getTime()) continue;
+      // An agent is on it, or one already asked you something about it: wait for that, don't say "It's time" again.
+      // 10-19: a verify job's question landed at 15:31, the 15-min due cooldown re-asked at 15:45.
+      if (busy.has(it.id) || open.some((q) => q.itemId === it.id && !q.key.startsWith("due:"))) continue;
       const act = ACTION_FOR[it.kind];
       this.ask(
         {
@@ -208,8 +214,6 @@ export class Prompter {
     const inbox = items
       .filter((i) => i.status === "inbox")
       .sort((a, b) => Number(b.signals?.pineapple ?? 0) - Number(a.signals?.pineapple ?? 0));
-    // Items an agent is already working on (verify leaves them in inbox): don't re-ask and re-dispatch.
-    const busy = new Set(store.liveJobs().map((j) => j.itemId).filter(Boolean));
     for (const it of inbox) {
       if (budget <= 0 || openCount("confirm") >= CAP.inbox) break;
       // Something (a check) is already asking about it, with better answers than these.

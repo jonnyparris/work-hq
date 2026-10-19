@@ -526,3 +526,52 @@ describe("reflection proposals", () => {
     expect(ids.sort()).toEqual([h1.id, h2.id].sort());
   });
 });
+
+describe("due cards while an agent works the item", () => {
+  const job = (itemId: string, status: "queued" | "running" | "done") =>
+    hub.putJob({ id: `job_${itemId}_${status}`, kind: "verify", name: "verify", title: "verify", surface: "headless", status, itemId, tail: [], createdAt: new Date().toISOString() } as any);
+  const due = (title: string) =>
+    hub.createItem({ title, kind: "task", status: "scheduled", scheduledFor: new Date(Date.now() - 3 * 3600_000).toISOString() });
+  /** A due card for `it` answered `min` minutes ago. */
+  const answeredDue = (it: { id: string; scheduledFor?: string }, min: number) => {
+    const t = new Date(Date.now() - min * 60_000).toISOString();
+    hub.store.putQuestion({ id: `q_due_${it.id}`, kind: "when", itemId: it.id, key: `due:${it.id}:${it.scheduledFor}`, prompt: "It's time", options: [], priority: 90,
+      status: "answered", answer: "verify", createdAt: t, answeredAt: t });
+  };
+  const dueCards = (id: string) => hub.store.questions("open").filter((q) => q.itemId === id && q.key.startsWith("due:"));
+
+  test("past due, live job, due card answered 16 min ago: no 'It's time'", () => {
+    const a = due("queued one");
+    const b = due("running one");
+    for (const it of [a, b]) answeredDue(it, 16);
+    job(a.id, "queued");
+    job(b.id, "running");
+    p.tick(new Date());
+    expect(dueCards(a.id)).toHaveLength(0);
+    expect(dueCards(b.id)).toHaveLength(0);
+  });
+
+  test("job finished but its question is still open (10-19 replay): no 'It's time'", () => {
+    const it = due("incident-call agent phase 1");
+    answeredDue(it, 16);
+    job(it.id, "done");
+    hub.ask({ kind: "open", itemId: it.id, key: "agent:abc", prompt: "Phase 1 isn't started. Which route?", options: [], priority: 80 });
+    p.tick(new Date());
+    expect(dueCards(it.id)).toHaveLength(0);
+  });
+
+  test("job done, nothing open, cooldown over: asks again — the promise is still due", () => {
+    const it = due("follow through");
+    answeredDue(it, 16);
+    job(it.id, "done");
+    p.tick(new Date());
+    expect(dueCards(it.id)).toHaveLength(1);
+  });
+
+  test("an open due card for the same item doesn't block itself", () => {
+    const it = due("reply");
+    p.tick(new Date());
+    p.tick(new Date());
+    expect(dueCards(it.id)).toHaveLength(1);
+  });
+});
