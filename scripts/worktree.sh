@@ -1,0 +1,111 @@
+#!/bin/bash
+# worktree.sh — one git worktree per agent session, so concurrent sessions never share an index.
+#
+# Two sessions in one checkout sweep each other's staged hunks into their commits
+# (10-20: a reply-claim fix landed inside an unrelated dead-button commit). Each session
+# works on its own branch in its own directory and lands with a fast-forward.
+#
+#   scripts/worktree.sh new <slug>             # → ../<repo>-<slug> on branch wt/<slug>; prints the path
+#   scripts/worktree.sh land [--check 'cmd'] [--no-push] [--keep]
+#                                              # run inside the worktree: rebase on main, run the check,
+#                                              # fast-forward the main checkout, push origin main,
+#                                              # remove the worktree + branch. Prints the landed SHA.
+#   scripts/worktree.sh list                   # worktrees + commits ahead of main
+#
+# Never removes or merges a worktree it didn't get pointed at: others may be in-flight.
+# Restarting a server that runs from the main checkout is the caller's job, after land.
+set -euo pipefail
+
+die() { echo "worktree.sh: $*" >&2; exit 1; }
+MAIN="$(git worktree list --porcelain | awk 'NR==1 && $1=="worktree" { sub(/^worktree /, ""); print; exit }')"
+[[ -n "$MAIN" ]] || die "not in a git repo"
+BASE="${WORKTREE_BASE:-main}"
+REMOTE="${WORKTREE_REMOTE:-origin}"
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  new)
+    slug="${1:-}"
+    [[ "$slug" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || die "usage: new <slug> (lowercase, digits, hyphens)"
+    dir="$(dirname "$MAIN")/$(basename "$MAIN")-$slug"
+    branch="wt/$slug"
+    [[ -e "$dir" ]] && die "$dir already exists — pick another slug (it may be another session's)"
+    git -C "$MAIN" show-ref -q --verify "refs/heads/$branch" && die "branch $branch exists — pick another slug"
+    git -C "$MAIN" fetch -q "$REMOTE" "$BASE" 2>/dev/null || echo "warning: fetch $REMOTE failed; branching from local $BASE" >&2
+    start="$BASE"
+    # Branch from whichever of local/remote main is newer, so we don't start behind.
+    if git -C "$MAIN" merge-base --is-ancestor "$BASE" "$REMOTE/$BASE" 2>/dev/null; then start="$REMOTE/$BASE"; fi
+    git -C "$MAIN" worktree add -q -b "$branch" "$dir" "$start"
+    git -C "$dir" branch -q --unset-upstream 2>/dev/null || true
+    # Dependencies aren't shared across worktrees; link them (re-install if you change package.json).
+    [[ -d "$MAIN/node_modules" && ! -e "$dir/node_modules" ]] && ln -s "$MAIN/node_modules" "$dir/node_modules"
+    echo "$dir"
+    ;;
+
+  land)
+    check=""; push=1; keep=0
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --check) check="${2:?--check needs a command}"; shift 2 ;;
+        --no-push) push=0; shift ;;
+        --keep) keep=1; shift ;;
+        *) die "unknown flag $1" ;;
+      esac
+    done
+    here="$(git rev-parse --show-toplevel)"
+    [[ "$here" != "$MAIN" ]] || die "run land inside your worktree, not the main checkout"
+    branch="$(git symbolic-ref --short HEAD)" || die "detached HEAD"
+    [[ -z "$(git status --porcelain)" ]] || die "worktree dirty — commit first"
+
+    # One lander at a time: two fast-forwards racing would make the loser fail anyway.
+    lock="$(git rev-parse --git-common-dir)/worktree-land.lock"
+    [[ "$lock" = /* ]] || lock="$here/$lock"
+    got=0
+    for _ in $(seq 1 "${WORKTREE_LOCK_WAIT:-120}"); do mkdir "$lock" 2>/dev/null && { got=1; break; }; sleep 1; done
+    (( got )) || die "another land holds $lock ($(cat "$lock/owner" 2>/dev/null)) — wait, or rm -r it if that session is gone"
+    echo "$branch pid $$" > "$lock/owner"
+    trap 'rm -rf "$lock"' EXIT
+
+    # Catch the main checkout up with the remote first (fast-forward only).
+    if git fetch -q "$REMOTE" "$BASE" 2>/dev/null && ! git merge-base --is-ancestor "$REMOTE/$BASE" "$BASE"; then
+      git -C "$MAIN" merge -q --ff-only "$REMOTE/$BASE" \
+        || die "main checkout can't fast-forward to $REMOTE/$BASE (diverged, or local edits in the way) — sort that out in $MAIN first"
+    fi
+
+    if ! git rebase -q "$BASE"; then
+      git rebase --abort || true
+      die "rebase onto $BASE conflicts — resolve by hand: git rebase $BASE"
+    fi
+    git merge-base --is-ancestor "$BASE" HEAD || die "rebase didn't put $branch on top of $BASE"
+    if [[ "$(git rev-parse HEAD)" == "$(git rev-parse "$BASE")" ]]; then die "nothing to land: $branch has no commits past $BASE"; fi
+
+    if [[ -n "$check" ]]; then
+      echo "check: $check" >&2
+      bash -c "$check" || die "check failed — fix, commit, land again"
+    fi
+
+    # The main checkout's own uncommitted edits stay put; git refuses only if they touch the same files.
+    git -C "$MAIN" merge -q --ff-only "$branch" \
+      || die "main checkout refused the fast-forward (uncommitted edits to the same files in $MAIN?) — nothing landed"
+    sha="$(git rev-parse --short HEAD)"
+    if (( push )); then git -C "$MAIN" push -q "$REMOTE" "$BASE" || die "landed $sha locally but push failed — retry: git -C $MAIN push $REMOTE $BASE"; fi
+
+    if (( ! keep )); then
+      git -C "$MAIN" worktree remove "$here" && git -C "$MAIN" branch -q -d "$branch"
+      echo "removed $here — cd $MAIN" >&2
+    fi
+    echo "landed $sha on $BASE$( (( push )) && echo " and pushed to $REMOTE")"
+    ;;
+
+  list)
+    git -C "$MAIN" worktree list --porcelain | awk '$1=="worktree"{d=$2} $1=="branch"{sub("refs/heads/","",$2); print d" "$2}' |
+      while read -r d b; do
+        [[ "$d" == "$MAIN" ]] && continue
+        ahead="$(git -C "$MAIN" rev-list --count "$BASE..$b" 2>/dev/null || echo ?)"
+        dirty="$( [[ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]] && echo ", dirty" || true)"
+        echo "$d  $b  ($ahead ahead$dirty)"
+      done
+    ;;
+
+  *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

@@ -197,6 +197,18 @@ bun scripts/screenshot.ts http://localhost:7718/ docs/img/dashboard.png   # refr
 scripts/publish.sh github   # push a squashed snapshot to a mirror remote, after a denylist scan
 ```
 
+Several agents editing this repo at once? Give each its own worktree, or one session's `git commit` sweeps up
+another's staged hunks:
+
+```bash
+cd "$(scripts/worktree.sh new fix-thing)"     # ../work-hq-fix-thing on branch wt/fix-thing, node_modules linked
+# …edit, commit…
+scripts/worktree.sh land --check 'bun test'   # rebase on main, check, fast-forward the main checkout, push, clean up
+scripts/worktree.sh list                      # what's in flight (never remove someone else's)
+```
+
+The server runs from the main checkout, so restart it after `land`, not before.
+
 <details>
 <summary>Environment variables</summary>
 
