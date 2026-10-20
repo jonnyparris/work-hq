@@ -4,7 +4,7 @@
 
 import type {
   ActionKind, AgentReport, CalendarEvent, Effect, Item, ItemKind, ItemStatus, Job, JournalEntry, NoteDecision, Question,
-  QuestionOption, ServerEvent, Snapshot, SyncState, Coaching,
+  QuestionOption, ServerEvent, Snapshot, SyncState, Coaching, CoachOutcome,
 } from "../shared/types.ts";
 import { type BulkRequest, deckGroup, deferHorizon, localDay, optionFor, setsStatus } from "../shared/batch.ts";
 import { deadOptions, promisesAction } from "../shared/dead-button.ts";
@@ -264,6 +264,7 @@ export class Hub {
     q.answeredAt = nowIso();
     this.store.putQuestion(q);
     this.emit({ type: "question", data: q });
+    this.coachClosed(q);
   }
 
   /**
@@ -280,6 +281,7 @@ export class Hub {
     q.answeredAt = nowIso();
     this.store.putQuestion(q);
     this.emit({ type: "question", data: q });
+    this.coachClosed(q);
     this.rememberAnswer(q, opt.label, note);
     const journaled = await this.applyEffect(opt.effect, q, opt, note, { itemIds: opts.itemIds });
     if (opts.journalOpen && q.kind === "open" && !journaled) this.journal(`${q.prompt} → ${q.answer}`);
@@ -686,17 +688,47 @@ export class Hub {
   coaching(): Coaching | undefined {
     try {
       const v = this.store.kv("coaching");
-      return v ? (JSON.parse(v) as Coaching) : undefined;
+      return v ? { ...(JSON.parse(v) as Coaching), history: this.coachHistory() } : undefined;
     } catch {
       return undefined;
     }
   }
   setCoaching(c: Coaching) {
+    const { history: _, ...plain } = c;
     const prev = this.store.kv("coaching");
-    const next = JSON.stringify(c);
+    const next = JSON.stringify(plain);
     if (prev === next) return;
     this.store.setKv("coaching", next);
-    this.emit({ type: "coaching", data: c });
+    this.emit({ type: "coaching", data: { ...plain, history: this.coachHistory() } });
+  }
+  /**
+   * What became of the last `n` moves, newest first, from the closed "M5 move" cards (key `coach:<date>`).
+   * A move whose card was never asked (stale reflection, server off) isn't counted.
+   */
+  coachHistory(n = 5): CoachOutcome[] {
+    const seen = new Set<string>();
+    const out: CoachOutcome[] = [];
+    for (const q of this.store.closedByPrefix("coach:", 100)) {
+      const date = q.key.slice("coach:".length);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || seen.has(date)) continue;
+      seen.add(date);
+      if (q.status === "expired") {
+        out.push({ date, outcome: "missed" });
+        continue;
+      }
+      const a = q.answer ?? "";
+      const opt = q.options.find((o) => a === o.label || a.startsWith(`${o.label} — `));
+      const id = opt?.id;
+      const note = opt && a.length > opt.label.length ? a.slice(opt.label.length + 3) : undefined;
+      out.push({ date, outcome: id === "done" || id === "agent" || id === "not" ? id : "missed", ...(note ? { note } : {}) });
+    }
+    return out.sort((a, b) => b.date.localeCompare(a.date)).slice(0, n);
+  }
+  /** The panel shows the move's outcome; re-send it when a coaching card closes. */
+  private coachClosed(q: Question) {
+    if (!q.key.startsWith("coach:")) return;
+    const c = this.coaching();
+    if (c) this.emit({ type: "coaching", data: c });
   }
 
   putSync(s: SyncState) {

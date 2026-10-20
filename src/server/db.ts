@@ -127,6 +127,14 @@ export class Store {
       .get(key);
     return r ? JSON.parse(r.doc) : undefined;
   }
+  /** Closed (answered or expired) questions whose key starts with `prefix`, newest first. */
+  closedByPrefix(prefix: string, limit = 50): Question[] {
+    const esc = prefix.replace(/[\\%_]/g, (c) => `\\${c}`);
+    return this.db
+      .query("SELECT doc FROM questions WHERE key LIKE ? ESCAPE '\\' AND status != 'open' ORDER BY updated DESC LIMIT ?")
+      .all(`${esc}%`, limit)
+      .map((r: any) => JSON.parse(r.doc));
+  }
   /** Answered questions whose key starts with `prefix`, answered at or after `since` (ISO). */
   answeredByPrefix(prefix: string, since: string): Question[] {
     const esc = prefix.replace(/[\\%_]/g, (c) => `\\${c}`);

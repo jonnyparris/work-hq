@@ -901,6 +901,31 @@ describe("coaching move follow-up", () => {
     expect(h2.store.questions("open").filter((q) => q.key.startsWith("coach:"))).toHaveLength(0);
   });
 
+  test("the panel's history: each move's answer, newest first; an expired card is 'missed'", async () => {
+    hub.dispatcher = { dispatch: async () => {} } as any;
+    const sent: any[] = [];
+    hub.subscribe((e: any) => e.type === "coaching" && sent.push(e.data));
+    const run = async (date: string, day: number, opt?: string, note?: string) => {
+      coaching(date, "tomorrow");
+      p.tick(new Date(2026, 9, day, 10));
+      if (opt) await hub.answer(coach()[0]!.id, opt, note);
+    };
+    await run("2026-10-12", 13, "done");
+    await run("2026-10-13", 14, "not", "ran out of time");
+    await run("2026-10-14", 15); // left open, then the next reflection expires it
+    await run("2026-10-15", 16, "agent");
+    await run("2026-10-18", 19, "done");
+    await run("2026-10-19", 20, "done");
+    const h = hub.coaching()!.history!;
+    expect(h.map((x) => `${x.date.slice(5)} ${x.outcome}`)).toEqual(["10-19 done", "10-18 done", "10-15 agent", "10-14 missed", "10-13 not"]);
+    expect(hub.coachHistory(10).at(-1)).toEqual({ date: "2026-10-12", outcome: "done" });
+    expect(hub.coachHistory(10).find((x) => x.outcome === "not")!.note).toBe("ran out of time");
+    // Not stored: the kv row stays the plain block, so an unchanged import doesn't re-emit.
+    expect(JSON.parse(hub.store.kv("coaching")!).history).toBeUndefined();
+    // Answering the card re-sends the block, so the panel updates without a reload.
+    expect(sent.at(-1).history[0]).toEqual({ date: "2026-10-19", outcome: "done" });
+  });
+
   test("'Hand to an agent' journals the answer and dispatches work on a new item", async () => {
     const sent: Array<{ itemId: string; action: string; note?: string }> = [];
     hub.dispatcher = { dispatch: async (itemId: string, action: string, note?: string) => void sent.push({ itemId, action, note }) } as any;

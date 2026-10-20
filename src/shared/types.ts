@@ -274,6 +274,16 @@ export interface Coaching {
   /** Memory path of the source file, and a link that opens it. */
   file?: string;
   url?: string;
+  /** What became of recent moves (the "M5 move: … Did it happen?" card), newest first. Filled by the hub, not stored. */
+  history?: CoachOutcome[];
+}
+
+/** One reflection's move and its card's answer. "missed": the card expired unanswered (a newer reflection came first). */
+export interface CoachOutcome {
+  date: string;
+  outcome: "done" | "agent" | "not" | "missed";
+  /** The note typed with the answer, if any. */
+  note?: string;
 }
 
 export interface Snapshot {

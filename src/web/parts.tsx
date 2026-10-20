@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CalendarEvent, Coaching, Item, ItemStatus, Job, JournalEntry, Question, SyncState } from "../shared/types.ts";
+import type { CalendarEvent, Coaching, CoachOutcome, Item, ItemStatus, Job, JournalEntry, Question, SyncState } from "../shared/types.ts";
 import { CalmScene } from "./calm.tsx";
 import { api } from "./store.ts";
 import { ACTIONS, Icon, KIND_LABEL, Md, Q_BADGE, ago, dictateInto, finishDictation, hhmm, people, shortUrl, stopDictation, ticketKeys, ticketUrl, whenLabel } from "./ui.tsx";
@@ -490,6 +490,7 @@ export function CoachingPanel({ c, now }: { c?: Coaching; now: Date }) {
           );
         })}
       </div>
+      <CoachTrack history={c.history ?? []} />
       <div className="coach-foot">
         {(c.wins.length > 0 || c.gaps.length > 0) && (
           <button className="kbd-btn" onClick={() => setOpen((x) => !x)}>{open ? "Hide" : "Why"} ({c.wins.length} wins · {c.gaps.length} gaps)</button>
@@ -505,6 +506,36 @@ export function CoachingPanel({ c, now }: { c?: Coaching; now: Date }) {
           {c.gaps.length > 0 && <><div className="coach-h">Below M5</div>{c.gaps.map((w, i) => <div key={i} className="coach-line"><span className="coach-mark" style={{ color: "var(--coral)" }}>−</span><Md text={w} inline /></div>)}</>}
         </div>
       )}
+    </div>
+  );
+}
+
+const COACH_OUTCOME: Record<CoachOutcome["outcome"], { label: string; mark: string; color: string }> = {
+  done: { label: "Done", mark: "✓", color: "var(--leaf)" },
+  agent: { label: "Handed off", mark: "→", color: "var(--sky)" },
+  not: { label: "Not today", mark: "✕", color: "var(--coral)" },
+  missed: { label: "No answer", mark: "·", color: "var(--text-3)" },
+};
+
+/** Did the moves happen: the latest answer, and a dot per recent move (oldest left). */
+export function CoachTrack({ history }: { history: CoachOutcome[] }) {
+  if (!history.length) return null;
+  const last = history[0]!;
+  const o = COACH_OUTCOME[last.outcome];
+  const done = history.filter((h) => h.outcome === "done").length;
+  const handed = history.filter((h) => h.outcome === "agent").length;
+  return (
+    <div className="coach-track">
+      <span title={last.note ? `${o.label} — ${last.note}` : undefined}>
+        {last.date.slice(5)}: <b style={{ color: o.color }}>{o.label}</b>
+      </span>
+      <span className="spacer" />
+      <span className="coach-dots" aria-hidden>
+        {[...history].reverse().map((h) => (
+          <span key={h.date} title={`${h.date.slice(5)}: ${COACH_OUTCOME[h.outcome].label}${h.note ? ` — ${h.note}` : ""}`} style={{ color: COACH_OUTCOME[h.outcome].color }}>{COACH_OUTCOME[h.outcome].mark}</span>
+        ))}
+      </span>
+      <span title={handed ? `${handed} handed to an agent` : undefined}>{history.length > 1 ? `${done} of last ${history.length} done` : done ? "done" : "not done"}</span>
     </div>
   );
 }

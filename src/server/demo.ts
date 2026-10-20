@@ -8,6 +8,7 @@
 import type { ActionKind, AgentReport, Item } from "../shared/types.ts";
 import { newId, nowIso } from "./db.ts";
 import type { Hub } from "./hub.ts";
+import { coachKey, coachQuestion } from "./prompter.ts";
 
 export const DEMO_OWNER = "Alex";
 
@@ -110,6 +111,15 @@ export function seedDemo(hub: Hub) {
     wins: ["You cleared the queue with decisions, not snoozes", "Tom owns the incident review without you as the relay"],
     gaps: ["Three people have waited more than a week on a two-line reply", "Your review comments are all agent-written"],
   });
+
+  // Earlier moves' cards, answered, so the panel shows the track record.
+  for (const [d, label] of [[-6, "Done"], [-5, "Not today — ran out of time"], [-4, undefined], [-3, "Hand to an agent"], [-2, "Done"]] as const) {
+    const q = coachQuestion({ date: day(d), when: "tomorrow", move: "- An earlier move" });
+    hub.store.putQuestion({
+      ...q, id: newId("q"), key: coachKey({ date: day(d) }), createdAt: at(d * 1440), answeredAt: at(d * 1440 + 60),
+      status: label ? "answered" : "expired", answer: label ?? "new reflection",
+    });
+  }
 
   for (const [name, ago] of [["memory", -10], ["transcripts", -18], ["calendar", -45], ["journal", -2]] as const) {
     hub.putSync({ name, lastRunAt: at(ago), lastOkAt: at(ago), cursor: "demo" });
