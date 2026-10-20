@@ -4,8 +4,9 @@
 #
 #   scripts/publish.sh [remote=github] [message]
 #
-# Refuses if the working tree is dirty or if HEAD's tree matches any pattern in the
-# denylist ($WORK_HQ_PUBLISH_DENYLIST, default ~/.config/work-hq/publish-denylist.txt):
+# Publishes HEAD's committed tree only: uncommitted edits (yours or another session's
+# sharing the checkout) are never read, so a dirty tree just warns. Refuses if HEAD's
+# tree matches any pattern in the denylist ($WORK_HQ_PUBLISH_DENYLIST, default ~/.config/work-hq/publish-denylist.txt):
 # one case-insensitive extended regex per line, # for comments. Put internal hostnames,
 # colleague names, account ids there.
 #
@@ -17,7 +18,7 @@ REMOTE="${1:-github}"
 MSG="${2:-Sync from $(git rev-parse --short HEAD): $(git log -1 --format=%s)}"
 DENY="${WORK_HQ_PUBLISH_DENYLIST:-$HOME/.config/work-hq/publish-denylist.txt}"
 
-[[ -z "$(git status --porcelain)" ]] || { echo "working tree dirty — commit first" >&2; exit 1; }
+[[ -z "$(git status --porcelain)" ]] || echo "note: working tree dirty — publishing committed HEAD $(git rev-parse --short HEAD) only" >&2
 git remote get-url "$REMOTE" >/dev/null 2>&1 || { echo "no remote '$REMOTE'" >&2; exit 1; }
 
 if [[ -f "$DENY" ]]; then
