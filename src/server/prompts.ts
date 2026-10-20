@@ -228,6 +228,9 @@ Rules:
   Keep every detail they gave. Don't add scope they didn't ask for. The agent proposes bigger versions itself.
 - Never invent facts. If it's ambiguous, ask ONE short question.
 - reply: ≤2 short sentences, dry, no fluff — you're a bot in a terminal, not a butler.
+- reply is shown before any dispatch or calendar entry runs. Word those as handed off, never as done:
+  "Sent an agent to ask Maryna…", not "Asked Maryna" / "Asking Maryna in chat"; "adding a private block", not "Booked".
+  Items, updates, bulk and journal lines are applied before the reply shows, so "Logged it" / "Moved it to Thursday" is fine.
 
 INPUT:
 """
@@ -236,7 +239,7 @@ ${utterance}
 
 OUTPUT: ONLY a JSON object, no prose, no fences:
 {
-  "reply": "what you did, briefly",
+  "reply": "what you did, briefly; dispatched work as handed off, not done",
   "items": [{ "title", "kind", "status", "detail", "project", "people", "post": {"venue", "why"},
               "when": "short human phrase, e.g. 'after standup'", "scheduledFor": "ISO timestamp",
               "signals": {"pineapple": true}, "source": {"type": "${mode === "pineapple" ? "pineapple" : "voice"}", "quote", "label"} }],
@@ -299,6 +302,7 @@ How to decide (first match wins):
 5. Pure background with no action, time or state in it \u2192 leave everything null.
 - "title": only if they corrected a name or fact that's in the title (e.g. "it's Joan, not Jon"); the corrected title.
 - Never invent facts. reply: \u22641 short sentence saying what you did, dry, no fluff.
+  A "dispatch" or "when" hasn't run when this is read: say it's handed off ("Sending an agent to ask Maryna"), never the outcome ("Asked Maryna").
 
 OUTPUT: ONLY a JSON object, no prose, no fences:
 { "pick": "<option id>" | null, "status": "done|dropped|waiting|today|proposed" | null, "when": "time words" | null,

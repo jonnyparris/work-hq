@@ -8,6 +8,7 @@
 import { Database } from "bun:sqlite";
 import type { Item, Job, JournalEntry, Question } from "../shared/types.ts";
 import { config } from "../server/config.ts";
+import { AFFIRMATIVE } from "../shared/dead-button.ts";
 
 const arg = (name: string) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -179,7 +180,7 @@ p();
 // in batches, and on 10-14 forty other jobs started in the 15 min after a dead tap. What counts:
 // a triage run started within 2 min (the tap's own effect), or a note run on this card within 15.
 p("## Yes taps that started nothing");
-const yes = /\b(yes|send|draft|dispatch|research|verify)\b/i;
+const yes = AFFIRMATIVE;
 const allJobs = docs<Job>("SELECT doc FROM jobs").filter((j) => j.kind === "triage");
 const followed = (q: Question) => {
   const t = Date.parse(q.answeredAt!);

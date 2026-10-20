@@ -1,0 +1,110 @@
+import { expect, test } from "bun:test";
+import { Agents, type CmuxDeps } from "../src/server/agents.ts";
+import { Store } from "../src/server/db.ts";
+import { Hub, queuedNote } from "../src/server/hub.ts";
+import type { Question } from "../src/shared/types.ts";
+
+// 10-16 20:44:45Z: a note job's summary said "Asking Maryna in chat to confirm she owns the crawl-completion
+// webhook." The reply agent that sent the DM started 5 s later. Same class as "Booked" (ff3d07e, schedule-reply.test.ts):
+// the model words the outcome before the job that owns it has run. Wherever a reply sits next to queued work,
+// the summary / toast is fixed words that are true the moment it's shown.
+
+const noCmux: CmuxDeps = { available: () => false, launch: () => ({ workspace: "", statusPath: "/dev/null" }) };
+const CLAIM = "Asking Maryna in chat to confirm she owns the crawl-completion webhook.";
+const TITLE = "Confirm Maryna owns the crawl-completion webhook RM";
+
+function setup(model: object) {
+  const hub = new Hub(new Store(":memory:"));
+  const agents = new Agents(hub, noCmux);
+  hub.dispatcher = agents;
+  const a = agents as any;
+  const toasts: string[] = [];
+  const dispatched: unknown[][] = [];
+  const scheduled: unknown[][] = [];
+  a.runHeadless = async () => ({ ok: true, text: JSON.stringify(model) });
+  const realDispatch = agents.dispatch.bind(agents);
+  // Record and create the job, but never launch anything.
+  a.launchAction = async () => {};
+  agents.dispatch = async (...args: Parameters<Agents["dispatch"]>) => (dispatched.push(args), realDispatch(...args));
+  agents.scheduleFromWords = async (...args: unknown[]) => void scheduled.push(args);
+  const toast = hub.toast.bind(hub);
+  hub.toast = (text, tone) => (toasts.push(text), toast(text, tone));
+  const item = hub.createItem({ title: TITLE, kind: "task", status: "inbox" });
+  const q = hub.ask({
+    kind: "open", itemId: item.id, key: `t:${item.id}`, priority: 80, prompt: "Does Maryna own it?",
+    options: [
+      { id: "chase", label: "Ask her", effect: { type: "dispatch", action: "reply" } },
+      { id: "done", label: "She does", effect: { type: "status", status: "done" } },
+    ],
+  }) as Question;
+  return { hub, agents, toasts, dispatched, scheduled, item, q };
+}
+
+const noteJob = (hub: Hub) => hub.store.jobs().find((j) => j.name === "note")!;
+const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0)); };
+
+test("note → dispatch: job summary and toast say an agent was sent, not that Maryna was asked", async () => {
+  const { hub, toasts, dispatched, item, q } = setup({ dispatch: { action: "reply", note: "ask Maryna in DM" }, reply: CLAIM });
+  await hub.note(q.id, "ask Maryna in chat if she owns it");
+  await settle();
+  expect(dispatched.map((d) => d.slice(0, 2))).toEqual([[item.id, "reply"]]);
+  expect(noteJob(hub).summary).toBe(`Sent an agent to send the message: ${TITLE}`);
+  expect(toasts).toContain(`Sent an agent to send the message: ${TITLE}`);
+  expect(toasts.join("\n")).not.toContain("Asking Maryna");
+});
+
+test("note → pick an option that dispatches: 'Noted → Ask her', not the model's claim", async () => {
+  const { hub, toasts, dispatched, q } = setup({ pick: "chase", reply: CLAIM });
+  await hub.note(q.id, "yes, chase her");
+  await settle();
+  expect(dispatched).toHaveLength(1);
+  expect(noteJob(hub).summary).toBe("Noted → Ask her");
+  expect(toasts).toContain("Noted → Ask her");
+  expect(toasts.join("\n")).not.toContain("Asking Maryna");
+});
+
+test("note → when: the scheduler owns the outcome; summary says it's working it out", async () => {
+  const { hub, toasts, scheduled, item, q } = setup({ when: "Thursday", reply: "Scheduled for Thursday 09:30." });
+  await hub.note(q.id, "chase on Thursday");
+  await settle();
+  expect(scheduled).toEqual([[item.id, "Thursday"]]);
+  expect(noteJob(hub).summary).toBe("Working out when from “Thursday”");
+  expect(toasts.join("\n")).not.toContain("Scheduled for Thursday");
+});
+
+test("note → status: the change has already happened, so the model's reply stays", async () => {
+  const { hub, toasts, item, q } = setup({ status: "done", reply: "Marked done: she owns it." });
+  await hub.note(q.id, "she confirmed in standup");
+  await settle();
+  expect(hub.store.item(item.id)!.status).toBe("done");
+  expect(noteJob(hub).summary).toBe("Marked done: she owns it.");
+  expect(toasts).toContain("Marked done: she owns it.");
+});
+
+test("triage → dispatch to an id that doesn't exist: the reply admits no agent started", async () => {
+  const { hub, agents, dispatched } = setup({ reply: "Sent an agent to ask Maryna.", dispatch: [{ id: "it_nope", action: "reply", note: "ask" }] });
+  const r = await agents.triage("ask Maryna if she owns the webhook");
+  expect(dispatched).toHaveLength(1);
+  expect(r.reply).toBe("Sent an agent to ask Maryna. (No agent started for 1 of those: item not found.)");
+  expect(hub.store.jobs().find((j) => j.kind === "triage" && j.name === "chat")!.summary).toBe(r.reply);
+});
+
+test("triage → dispatch that starts: reply untouched (prompt asks for intent wording)", async () => {
+  const { agents, item, dispatched } = setup({});
+  (agents as any).runHeadless = async () => ({ ok: true, text: JSON.stringify({ reply: "Sent an agent to ask Maryna.", dispatch: [{ id: item.id, action: "reply" }] }) });
+  const r = await agents.triage("ask Maryna if she owns the webhook");
+  expect(dispatched).toHaveLength(1);
+  expect(r.reply).toBe("Sent an agent to ask Maryna.");
+});
+
+test("queuedNote: open-and-keep and status picks fall through to the model's reply", () => {
+  const q = { options: [
+    { id: "o", label: "Open", effect: { type: "open" as const, url: "https://x", keep: true } },
+    { id: "s", label: "Done", effect: { type: "status" as const, status: "done" as const } },
+    { id: "m", label: "Both", effect: { type: "multi" as const, effects: [{ type: "noop" as const }, { type: "dispatch" as const, action: "work" as const }] } },
+  ] };
+  expect(queuedNote(q, { pick: "s" }, "t")).toBeUndefined();
+  expect(queuedNote(q, { pick: "m" }, "t")).toBe("Noted → Both");
+  expect(queuedNote(q, { pick: "o", dispatch: { action: "verify" } }, "t")).toBe("Sent an agent to check: t");
+  expect(queuedNote(q, { dispatch: { action: "verify" } })).toBeUndefined(); // no item → applyNote can't dispatch
+});

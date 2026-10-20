@@ -12,7 +12,7 @@ import * as cmux from "./cmux.ts";
 import { config } from "./config.ts";
 import { newId, nowIso } from "./db.ts";
 import { type DemoScript, demoActionScript, demoSweepScript, feedLine } from "./demo.ts";
-import { type Dispatcher, type Hub, isCrash } from "./hub.ts";
+import { type Dispatcher, type Hub, isCrash, queuedNote } from "./hub.ts";
 import { GatewayToken } from "./gateway-token.ts";
 import { backoffMs, isRateLimited, LaunchGate } from "./launch-gate.ts";
 import { assertShortArgs, PiPool, PiRpc, piStamp, type RunOutcome } from "./pi-rpc.ts";
@@ -464,9 +464,11 @@ export class Agents implements Dispatcher {
       this.reaskTriage(job.id, error, { text: utterance, mode });
       return { jobId: job.id, reply: "Triage failed — your words are on a card to retry." };
     }
-    await this.applyTriage(result, mode, utterance);
-    this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: result.reply });
-    return { ...result, jobId: job.id };
+    const missed = await this.applyTriage(result, mode, utterance);
+    // The reply was written before anything ran. If it promised an agent that never started, say so.
+    const reply = missed ? `${result.reply ?? ""} (No agent started for ${missed} of those: item not found.)`.trim() : result.reply;
+    this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: reply });
+    return { ...result, reply, jobId: job.id };
   }
 
   /** Put a failed triage's words back in front of the owner: Retry runs triage again, Drop lets them go. */
@@ -496,7 +498,9 @@ export class Agents implements Dispatcher {
     });
   }
 
-  private async applyTriage(t: TriageResult, mode: TriageMode, utterance: string) {
+  /** Returns how many requested dispatches didn't start (unknown id, bad 'new:' index). */
+  private async applyTriage(t: TriageResult, mode: TriageMode, utterance: string): Promise<number> {
+    let missed = 0;
     const created: Item[] = [];
     for (const raw of t.items ?? []) {
       created.push(
@@ -549,8 +553,8 @@ export class Agents implements Dispatcher {
       });
     }
     for (const d of t.dispatch ?? []) {
-      const id = d.id.startsWith("new:") ? created[Number(d.id.slice(4))]?.id : d.id;
-      if (id) await this.dispatch(id, d.action, d.note);
+      const id = d.id?.startsWith("new:") ? created[Number(d.id.slice(4))]?.id : d.id;
+      if (!(id && (await this.dispatch(id, d.action, d.note)))) missed++;
     }
     for (const c of t.calendar ?? []) {
       const id = c.id.startsWith("new:") ? created[Number(c.id.slice(4))]?.id : c.id;
@@ -559,6 +563,7 @@ export class Agents implements Dispatcher {
       if (item.scheduledFor !== c.start) this.hub.schedule(item.id, c.start, item.when ?? new Date(c.start).toLocaleString());
       void this.calendarBlock(item.id, c.start, c.durationMin ?? 30);
     }
+    return missed;
   }
 
   // ── a note typed on a question: what does it mean? ─────────────────────
@@ -577,7 +582,8 @@ export class Agents implements Dispatcher {
       this.patch(job.id, { status: "failed", error, finishedAt: nowIso() });
       throw new Error(error);
     }
-    this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: out.reply ?? "Read the note" });
+    // Summary before applyNote runs anything: fixed words when the note only starts work (10-16: "Asking Maryna in chat").
+    this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: queuedNote(q, out, item?.title) ?? out.reply ?? "Read the note" });
     return out;
   }
 

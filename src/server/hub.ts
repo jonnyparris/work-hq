@@ -3,10 +3,11 @@
 // decision lands in the journal (and from there, in memory).
 
 import type {
-  AgentReport, CalendarEvent, Effect, Item, ItemKind, ItemStatus, Job, JournalEntry, NoteDecision, Question,
+  ActionKind, AgentReport, CalendarEvent, Effect, Item, ItemKind, ItemStatus, Job, JournalEntry, NoteDecision, Question,
   QuestionOption, ServerEvent, Snapshot, SyncState, Coaching,
 } from "../shared/types.ts";
 import { type BulkRequest, deckGroup, deferHorizon, localDay, optionFor, setsStatus } from "../shared/batch.ts";
+import { deadOptions } from "../shared/dead-button.ts";
 import { config, memoryOn } from "./config.ts";
 import { newId, nowIso, type Store } from "./db.ts";
 import { findTwin, isOpen } from "./dedupe.ts";
@@ -217,7 +218,20 @@ export class Hub {
     const question: Question = { ...rest, id: newId("q"), status: "open", createdAt: nowIso() };
     this.store.putQuestion(question);
     this.emit({ type: "question", data: question });
+    this.flagDeadButtons(question);
     return question;
+  }
+
+  /**
+   * "Yes, dispatch" that does nothing: say so when it's asked, not after someone taps it
+   * (10-13..10-17 three taps were silently dropped). Warn only — the card still shows.
+   */
+  private flagDeadButtons(q: Question) {
+    const dead = deadOptions(q);
+    if (!dead.length) return;
+    const labels = dead.map((o) => `“${o.label}”`).join(", ");
+    console.warn(`[work-hq] dead button on ${q.key}: ${labels} has a noop effect`);
+    this.journal(`Dead button: ${labels} on “${q.prompt.slice(0, 120)}” does nothing when tapped (${q.key})`, { itemId: q.itemId, questionId: q.id, who: "hq" });
   }
 
   closeQuestionsFor(itemId: string, reason: string) {
@@ -478,14 +492,15 @@ export class Hub {
     if (opt && !(opt.effect.type === "open" && opt.effect.keep)) {
       const words = opt.effect.type === "when" ? d.when?.trim() || text : note;
       await this.answer(q.id, opt.id, words);
-      this.toast(d.reply ?? `Noted → ${opt.label}`, "good");
+      this.toast(queuedNote(q, d, item?.title) ?? d.reply ?? `Noted → ${opt.label}`, "good");
       return;
     }
     if (item && d.dispatch?.action && this.dispatcher) {
       this.closeWithNote(q, text);
       const agentNote = d.dispatch.note?.trim() || text;
       this.journal(`Dispatched ${d.dispatch.action}: ${item.title} — ${agentNote}`, { itemId: item.id });
-      this.toast(d.reply ?? `On it: ${item.title}`, "good");
+      // Never the model's reply here: it reads as done ("Asking Maryna in chat…", 10-16) while the agent hasn't started.
+      this.toast(queuedNote(q, d, item.title)!, "good");
       await this.dispatcher.dispatch(item.id, d.dispatch.action, agentNote);
       return;
     }
@@ -727,6 +742,36 @@ export function effectFromLabel(label: string): Effect {
   if (/\b(reply|chase|message|ping)\b/.test(l)) return { type: "dispatch", action: "reply" };
   if (/\bkeep( it)? open\b|\bstill open\b/.test(l)) return { type: "status", status: "proposed" };
   return { type: "noop" };
+}
+
+const SENT: Record<ActionKind, string> = {
+  ticket: "file the ticket", reply: "send the message", email: "send the email", prep: "prep it",
+  work: "do the work", verify: "check", draft: "draft it", publish: "publish it",
+};
+
+/** "Sent an agent to send the message: <title>". True as soon as dispatch() returns: the job exists, nothing has run. */
+export function sentAgent(action: ActionKind, title: string) {
+  return `Sent an agent to ${SENT[action] ?? action}: ${title}`;
+}
+
+/** Effects that hand work to a job that runs after the toast: an agent, the scheduler, triage, a login. */
+export function runsLater(e: Effect): boolean {
+  if (e.type === "multi") return e.effects.some(runsLater);
+  return e.type === "dispatch" || e.type === "when" || e.type === "triage" || e.type === "gatewayLogin";
+}
+
+/**
+ * What a note decision does, in fixed words, when it only starts work that hasn't run yet. Undefined when the
+ * model's reply is safe to show (the state already changed, or it's an answer). Mirrors applyNote's order.
+ * 10-16 20:44: the note job's summary said "Asking Maryna in chat…"; the reply agent started 5 s later.
+ * Same class as "Booked" (ff3d07e): the model words the outcome, the outcome belongs to the job that runs it.
+ */
+export function queuedNote(q: Pick<Question, "options">, d: NoteDecision, title?: string): string | undefined {
+  const opt = d.pick ? q.options.find((o) => o.id === d.pick) : undefined;
+  if (opt && !(opt.effect.type === "open" && opt.effect.keep)) return runsLater(opt.effect) ? `Noted → ${opt.label}` : undefined;
+  if (title && d.dispatch?.action) return sentAgent(d.dispatch.action, title);
+  if (title && d.when?.trim()) return `Working out when from “${d.when.trim()}”`;
+  return undefined;
 }
 
 /**
