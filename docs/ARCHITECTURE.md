@@ -197,6 +197,22 @@ it submits when you stop talking. `Agents.scheduleFromWords` asks a no-tools pi 
 The reminder is rule 1 ("It's time"), which already notifies. The command bar supports the same thing through
 triage's `calendar` field.
 
+### Replies never claim queued work
+
+Triage, the note reader and `scheduleFromWords` write their `reply` before the work they asked for runs. A reply
+that words the outcome ("Booked…", "Asking Maryna in chat…") is shown as a green toast and a job summary while
+the job that does it hasn't started, and sometimes fails. So:
+
+- Note → dispatch, a picked option that dispatches / schedules / re-triages, or a `when`: the note job summary
+  and toast are fixed words from `queuedNote()` in `hub.ts` ("Sent an agent to send the message: X",
+  "Noted → Ask her", "Working out when from “Thursday”"). The model's reply is only used when the state has
+  already changed (status) or it's an answer (context only).
+- `when` with `calendar: create`: "Scheduled X — adding a private block". `calendarBlock` toasts the real result.
+- Triage: the prompt asks for dispatched work to be worded as handed off. If a dispatch it asked for didn't
+  start (unknown id), the reply says so.
+- The job that runs the work reports its own outcome. Tests: `test/claim-before-run.test.ts`,
+  `test/schedule-reply.test.ts`.
+
 ### Writing scout
 
 Weekly, `Agents.postSweep` reads memory (accomplishments, projects, learnings, the journal and any ideas
