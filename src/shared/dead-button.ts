@@ -10,6 +10,14 @@ import type { Effect, Question, QuestionOption } from "./types.ts";
 /** Labels that promise an action. Also used by the usage digest's "Yes taps that started nothing". */
 export const AFFIRMATIVE = /\b(yes|send|draft|dispatch|research|verify|do it)\b/i;
 
+/** "No, don't send it", "Not now — research later": the verb is there, the answer is no. */
+const NEGATED = /^\s*(no|not|nope|don'?t|do not|skip|never)\b/i;
+
+/** The label says yes to an action (and doesn't open with a no). */
+export function promisesAction(label: string): boolean {
+  return AFFIRMATIVE.test(label) && !NEGATED.test(label);
+}
+
 /**
  * Option ids whose real work happens in the answer route (src/server/index.ts), after the
  * noop effect. Keyed by question kind; `*` = any kind. Keep in step with that route.
@@ -33,5 +41,5 @@ export function routeHandled(kind: string, optionId: string): boolean {
 
 /** The options on this card that promise an action and do nothing. */
 export function deadOptions(q: Pick<Question, "kind" | "options">): QuestionOption[] {
-  return q.options.filter((o) => AFFIRMATIVE.test(o.label) && doesNothing(o.effect) && !routeHandled(q.kind, o.id));
+  return q.options.filter((o) => promisesAction(o.label) && doesNothing(o.effect) && !routeHandled(q.kind, o.id));
 }

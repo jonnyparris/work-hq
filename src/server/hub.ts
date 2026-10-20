@@ -7,7 +7,7 @@ import type {
   QuestionOption, ServerEvent, Snapshot, SyncState, Coaching,
 } from "../shared/types.ts";
 import { type BulkRequest, deckGroup, deferHorizon, localDay, optionFor, setsStatus } from "../shared/batch.ts";
-import { deadOptions } from "../shared/dead-button.ts";
+import { deadOptions, promisesAction } from "../shared/dead-button.ts";
 import { config, memoryOn } from "./config.ts";
 import { newId, nowIso, type Store } from "./db.ts";
 import { findTwin, isOpen } from "./dedupe.ts";
@@ -331,7 +331,9 @@ export class Hub {
       case "dispatch":
         if (itemId && this.dispatcher) {
           this.journal(`Dispatched ${effect.action}: ${this.store.item(itemId)?.title}`, { itemId });
-          await this.dispatcher.dispatch(itemId, effect.action, note?.trim() ? note : effect.note);
+          // A typed note adds to the option's note (which question, which choice), it doesn't replace it.
+          const typed = note?.trim();
+          await this.dispatcher.dispatch(itemId, effect.action, typed && effect.note ? `${effect.note}\nThey added: ${typed}` : typed || effect.note);
         }
         break;
       case "when":
@@ -694,7 +696,7 @@ export class Hub {
         once: q.once,
         options: opts.map((o, i) => {
           const label = typeof o === "string" ? o : o.label;
-          const effect = typeof o === "string" ? (itemId ? effectFromLabel(o) : { type: "noop" as const }) : o.url && /^https?:\/\//.test(o.url) ? { type: "open" as const, url: o.url, keep: true } : o.action ? { type: "dispatch" as const, action: o.action, ...(o.note ? { note: o.note } : {}) } : o.status ? { type: "status" as const, status: o.status } : { type: "noop" as const };
+          const effect = typeof o === "string" ? agentStringEffect(o, q.prompt, itemId) : o.url && /^https?:\/\//.test(o.url) ? { type: "open" as const, url: o.url, keep: true } : o.action ? { type: "dispatch" as const, action: o.action, ...(o.note ? { note: o.note } : {}) } : o.status ? { type: "status" as const, status: o.status } : { type: "noop" as const };
           return { id: `o${i}`, label, tone: i === 0 ? "primary" : effect.type === "status" && effect.status === "dropped" ? "danger" : effect.type === "status" && effect.status === "done" ? "good" : "quiet", effect };
         }),
       });
@@ -741,6 +743,25 @@ export function effectFromLabel(label: string): Effect {
   if (/\b(file|create|open) (a |the )?(ticket|jira)/.test(l)) return { type: "dispatch", action: "ticket" };
   if (/\b(reply|chase|message|ping)\b/.test(l)) return { type: "dispatch", action: "reply" };
   if (/\bkeep( it)? open\b|\bstill open\b/.test(l)) return { type: "status", status: "proposed" };
+  return { type: "noop" };
+}
+
+/**
+ * An agent's plain-string option. Known labels map via effectFromLabel. An affirmative label
+ * that maps to nothing ("Yes", "Send it", "Research it", the bare Yes/No default) used to be a
+ * noop: the tap was journaled and nothing ran. Now: on an item it dispatches `work` (or
+ * `verify` for check/verify) with the question as the note; with no item it goes back through
+ * triage, the way command-bar follow-ups have since 10-17.
+ */
+export function agentStringEffect(label: string, prompt: string, itemId?: string): Effect {
+  const yes = promisesAction(label);
+  if (itemId) {
+    const e = effectFromLabel(label);
+    if (e.type !== "noop" || !yes) return e;
+    const action: ActionKind = /\b(verify|check)\b/i.test(label) ? "verify" : "work";
+    return { type: "dispatch", action, note: `Agent asked: ${prompt}\nThey answered: ${label}` };
+  }
+  if (yes) return { type: "triage", text: `Agent asked: ${prompt}\nThey answered: ${label}`, mode: "chat" };
   return { type: "noop" };
 }
 
