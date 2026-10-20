@@ -472,6 +472,7 @@ export class Agents implements Dispatcher {
     }
     const missed = await this.applyTriage(result, mode, utterance);
     // The reply was written before anything ran. If it promised an agent that never started, say so.
+    // reply-safe: applyTriage ran first; the prompt words dispatches as handed off. Gap: "Dispatched" with dispatch[] empty.
     const reply = missed ? `${result.reply ?? ""} (No agent started for ${missed} of those: item not found.)`.trim() : result.reply;
     this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: reply });
     return { ...result, reply, jobId: job.id };
@@ -589,6 +590,7 @@ export class Agents implements Dispatcher {
       throw new Error(error);
     }
     // Summary before applyNote runs anything: fixed words when the note only starts work (10-16: "Asking Maryna in chat").
+    // reply-safe: queuedNote covers every queued path; out.reply only shows when the change is synchronous.
     this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: queuedNote(q, out, item?.title) ?? out.reply ?? "Read the note" });
     return out;
   }
@@ -606,6 +608,7 @@ export class Agents implements Dispatcher {
     if (!r.ok || !out || !at) {
       this.patch(job.id, { status: "failed", error: r.error ?? "no time in that", finishedAt: nowIso() });
       this.hub.journal(`Tried to schedule "${item.title}" from: “${words}” — couldn't tell when`, { itemId });
+      // reply-safe: failure path, the reply asks when.
       this.hub.toast(out?.reply ?? "Couldn't tell when. Asking again.", "warn");
       this.hub.ask({
         kind: "when", itemId, key: `when-retry:${itemId}:${Date.now()}`, badge: "When?", priority: 92,
@@ -629,6 +632,7 @@ export class Agents implements Dispatcher {
       void this.calendarBlock(itemId, at, out.durationMin ?? 30);
       return;
     }
+    // reply-safe: schedule() already ran and there's no calendar write left (create returned above with fixed words).
     this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: out.reply ?? `Scheduled ${label}` });
     const cal = out.calendar === "exists" ? " — I'll remind you then" : " — I'll remind you";
     this.hub.toast(`${out.reply ?? `Scheduled ${label}`}${out.reply ? "" : cal}`, "good");

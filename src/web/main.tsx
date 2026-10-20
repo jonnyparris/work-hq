@@ -258,6 +258,7 @@ function CommandBar() {
     setReply(undefined);
     try {
       const r = await api.say(t, mode);
+      // reply-safe: the triage reply, same text as its job summary (agents.triage).
       setReply(r.reply ?? "Done.");
     } catch (e) {
       setReply(`Couldn't: ${(e as Error).message}`);

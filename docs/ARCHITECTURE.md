@@ -217,6 +217,10 @@ the job that does it hasn't started, and sometimes fails. So:
   start (unknown id), the reply says so.
 - The job that runs the work reports its own outcome. Tests: `test/claim-before-run.test.ts`,
   `test/schedule-reply.test.ts`.
+- New sites can't slip in: `test/reply-sinks.test.ts` finds every `toast(`, `summary:` and `setReply(` line in
+  `src/server` and `src/web` that uses a `reply`, and fails unless it's on the test's allowlist and has a
+  `// reply-safe: <why>` comment at the site. Not caught: a reply copied to another variable first, and a triage
+  reply that claims a dispatch when `dispatch[]` is empty.
 
 ### Writing scout
 

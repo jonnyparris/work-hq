@@ -494,6 +494,7 @@ export class Hub {
     if (opt && !(opt.effect.type === "open" && opt.effect.keep)) {
       const words = opt.effect.type === "when" ? d.when?.trim() || text : note;
       await this.answer(q.id, opt.id, words);
+      // reply-safe: queuedNote takes over when the pick only queues work; otherwise answer() already applied it.
       this.toast(queuedNote(q, d, item?.title) ?? d.reply ?? `Noted → ${opt.label}`, "good");
       return;
     }
@@ -515,6 +516,7 @@ export class Hub {
     if (item && d.status) {
       this.closeWithNote(q, text);
       this.setStatus(item.id, d.status, note !== text ? note : undefined);
+      // reply-safe: setStatus already ran.
       this.toast(d.reply ?? `${label(d.status)}: ${item.title}`, "good");
       return;
     }
@@ -533,6 +535,7 @@ export class Hub {
       }
     }
     this.park(q, back.toISOString());
+    // reply-safe: context only, nothing runs; the reply is an answer.
     this.toast(d.reply ? `${d.reply} Back ${fmtDay(back)}.` : `Noted. Back ${fmtDay(back)}.`, "info");
   }
 
