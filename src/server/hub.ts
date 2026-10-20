@@ -696,7 +696,7 @@ export class Hub {
         once: q.once,
         options: opts.map((o, i) => {
           const label = typeof o === "string" ? o : o.label;
-          const effect = typeof o === "string" ? agentStringEffect(o, q.prompt, itemId) : o.url && /^https?:\/\//.test(o.url) ? { type: "open" as const, url: o.url, keep: true } : o.action ? { type: "dispatch" as const, action: o.action, ...(o.note ? { note: o.note } : {}) } : o.status ? { type: "status" as const, status: o.status } : { type: "noop" as const };
+          const effect = typeof o === "string" ? agentStringEffect(o, q.prompt, itemId) : o.url && /^https?:\/\//.test(o.url) ? { type: "open" as const, url: o.url, keep: true } : o.action ? { type: "dispatch" as const, action: o.action, ...(o.note ? { note: o.note } : {}) } : o.status ? { type: "status" as const, status: o.status } : agentStringEffect(o.label, q.prompt, itemId);
           return { id: `o${i}`, label, tone: i === 0 ? "primary" : effect.type === "status" && effect.status === "dropped" ? "danger" : effect.type === "status" && effect.status === "done" ? "good" : "quiet", effect };
         }),
       });
@@ -751,7 +751,8 @@ export function effectFromLabel(label: string): Effect {
  * that maps to nothing ("Yes", "Send it", "Research it", the bare Yes/No default) used to be a
  * noop: the tap was journaled and nothing ran. Now: on an item it dispatches `work` (or
  * `verify` for check/verify) with the question as the note; with no item it goes back through
- * triage, the way command-bar follow-ups have since 10-17.
+ * triage, the way command-bar follow-ups have since 10-17. An object option with only a label
+ * ({ label: "Yes, send it" }, no url/action/status) maps the same way.
  */
 export function agentStringEffect(label: string, prompt: string, itemId?: string): Effect {
   const yes = promisesAction(label);

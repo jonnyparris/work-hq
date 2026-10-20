@@ -16,7 +16,7 @@ const NOT_AN_OPTION = [
   /case "noop":/, // applyEffect
   /^\s*return \{ type: "noop" \};/, // effectFromLabel fallback (agent strings; caught at runtime)
   /^\s*\{ type: "noop" \}, \/\/ keeps the/, // inside a multi next to a real effect
-  /const effect = typeof o === "string"/, // ingestReport maps agent options (agentStringEffect; objects caught at runtime)
+  /const effect = typeof o === "string"/, // ingestReport maps agent options (agentStringEffect for strings and label-only objects)
 ];
 
 interface Found { file: string; line: number; id: string; label: string }
@@ -101,12 +101,31 @@ describe("dead buttons", () => {
     expect(hub.store.journal(10).filter((j) => j.text.startsWith("Dead button"))).toHaveLength(0);
   });
 
-  test("an agent object option whose 'Yes' carries no effect is flagged on ingest", () => {
+  // A label-only object ({ label: "Yes, send it" }) used to be a noop the runtime guard flagged.
+  // It now maps like the same string; an explicit url/action/status still wins.
+  test("agent object options with only a label map like strings; explicit effects win", () => {
     const hub = new Hub(new Store(":memory:"));
     const warn = spyOn(console, "warn").mockImplementation(() => {});
     const it = hub.createItem({ title: "thing", status: "proposed" });
-    hub.ingestReport({ questions: [{ prompt: "Want me to send the summary?", itemId: it.id, options: [{ label: "Yes, send it" }, "Mark done"] as any }] });
-    expect(hub.store.journal(20).some((j) => j.text.startsWith("Dead button") && j.text.includes("Yes, send it"))).toBe(true);
+    hub.ingestReport({
+      questions: [
+        { prompt: "Want me to send the summary?", itemId: it.id, options: [{ label: "Yes, send it" }, { label: "No, leave it" }, { label: "Mark done" }, { label: "Yes", status: "waiting" }] as any },
+        { prompt: "Research the vendor?", options: [{ label: "Research it" }, { label: "Not now" }] as any },
+      ],
+    });
+    const qs = hub.store.questions("open");
+    const eff = (p: string) => qs.find((q) => q.prompt === p)!.options.map((o) => o.effect);
+    expect(eff("Want me to send the summary?")).toEqual([
+      { type: "dispatch", action: "work", note: "Agent asked: Want me to send the summary?\nThey answered: Yes, send it" },
+      { type: "noop" },
+      { type: "status", status: "done" },
+      { type: "status", status: "waiting" },
+    ]);
+    expect(eff("Research the vendor?")).toEqual([
+      { type: "triage", text: "Agent asked: Research the vendor?\nThey answered: Research it", mode: "chat" },
+      { type: "noop" },
+    ]);
+    expect(hub.store.journal(50).filter((j) => j.text.startsWith("Dead button"))).toEqual([]);
     warn.mockRestore();
   });
 
