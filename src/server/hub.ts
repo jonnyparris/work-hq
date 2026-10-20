@@ -668,6 +668,7 @@ export class Hub {
   ingestReport(r: AgentReport, fallbackSource: Item["source"]["type"] = "agent") {
     const job = r.jobId ? this.store.job(r.jobId) : undefined;
     const created: Item[] = [];
+    const asked: Array<{ prompt: string; asked: boolean; options: string[] }> = [];
     for (const raw of r.items ?? []) {
       const status = (raw.status as ItemStatus | undefined) ?? "inbox";
       created.push(
@@ -688,7 +689,7 @@ export class Hub {
       const opts = q.options?.length ? q.options : ["Yes", "No"];
       const byKey = q.itemKey ? this.store.itemBySourceKey(q.itemKey)?.id : undefined;
       const itemId = byKey ?? (q.itemId && this.store.item(q.itemId) ? q.itemId : job?.itemId);
-      this.ask({
+      const made = this.ask({
         kind: "open",
         badge: job ? "Agent asks" : undefined,
         itemId,
@@ -703,6 +704,9 @@ export class Hub {
           return { id: `o${i}`, label, tone: i === 0 ? "primary" : effect.type === "status" && effect.status === "dropped" ? "danger" : effect.type === "status" && effect.status === "done" ? "good" : "quiet", effect };
         }),
       });
+      // Echo what each button will do, so the agent sees a dead or wrong mapping in the same run.
+      if (made) asked.push({ prompt: q.prompt, asked: true, options: made.options.map((o) => `${o.label} → ${effectText(o.effect)}`) });
+      else asked.push({ prompt: q.prompt, asked: false, options: [] });
     }
     for (const line of r.journal ?? []) this.journal(line, { who: "agent" });
     if (r.events) this.setEvents(r.events, r.eventsThrough);
@@ -710,7 +714,23 @@ export class Hub {
       const tail = r.summary ? [...job.tail, `✓ ${r.summary}`].slice(-12) : job.tail;
       this.putJob({ ...job, summary: r.summary ?? job.summary, tail, reported: true });
     }
-    return { created: created.map((i) => i.id) };
+    return { created: created.map((i) => i.id), ...(asked.length ? { questions: asked } : {}) };
+  }
+}
+
+/** One line for what tapping a button does: "dispatch work", "status done", "noop (does nothing)". */
+export function effectText(e: Effect): string {
+  switch (e.type) {
+    case "status": return `status ${e.status}`;
+    case "dispatch": return `dispatch ${e.action}`;
+    case "open": return `open ${e.url}`;
+    case "triage": return "triage (re-read as a command-bar note)";
+    case "schedule": return `schedule ${e.label}`;
+    case "snooze": return `snooze ${e.minutes} min`;
+    case "when": return "ask when (needs a note)";
+    case "noop": return "noop (does nothing)";
+    case "gatewayLogin": return "gateway login";
+    case "multi": return e.effects.map(effectText).join(" + ");
   }
 }
 

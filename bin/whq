@@ -15,7 +15,15 @@ jstr() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
 case "$cmd" in
   report)
     job="${1:?usage: whq report <jobId> < report.json}"
-    python3 -c 'import json,sys; d=json.load(sys.stdin); d["jobId"]=sys.argv[1]; print(json.dumps(d))' "$job" | post /api/agent/report ;;
+    python3 -c 'import json,sys; d=json.load(sys.stdin); d["jobId"]=sys.argv[1]; print(json.dumps(d))' "$job" | post /api/agent/report | python3 -c '
+import json,sys
+raw=sys.stdin.read(); print(raw.rstrip())
+try: qs=json.loads(raw).get("questions") or []
+except Exception: qs=[]
+for q in qs:
+  print(("Asked: " if q["asked"] else "Not asked (same question already open, or answered with once): ")+q["prompt"])
+  for o in q["options"]: print("  "+o)
+if any(" noop " in o for q in qs for o in q["options"]): print("A noop button does nothing when tapped. If that is wrong, re-report with an explicit status/action.")' ;;
   say)       echo "{\"text\": $(jstr "$*")}" | post /api/say ;;
   pineapple) echo "{\"text\": $(jstr "$*"), \"mode\": \"pineapple\"}" | post /api/say ;;
   sync)      echo '{}' | post "/api/sync/${1:?name}" ;;

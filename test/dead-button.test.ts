@@ -162,6 +162,19 @@ describe("dead buttons", () => {
     warn.mockRestore();
   });
 
+  // whq report prints these, so an agent sees a dead or remapped button in the same run, not when the owner taps it.
+  test("ingestReport echoes each question's option effects; a duplicate says it wasn't asked", () => {
+    const hub = new Hub(new Store(":memory:"));
+    const it = hub.createItem({ title: "thing", status: "proposed" });
+    const r = { questions: [{ prompt: "Send the summary?", itemId: it.id, options: ["Yes, send it", "Not now", "Mark done"] }, { prompt: "Ticket it?", itemId: it.id, options: [{ label: "File it", action: "ticket" }] as any }] };
+    expect(hub.ingestReport(r).questions).toEqual([
+      { prompt: "Send the summary?", asked: true, options: ["Yes, send it → dispatch work", "Not now → noop (does nothing)", "Mark done → status done"] },
+      { prompt: "Ticket it?", asked: true, options: ["File it → dispatch ticket"] },
+    ]);
+    expect(hub.ingestReport({ questions: [r.questions[0]!] }).questions).toEqual([{ prompt: "Send the summary?", asked: false, options: [] }]);
+    expect(hub.ingestReport({ journal: ["x"] }).questions).toBeUndefined();
+  });
+
   test("tapping an agent's 'Yes' dispatches with the question, plus anything typed", async () => {
     const hub = new Hub(new Store(":memory:"));
     const calls: Array<[string, string, string | undefined]> = [];

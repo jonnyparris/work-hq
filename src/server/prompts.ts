@@ -91,6 +91,7 @@ Fields (all optional):
 - questions: things only ${owner.name} can answer [{ "prompt", "context", "itemId",
   "options": [{ "label": "Mark done", "status": "done" }, { "label": "File the ticket", "action": "ticket" }, { "label": "Keep open", "status": "proposed" }] }]
   (status: any item status; action: ticket|reply|email|prep|work|verify — an action dispatches another agent)
+  whq report prints what each button will do ("Not now → noop (does nothing)"). A wrong one? Re-report that question with an explicit status/action and a new key.
 - journal: facts worth remembering, one line each ("PAY-123 closed by ${owner.name} 09-25").
 
 Report once at the end; progress reports are welcome on long runs.`;
