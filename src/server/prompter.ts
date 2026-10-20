@@ -2,11 +2,12 @@
 // what to ask. Rules are deliberately boring and deterministic — the AI does
 // extraction and verification; *when to interrupt* stays predictable.
 
-import type { ActionKind, CalendarEvent, Item, Question, QuestionOption } from "../shared/types.ts";
+import type { ActionKind, CalendarEvent, Coaching, Item, Question, QuestionOption } from "../shared/types.ts";
 import { config } from "./config.ts";
 import type { Hub } from "./hub.ts";
 import { localDate } from "./memory-sync.ts";
 import { type MrVerdict, MrStates } from "./mr-state.ts";
+import { plain } from "./parse.ts";
 import { openUrl } from "./prompts.ts";
 
 const MIN = 60_000;
@@ -212,6 +213,11 @@ export class Prompter {
       });
     }
 
+    // 4b. The coaching card's "one thing to try": at its time, ask whether it happened, once per reflection.
+    // 10-17..10-19 the reflection kept finding the move hadn't happened, and only guessed why. The answer goes
+    // to the journal as "M5 move: … → Done / Hand to an agent / Not today", which nightly-reflect §7 reads.
+    this.askCoachMove(now, open);
+
     if (budget <= 0) return;
 
     // 5. Inbox triage — captured but nobody's decided what it is.
@@ -416,6 +422,19 @@ export class Prompter {
 
   private open: Question[] = [];
 
+  private askCoachMove(now: Date, open: Question[]) {
+    const c = this.hub.coaching();
+    const key = c ? coachKey(c) : undefined;
+    // A newer reflection replaced the move: the old card is moot (unanswered is itself the answer §7 reports).
+    for (const q of open) if (q.key.startsWith("coach:") && q.key !== key) this.hub.expireQuestion(q.id, "new reflection");
+    if (!c || !key) return;
+    const due = coachDue(c);
+    if (!due || now < due) return;
+    // A stale coaching block (the reflection stopped running) shouldn't surface days later.
+    if (now.getTime() - due.getTime() > 2 * DAY) return;
+    this.ask({ ...coachQuestion(c), key, once: true });
+  }
+
   /**
    * Waiting items whose MRs all merged, on one card ("N waiting items: their MRs merged"), at most once a day.
    * 10-18: eight items sat in Waiting on MRs merged 10-14/10-15, and the per-item card only fires after 3 days, two at a time.
@@ -573,6 +592,63 @@ export class Prompter {
     const ev: CalendarEvent | undefined = this.hub.todayEvents(now).find((e) => e.id === eventId);
     return ev ? now.getTime() - Date.parse(ev.start) : Infinity;
   }
+}
+
+export const coachKey = (c: Pick<Coaching, "date">) => `coach:${c.date}`;
+
+const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+/**
+ * When to ask about the move. Day: an explicit MM-DD in `when` ("Tue 10-20"), else a weekday name
+ * ("Thursday", "Monday") after the reflection's date, else the next workday after it ("tomorrow").
+ * Time: the last HH:MM in `when` ("before the 10:30 interview" → 10:30, "09:30–09:45" → 09:45), else 09:30.
+ */
+export function coachDue(c: Pick<Coaching, "date" | "when">): Date | undefined {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(c.date);
+  if (!m) return undefined;
+  const base = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12);
+  const when = c.when ?? "";
+  const times = [...when.matchAll(/\b([01]?\d|2[0-3]):([0-5]\d)\b/g)];
+  const [h, min] = times.length ? [Number(times.at(-1)![1]), Number(times.at(-1)![2])] : [9, 30];
+  let day: Date | undefined;
+  // Strip times first so "09:30–09:45" can't read as a date.
+  const md = /\b(\d{2})-(\d{2})\b/.exec(when.replace(/\b\d{1,2}:\d{2}\b/g, ""));
+  if (md && Number(md[1]) >= 1 && Number(md[1]) <= 12) {
+    day = new Date(base.getFullYear(), Number(md[1]) - 1, Number(md[2]), 12);
+    if (day < base) day.setFullYear(day.getFullYear() + 1); // a December reflection about "01-04"
+  } else {
+    const wd = WEEKDAYS.findIndex((w) => new RegExp(`\\b${w}`, "i").test(when.replace(/\btomorrow\b/gi, "")));
+    day = new Date(base);
+    do day.setDate(day.getDate() + 1);
+    while (wd >= 0 ? day.getDay() !== wd : day.getDay() === 0 || day.getDay() === 6);
+  }
+  day.setHours(h, min, 0, 0);
+  return day;
+}
+
+/** "Spend ten minutes on the two things only you can do": the move's first line, plain, first sentence. */
+export function coachShort(move: string) {
+  const first = move.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+  const s = plain(first.replace(/^(?:[-*]|\d+\.)\s+/, ""))
+    .split(/(?<=[a-z0-9)\]])[.:]\s/i)[0]!
+    .replace(/[.:]$/, "");
+  return s.length > 140 ? s.slice(0, 140).replace(/\s+\S*$/, "") + "…" : s;
+}
+
+/** The card. Done / Not today only journal; "Hand to an agent" also makes an item for the move (Hub.applyEffect). */
+export function coachQuestion(c: Pick<Coaching, "date" | "when" | "move">) {
+  return {
+    kind: "state" as const,
+    badge: "M5 move",
+    priority: 85,
+    prompt: `M5 move: ${coachShort(c.move)}. Did it happen?`,
+    context: `The ${c.date.slice(5)} reflection's one thing to try${c.when ? ` (${c.when})` : ""}:\n${c.move}\n\nYour answer goes to the journal, so tonight's reflection starts from what happened. Partly? Pick one and add a note.`,
+    options: [
+      opt("done", "Done", { type: "noop" }, "good"),
+      opt("agent", "Hand to an agent", { type: "dispatch", action: "work", note: `The M5 "one thing to try" from the ${c.date} reflection. Do what an agent can (drafts, lookups, booking), and hand back what only the owner can send:\n${c.move}` }, "primary"),
+      opt("not", "Not today", { type: "noop" }, "quiet"),
+    ],
+  };
 }
 
 /** A meeting-ended card folded into the morning digest. `start` (ISO) orders the list; absent on older kv rows. */

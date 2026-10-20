@@ -45,7 +45,8 @@ export function deckGroup(q: Pick<Question, "key" | "kind">): DeckGroup {
   if (k.startsWith("state:") || k.startsWith("kill:")) return "state";
   if (k.startsWith("proposal:")) return "proposal";
   if (q.kind === "post") return "post";
-  if (q.kind === "plan" || q.kind === "wrap" || q.kind === "prep") return "day";
+  // coach: the M5 move check. Only you know whether it happened, so no bulk op answers it.
+  if (q.kind === "plan" || q.kind === "wrap" || q.kind === "prep" || k.startsWith("coach:")) return "day";
   return "agent";
 }
 

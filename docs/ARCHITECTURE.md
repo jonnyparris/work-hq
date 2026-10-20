@@ -131,6 +131,7 @@ server? Work HQ still runs; you just lose import and the flush.
 | Morning plan | first tick in work hours before noon | 95 |
 | It's time | scheduled item's time has passed | 90 (notifies) |
 | Wrap up | 90 min before end of day | 88 |
+| M5 move | the coaching move's time has passed (day: MM-DD, weekday or next workday after the reflection; time: last HH:MM, else 09:30); once per reflection date, never > 2 days late; a newer reflection expires it; journaled as `M5 move: … → answer` | 85 (notifies) |
 | Meeting prep | small meeting / 1-1 starts in ≤ 20 min | 85 (notifies) |
 | 🍍 capture triage | new pineapple item | 82 |
 | Kill date | ≤ 2 days to a reflection kill date | 72–78 |

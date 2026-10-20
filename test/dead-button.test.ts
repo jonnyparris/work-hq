@@ -76,6 +76,8 @@ describe("dead buttons", () => {
   test("hub.ask journals a dead button when asked, not after a tap", () => {
     const hub = new Hub(new Store(":memory:"));
     const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const toasts: { text: string; tone?: string }[] = [];
+    hub.subscribe((e) => e.type === "toast" && toasts.push(e.data));
     const q = hub.ask({
       kind: "open",
       key: "t:1",
@@ -92,13 +94,19 @@ describe("dead buttons", () => {
     expect(lines[0]!.text).toContain("“Yes, dispatch”");
     expect(lines[0]!.who).toBe("hq");
     expect(warn).toHaveBeenCalledTimes(1);
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]!.tone).toBe("warn");
+    expect(toasts[0]!.text).toContain("“Yes, dispatch”");
     warn.mockRestore();
   });
 
   test("a healthy card writes nothing", () => {
     const hub = new Hub(new Store(":memory:"));
+    const toasts: unknown[] = [];
+    hub.subscribe((e) => e.type === "toast" && toasts.push(e));
     hub.ask({ kind: "open", key: "t:2", priority: 50, prompt: "Ship?", options: [{ id: "y", label: "Yes", effect: { type: "dispatch", action: "work" } }] });
     expect(hub.store.journal(10).filter((j) => j.text.startsWith("Dead button"))).toHaveLength(0);
+    expect(toasts).toHaveLength(0);
   });
 
   // A label-only object ({ label: "Yes, send it" }) used to be a noop the runtime guard flagged.

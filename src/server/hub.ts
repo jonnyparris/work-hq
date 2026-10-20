@@ -235,6 +235,7 @@ export class Hub {
   /**
    * "Yes, dispatch" that does nothing: say so when it's asked, not after someone taps it
    * (10-13..10-17 three taps were silently dropped). Warn only — the card still shows.
+   * The journal is a log nobody reads live, so toast too: the card and the warning land together.
    */
   private flagDeadButtons(q: Question) {
     const dead = deadOptions(q);
@@ -242,6 +243,7 @@ export class Hub {
     const labels = dead.map((o) => `“${o.label}”`).join(", ");
     console.warn(`[work-hq] dead button on ${q.key}: ${labels} has a noop effect`);
     this.journal(`Dead button: ${labels} on “${q.prompt.slice(0, 120)}” does nothing when tapped (${q.key})`, { itemId: q.itemId, questionId: q.id, who: "hq" });
+    this.toast(`Dead button: ${labels} on the new card does nothing when tapped. Answer it another way.`, "warn");
   }
 
   closeQuestionsFor(itemId: string, reason: string) {
@@ -322,6 +324,23 @@ export class Hub {
           source: { type: "calendar", label: ev.title, key: `cal:prep:${ev.id}`, url: ev.url },
         }).id;
       }
+    }
+    // The coaching move (prompter askCoachMove) has no item until it's handed to an agent. Journal the answer
+    // first, so "M5 move: \u2026 \u2192 Hand to an agent" reads like Done / Not today do.
+    if (!itemId && q?.key.startsWith("coach:") && effect.type === "dispatch") {
+      answerLine();
+      const c = this.coaching();
+      const date = q.key.slice("coach:".length);
+      const key = `coach:move:${date}`;
+      itemId =
+        this.store.itemBySourceKey(key)?.id ??
+        this.createItem({
+          title: q.prompt.replace(/^M5 move: /, "M5 move (" + date.slice(5) + "): ").replace(/\. Did it happen\?$/, ""),
+          kind: "task",
+          status: "doing",
+          detail: c?.date === date ? c.move : q.context,
+          source: { type: "agent", label: `Coaching ${date}`, key, url: c?.date === date ? c.url : undefined },
+        }).id;
     }
     switch (effect.type) {
       case "status":

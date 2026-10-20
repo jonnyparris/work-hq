@@ -743,3 +743,80 @@ describe("due cards while an agent works the item", () => {
     expect(dueCards(it.id)).toHaveLength(1);
   });
 });
+
+describe("coaching move follow-up", () => {
+  const coaching = (date: string, when: string) =>
+    hub.setCoaching({
+      date,
+      when,
+      signal: "Mixed",
+      move: "- Spend ten minutes on the two things only you can do:\n  1. Reply to Tom's `AAACI3KC3Q4` thread.\n  2. Book the Priya Q4 session.",
+      wins: [],
+      gaps: [],
+    });
+  const coach = () => hub.store.questions("open").filter((q) => q.key.startsWith("coach:"));
+
+  test("due time comes from the move's 'when'", async () => {
+    const { coachDue } = await import("../src/server/prompter.ts");
+    const d = (date: string, when: string) => {
+      const x = coachDue({ date, when })!;
+      return `${x.getMonth() + 1}-${x.getDate()} ${x.toTimeString().slice(0, 5)}`;
+    };
+    expect(d("2026-10-19", "tomorrow (Tue 10-20, before the 09:30 blog slot)")).toBe("10-20 09:30");
+    expect(d("2026-10-18", "Monday (10-19, 09:30–09:45)")).toBe("10-19 09:45");
+    expect(d("2026-10-15", "tomorrow (Friday, before the 10:30 Druppov interview)")).toBe("10-16 10:30");
+    expect(d("2026-10-14", "tomorrow (Thursday, before BUPK FedRAMP part two)")).toBe("10-15 09:30");
+    expect(d("2026-10-16", "tomorrow")).toBe("10-19 09:30"); // Friday → Monday
+    expect(d("2026-12-30", "Mon 01-04")).toBe("1-4 09:30");
+  });
+
+  test("asked once at the move's time, not before", async () => {
+    coaching("2026-10-19", "tomorrow (Tue 10-20, before the 10:00 blog slot)");
+    p.tick(new Date(2026, 9, 20, 9, 59));
+    expect(coach()).toHaveLength(0);
+    p.tick(new Date(2026, 9, 20, 10, 0));
+    expect(coach()).toHaveLength(1);
+    const q = coach()[0]!;
+    expect(q.prompt).toBe("M5 move: Spend ten minutes on the two things only you can do. Did it happen?");
+    expect(q.options.map((o) => o.label)).toEqual(["Done", "Hand to an agent", "Not today"]);
+    await hub.answer(q.id, "not", "Ryan reply drafted, not sent");
+    p.tick(new Date(2026, 9, 20, 15));
+    expect(coach()).toHaveLength(0);
+    expect(hub.store.journal().some((j) => j.text === `${q.prompt} → Not today — Ryan reply drafted, not sent`)).toBe(true);
+  });
+
+  test("bulk ops leave it alone", () => {
+    coaching("2026-10-19", "tomorrow");
+    p.tick(new Date(2026, 9, 20, 10));
+    expect(optionFor(coach()[0]!, "done")).toBeUndefined();
+  });
+
+  test("a newer reflection expires the old card; a stale one is never asked", () => {
+    coaching("2026-10-19", "tomorrow");
+    p.tick(new Date(2026, 9, 20, 10));
+    expect(coach()).toHaveLength(1);
+    coaching("2026-10-20", "tomorrow");
+    p.tick(new Date(2026, 9, 21, 8));
+    expect(coach()).toHaveLength(0);
+    const h2 = new Hub(new Store(":memory:"));
+    h2.setCoaching({ date: "2026-10-12", when: "tomorrow", signal: "", move: "- x", wins: [], gaps: [] });
+    new Prompter(h2).tick(new Date(2026, 9, 20, 10));
+    expect(h2.store.questions("open").filter((q) => q.key.startsWith("coach:"))).toHaveLength(0);
+  });
+
+  test("'Hand to an agent' journals the answer and dispatches work on a new item", async () => {
+    const sent: Array<{ itemId: string; action: string; note?: string }> = [];
+    hub.dispatcher = { dispatch: async (itemId: string, action: string, note?: string) => void sent.push({ itemId, action, note }) } as any;
+    coaching("2026-10-19", "tomorrow");
+    p.tick(new Date(2026, 9, 20, 10));
+    const q = coach()[0]!;
+    await hub.answer(q.id, "agent");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.action).toBe("work");
+    expect(sent[0]!.note).toContain("Book the Priya Q4 session");
+    const it = hub.store.item(sent[0]!.itemId)!;
+    expect(it.title).toBe("M5 move (10-19): Spend ten minutes on the two things only you can do");
+    expect(it.source.key).toBe("coach:move:2026-10-19");
+    expect(hub.store.journal().some((j) => j.text === `${q.prompt} → Hand to an agent`)).toBe(true);
+  });
+});
