@@ -45,6 +45,11 @@
   2 h, a crash, a timeout, or a pi/extension update. A request that finds no idle worker waits for the
   one re-arming, or gets a one-off. Deadlines abort first (the run settles, the session is kept) and
   SIGKILL 15 s later. A tool run with no event for `pi.stallMin` (default 10) is aborted as stalled.
+  Both clocks count awake time only: a watchdog tick over 30 s late means the laptop slept, and the gap
+  moves the deadline and the idle limit out instead of aborting (`sleptMs`, a `☾` line in the job log).
+  A sweep that still fails after a sleep says `machine slept mid-run (N min), then …` and is due again on
+  the next awake tick. No sweeps start for 3 min after a wake: Power Nap DarkWakes (2–10 s) fire the
+  overdue cadence tick and froze the sweep they started (10-19: all four non-restart sweep failures).
   Dialogs (permission asks) are declined, as print mode does. `pi.runner: "print"` brings back the
   old `pi -p @file` path.
 - **One gateway token for all headless runs** (`pi.gatewayToken`, `src/server/gateway-token.ts`).

@@ -166,3 +166,46 @@ test("gateway token: a failing command passes nothing and backs off", async () =
   expect(calls).toBe(1);
   expect(await new GatewayToken(undefined).env()).toEqual({});
 });
+
+// ── laptop sleep: suspended time is not stall time (10-19: every "stalled" sweep aborted on a DarkWake) ──
+
+/** A clock that runs with real time, plus whatever we jump it by. */
+const jumpable = () => {
+  let offset = 0;
+  return { now: () => Date.now() + offset, jump: (ms: number) => (offset += ms) };
+};
+
+test("a 15-minute sleep mid-tool doesn't stall the run", async () => {
+  const w = started();
+  const c = jumpable();
+  setTimeout(() => c.jump(15 * 60_000), 150); // laptop sleeps while pi is busy
+  const r = await w.run("LATE:600", { timeoutMs: 20 * 60_000, idleMs: 10 * 60_000, clock: c.now, tickMs: 50 });
+  expect(r.ok).toBe(true);
+  expect(r.stalled).toBeFalsy();
+  expect(r.text).toBe("late");
+  expect(r.sleptMs!).toBeGreaterThan(14.9 * 60_000);
+  expect(r.sleptMs!).toBeLessThanOrEqual(15 * 60_000);
+});
+
+test("the deadline moves out by the sleep, and awake time still runs it out", async () => {
+  const w = started();
+  const c = jumpable();
+  setTimeout(() => c.jump(15 * 60_000), 100);
+  const t0 = Date.now();
+  const r = await w.run("SLOW", { timeoutMs: 600, clock: c.now, tickMs: 50, killAfterMs: 500 });
+  expect(r.timedOut).toBe(true);
+  // Without the credit it would have timed out on the first tick after the jump (~100 ms).
+  expect(Date.now() - t0).toBeGreaterThanOrEqual(550);
+  expect(r.sleptMs!).toBeGreaterThan(14.9 * 60_000);
+  expect(rpcError(r, 20, 10)).toBe("machine slept mid-run (15 min), then timed out after 20 min");
+});
+
+test("a genuine hang with no sleep is still caught", async () => {
+  const w = started();
+  const c = jumpable();
+  setTimeout(() => c.jump(20_000), 100); // a slow tick, under the suspend threshold: not sleep
+  const r = await w.run("SLOW", { timeoutMs: 60 * 60_000, idleMs: 15_000, clock: c.now, tickMs: 50 });
+  expect(r.stalled).toBe(true);
+  expect(r.sleptMs).toBeUndefined();
+  expect(rpcError(r, 20, 10)).toStartWith("stalled: no activity for 10 min");
+});

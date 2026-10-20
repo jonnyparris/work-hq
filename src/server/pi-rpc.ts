@@ -61,7 +61,17 @@ export interface RunOptions {
   onEvent?: (ev: any) => void;
   /** After the deadline's abort, how long to wait for it to settle before SIGKILL. */
   killAfterMs?: number;
+  /** Test hooks: the clock the watchdog reads, and how often it ticks. */
+  clock?: () => number;
+  tickMs?: number;
 }
+
+/**
+ * A watchdog tick this late means the process was suspended (laptop asleep), not that pi went quiet.
+ * Bun's loop never blocks this long on its own; macOS sleep and Power Nap DarkWakes do (10-19: every
+ * "stalled" sweep aborted on the exact second of a DarkWake, its idle clock full of sleep).
+ */
+export const SUSPEND_GAP_MS = 30_000;
 
 export interface RunOutcome {
   ok: boolean;
@@ -75,6 +85,8 @@ export interface RunOutcome {
   aborted?: boolean;
   /** The last record pi sent during the run, and when. Says how far a stalled run got. */
   lastEvent?: { type: string; at: number };
+  /** Time the process spent suspended mid-run. Not counted against the deadline or the idle limit. */
+  sleptMs?: number;
   /** Set when the process died mid-run. */
   exit?: { code: number | null; signal: NodeJS.Signals | null };
   stderr: string;
@@ -210,6 +222,7 @@ export class PiRpc {
 
   /** Send one prompt and wait until pi won't continue on its own (`agent_settled`), dies, or a deadline hits. */
   async run(message: string, o: RunOptions): Promise<RunOutcome> {
+    const clock = o.clock ?? Date.now;
     this.runs++;
     this.lastUsed = Date.now();
     let text = "";
@@ -217,16 +230,20 @@ export class PiRpc {
     let toolsRan = false;
     let timedOut = false;
     let stalled = false;
-    let lastEvent = Date.now();
     let abortedAt: number | undefined;
     const runStart = Date.now();
+    // Deadline and idle clocks on the watchdog's clock. Both move out by any time spent suspended.
+    let deadlineFrom = clock();
+    let lastEvent = clock();
+    let lastTick = clock();
+    let sleptMs = 0;
     // Snapshot at the deadline: the abort we then send gets a response, and that isn't how far pi got.
     let lastBeforeAbort: RunOutcome["lastEvent"];
 
     let off = () => false as boolean;
     const settled = new Promise<{ aborted?: boolean; exit?: RunOutcome["exit"] }>((done) => {
       off = this.subscribe((ev) => {
-        lastEvent = Date.now();
+        lastEvent = clock();
         if (ev.type === "__exit") {
           off();
           return done({ exit: { code: ev.code, signal: ev.signal } });
@@ -244,16 +261,27 @@ export class PiRpc {
       });
     });
 
+    const tick = o.tickMs ?? Math.min(1000, o.timeoutMs, o.idleMs ?? Infinity);
     const watchdog = setInterval(() => {
-      const now = Date.now();
-      if (!timedOut && !stalled && now - this.lastUsed > o.timeoutMs) timedOut = true;
+      const now = clock();
+      const gap = now - lastTick;
+      lastTick = now;
+      if (gap > SUSPEND_GAP_MS) {
+        // Asleep, not stalled: pi was frozen too. Credit the gap and judge the run on awake time only.
+        const slept = gap - tick;
+        sleptMs += slept;
+        deadlineFrom += slept;
+        lastEvent += slept;
+        return;
+      }
+      if (!timedOut && !stalled && now - deadlineFrom > o.timeoutMs) timedOut = true;
       else if (!timedOut && !stalled && o.idleMs && now - lastEvent > o.idleMs) stalled = true;
       else return;
-      abortedAt = now;
+      abortedAt = Date.now(); // real time: the kill race below runs on Date.now()
       lastBeforeAbort = this.lastEvent && this.lastEvent.at >= runStart ? { ...this.lastEvent } : undefined;
       // Ask nicely first; if it won't settle, the race below kills the process.
       void this.request("abort", {}, 10_000).catch(() => this.kill());
-    }, Math.min(1000, o.timeoutMs, o.idleMs ?? Infinity));
+    }, tick);
 
     let fin: { aborted?: boolean; exit?: RunOutcome["exit"] };
     try {
@@ -296,7 +324,7 @@ export class PiRpc {
       } catch {}
     }
     const ok = !fin.exit && !fin.aborted && !timedOut && !stalled && !lastError;
-    return { ok, text, lastError, session, toolsRan, timedOut, stalled, aborted: fin.aborted, exit: fin.exit, stderr: this.stderr, lastEvent: reached };
+    return { ok, text, lastError, session, toolsRan, timedOut, stalled, aborted: fin.aborted, exit: fin.exit, stderr: this.stderr, lastEvent: reached, ...(sleptMs ? { sleptMs } : {}) };
   }
 
   private kill() {

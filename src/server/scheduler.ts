@@ -9,9 +9,20 @@ import type { Hub } from "./hub.ts";
 import type { MemorySync } from "./memory-sync.ts";
 import type { Prompter } from "./prompter.ts";
 
+/** A cadence tick (every 60 s) this late means the laptop slept. */
+export const WOKE_GAP_MS = 2 * 60_000;
+/**
+ * No sweeps this long after a wake. macOS Power Nap DarkWakes last 2\u201310 s (one 119 s on AC, 10-19) and
+ * fire the overdue cadence tick, so a sweep started then froze seconds later and failed on the next wake.
+ * A real wake just waits 3 min; a DarkWake is asleep again long before.
+ */
+export const WAKE_GRACE_MS = 3 * 60_000;
+
 export class Scheduler {
   private timers: Timer[] = [];
   private last: Record<string, number> = {};
+  private lastCadence = Date.now();
+  private wokeAt = 0;
 
   constructor(
     private hub: Hub,
@@ -63,7 +74,22 @@ export class Scheduler {
     return Date.now() - (this.last[name] ?? 0) >= everyMin * 60_000;
   }
 
+  /** Track cadence ticks; true while we're inside the grace window after the laptop woke. */
+  justWoke(now = Date.now()) {
+    if (now - this.lastCadence > WOKE_GAP_MS) this.wokeAt = now;
+    this.lastCadence = now;
+    return now - this.wokeAt < WAKE_GRACE_MS;
+  }
+
+  /** Start a sweep; one that failed after the laptop slept mid-run is due again on the next awake tick. */
+  private startSweep(name: "calendar" | "transcripts") {
+    void this.agents.sweep(name).then((r) => {
+      if (r?.rerun) delete this.last[name];
+    });
+  }
+
   private async cadence() {
+    const woke = this.justWoke();
     if (this.due("cmuxPrune", 10)) {
       this.last.cmuxPrune = Date.now();
       this.agents.pruneCmux();
@@ -83,23 +109,23 @@ export class Scheduler {
       this.last.memory = Date.now();
       await this.memory.importAll().catch((e) => console.error("[memory]", e.message));
     }
-    if (!config.sweeps.enabled || !this.inWorkHours()) return;
+    if (!config.sweeps.enabled || !this.inWorkHours() || woke) return;
     // Model gateway login lapsed: every pi run would fail. One retry every 30 min, else wait for the login.
     if (this.agents.gatewayBlocked()) return;
     // Cheap shell checks, once per workday, ahead of the morning plan.
     if (this.checks && sweepOn("checks")) void this.checks.runDue().catch((e) => console.error("[checks]", e.message));
     if (sweepOn("calendar") && this.due("calendar", config.sweeps.calendarEveryMin)) {
       this.last.calendar = Date.now();
-      void this.agents.sweep("calendar");
+      this.startSweep("calendar");
     }
     // A meeting with others ended 10–25 min ago (notes usually land by then) and nothing has scanned since:
     // scan now, so its "anything you committed to?" card closes itself instead of waiting for the next cadence.
     if (sweepOn("transcripts") && this.meetingNotesDue()) {
       this.last.transcripts = Date.now();
-      void this.agents.sweep("transcripts");
+      this.startSweep("transcripts");
     } else if (sweepOn("transcripts") && this.due("transcripts", config.sweeps.transcriptsEveryMin)) {
       this.last.transcripts = Date.now();
-      void this.agents.sweep("transcripts");
+      this.startSweep("transcripts");
     }
     // Writing scout: weekly, persisted in sync state so restarts don't re-run it. Retry a failure after 6h.
     const posts = this.hub.store.syncState("posts");

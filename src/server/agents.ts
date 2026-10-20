@@ -29,7 +29,8 @@ const TRIAGE_FLAGS = ["-nt", "-nc", "-ns", "-np", "--no-session"];
 const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
 const RESUME_NUDGE = "Your last request failed on a provider rate limit. Carry on from where you stopped.";
 
-type RunResult = { ok: boolean; text: string; error?: string; session?: string; toolsRan?: boolean };
+/** `slept`: ms the laptop slept mid-run (rpc runner). A failure after a sleep gets rerun, not counted as a stall. */
+type RunResult = { ok: boolean; text: string; error?: string; session?: string; toolsRan?: boolean; slept?: number };
 
 interface Running {
   statusPath?: string;
@@ -390,11 +391,12 @@ export class Agents implements Dispatcher {
   // ── sweeps (headless) ──────────────────────────────────────────────────
   private sweeping = new Set<string>();
 
-  async sweep(name: "transcripts" | "calendar", opts: { since?: string } = {}) {
+  /** `{ rerun: true }`: failed after the laptop slept mid-run; the scheduler runs it again on its next awake tick. */
+  async sweep(name: "transcripts" | "calendar", opts: { since?: string } = {}): Promise<{ rerun?: boolean } | undefined> {
     if (this.sweeping.has(name)) return;
     if (config.demo) {
       this.sweeping.add(name);
-      return this.demoSweep(name).finally(() => this.sweeping.delete(name));
+      return this.demoSweep(name).then(() => undefined).finally(() => this.sweeping.delete(name));
     }
     this.sweeping.add(name);
     const state = this.hub.store.syncState(name);
@@ -421,6 +423,10 @@ export class Agents implements Dispatcher {
         const error = r.error ?? "no JSON in final message";
         this.patch(job.id, { status: "failed", error, finishedAt: nowIso() });
         this.hub.putSync({ ...this.hub.store.syncState(name), error });
+        if (r.slept && !this.cancelled(job.id)) {
+          this.line(job.id, "\u21bb slept mid-run: rerunning on the next awake tick");
+          return { rerun: true };
+        }
         return;
       }
       const { created } = this.hub.ingestReport({ ...report, jobId: job.id, eventsThrough: through }, name === "transcripts" ? "transcript" : "calendar");
@@ -941,10 +947,12 @@ export class Agents implements Dispatcher {
     }
     const session = out.session ?? resume;
     const toolsRan = out.toolsRan || Boolean(resume);
-    if (out.ok) return { ok: true, text: out.text, session, toolsRan };
+    const slept = out.sleptMs;
+    if (slept) this.line(jobId, `☾ machine slept ${Math.round(slept / 60_000)} min mid-run, not counted against the deadline`);
+    if (out.ok) return { ok: true, text: out.text, session, toolsRan, slept };
     const lastStderr = out.stderr.trim().split("\n").pop() ?? "";
     if ((out.timedOut || out.stalled) && lastStderr) this.line(jobId, `stderr: ${lastStderr}`);
-    return { ok: false, text: out.text, session, toolsRan, error: rpcError(out, o.timeoutMin, config.pi.stallMin) };
+    return { ok: false, text: out.text, session, toolsRan, slept, error: rpcError(out, o.timeoutMin, config.pi.stallMin) };
   }
 
   // ── print runner (`pi -p`): the old path, kept behind pi.runner = "print" ──
@@ -1056,8 +1064,10 @@ export function runError(r: { code: number | null; signal?: string | null; timed
 
 /** Why an rpc run failed. Our own deadlines first, then a dead process, then the model's error. */
 export function rpcError(r: RunOutcome, timeoutMin: number, stallMin: number): string {
-  if (r.timedOut) return `timed out after ${timeoutMin} min`;
-  if (r.stalled) return `stalled: no activity for ${stallMin} min (${r.lastEvent ? `last event: ${r.lastEvent.type} at ${new Date(r.lastEvent.at).toISOString().slice(11, 19)}Z` : "no events from pi"})`;
+  // Awake time alone ran out, but a sleep in between likely broke pi's in-flight request. Say so: it's not a hang.
+  const slept = r.sleptMs && (r.timedOut || r.stalled) ? `machine slept mid-run (${Math.round(r.sleptMs / 60_000)} min), then ` : "";
+  if (r.timedOut) return `${slept}timed out after ${timeoutMin} min`;
+  if (r.stalled) return `${slept}stalled: no activity for ${stallMin} min (${r.lastEvent ? `last event: ${r.lastEvent.type} at ${new Date(r.lastEvent.at).toISOString().slice(11, 19)}Z` : "no events from pi"})`;
   if (r.exit) return runError({ code: r.exit.code, signal: r.exit.signal, timedOut: false, timeoutMin, lastError: r.lastError, stderr: r.stderr });
   if (r.lastError) return r.lastError;
   return r.aborted ? "aborted" : "pi run failed";

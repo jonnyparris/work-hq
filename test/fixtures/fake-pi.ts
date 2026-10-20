@@ -48,6 +48,7 @@ function handle(cmd: any) {
   if (m === "TOOL") return out({ type: "tool_execution_start", toolName: "read", args: { path: "/x" } }), say("tooled"), settle();
   if (m === "PID") return say(String(process.pid)), settle();
   if (m === "SLOW") return void (running = { abort: () => (say("", "aborted"), settle(true)) });
+  if (m.startsWith("LATE:")) return void setTimeout(() => (say("late"), settle()), Number(m.slice(5))); // answers after a pause
   if (m === "HANG") return void (running = { abort: () => {} }); // ignores abort
   if (m === "DIALOG") {
     out({ type: "extension_ui_request", id: "u1", method: "confirm", title: "Allow bash?" });
