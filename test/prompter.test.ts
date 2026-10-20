@@ -393,6 +393,34 @@ describe("meeting-ended cards from earlier days", () => {
     expect(open.map((q) => q.eventId)).toEqual(["t"]);
   });
 
+  // 10-19: a 1-1 moved to a new series; the old instance's card stayed open beside the real one.
+  test("today's card whose event left the calendar expires as 'event removed', not folded", () => {
+    hub.setEvents([ev("old", "Jo / Sam", 9, 24), ev("new", "Jo / Sam", 9, 24)], "2026-09-24");
+    p.tick(thu(9, 40));
+    expect(hub.store.questions("open").filter((q) => q.kind === "review").map((q) => q.eventId).sort()).toEqual(["new", "old"]);
+    const old = hub.store.questions("open").find((q) => q.eventId === "old")!;
+    hub.store.replaceEvents("2026-09-24", "2026-09-24", [ev("new", "Jo / Sam", 9, 24)]); // next sync drops it
+    p.tick(thu(10));
+    expect(hub.store.questions("open").filter((q) => q.kind === "review").map((q) => q.eventId)).toEqual(["new"]);
+    expect(hub.store.question(old.id)).toMatchObject({ status: "expired", answer: "event removed" });
+    // Next morning only the real meeting folds.
+    p.tick(new Date(2026, 8, 25, 7));
+    const open = hub.store.questions("open").filter((q) => q.kind === "review");
+    expect(open.map((q) => q.context)).toEqual(["- Jo / Sam"]);
+  });
+
+  test("an earlier day's card whose event is gone still folds", () => {
+    hub.setEvents([ev("a", "Design sync", 9)], "2026-09-23");
+    p.tick(at(9, 40));
+    const q = hub.store.questions("open").find((q) => q.kind === "review")!;
+    hub.store.putQuestion({ ...q, createdAt: at(9, 40).toISOString() }); // asked yesterday, in test time
+    hub.store.replaceEvents("2026-09-23", "2026-09-23", []);
+    p.tick(thu(7));
+    expect(hub.store.question(q.id)).toMatchObject({ status: "expired", answer: "day moved on" });
+    const open = hub.store.questions("open").filter((q) => q.kind === "review");
+    expect(open.map((q) => q.context)).toEqual(["- Design sync"]);
+  });
+
   test("a late straggler merges into the open card", () => {
     hub.setEvents([ev("a", "Design sync", 9), ev("z", "Late call", 22)], "2026-09-24");
     p.tick(at(9, 40));

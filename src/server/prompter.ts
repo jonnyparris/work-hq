@@ -550,6 +550,13 @@ export class Prompter {
         const ev = this.hub.store.events().find((e) => e.id === q.eventId);
         const start = new Date(ev?.start ?? q.createdAt);
         const day = localDate(start);
+        // Asked today, event gone from today's sync: it moved or was cancelled (10-19: a 1-1 moved to a new
+        // series and the old instance's card sat next to the real one). Past days' events are never re-synced,
+        // so an earlier card without its event still folds.
+        if (!ev && day >= today) {
+          this.hub.expireQuestion(q.id, "event removed");
+          continue;
+        }
         if (day >= today) continue;
         this.hub.expireQuestion(q.id, "day moved on");
         stale.push({ title: ev?.title ?? q.prompt.replace(/ just ended\. Anything you committed to\?$/, ""), day, start: start.toISOString() });
