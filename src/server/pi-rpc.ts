@@ -33,6 +33,8 @@ export interface PiRpcOptions {
   env: Record<string, string>;
   /** Append one line per RPC record (in and out) to this file: type, time, a few small fields. No content. */
   logPath?: string;
+  /** Test hook: the clock request() timeouts read to spot a suspend. */
+  clock?: () => number;
 }
 
 /** One rpc.jsonl line. Small fields only: enough to see how far pi got, never the prompt or model output. */
@@ -211,10 +213,24 @@ export class PiRpc {
     if (!this.alive) return Promise.reject(new Error(`pi not running${this.exit ? ` (exited ${this.exit.signal ?? this.exit.code})` : ""}`));
     const id = `r${++this.seq}`;
     return new Promise<T>((res, rej) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        rej(new Error(`pi didn't answer ${type} in ${Math.round(timeoutMs / 1000)} s`));
-      }, timeoutMs);
+      // A timer that fires well past its time means the laptop slept with pi frozen too: start the wait
+      // again rather than fail (10-19: the 60 s prompt ack fired on a DarkWake 4 min later and could beat
+      // the run watchdog's sleep credit, so the sweep failed with no rerun).
+      const arm = (): ReturnType<typeof setTimeout> => {
+        const now = this.opts.clock ?? Date.now;
+        const armedAt = now();
+        return setTimeout(() => {
+          const p = this.pending.get(id);
+          if (!p) return;
+          if (now() - armedAt > timeoutMs + SUSPEND_GAP_MS) {
+            p.timer = arm();
+            return;
+          }
+          this.pending.delete(id);
+          rej(new Error(`pi didn't answer ${type} in ${Math.round(timeoutMs / 1000)} s`));
+        }, timeoutMs);
+      };
+      const timer = arm();
       this.pending.set(id, { resolve: res, reject: rej, timer });
       this.send({ id, type, ...extra });
     });

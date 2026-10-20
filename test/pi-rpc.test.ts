@@ -184,7 +184,7 @@ test("a 15-minute sleep mid-tool doesn't stall the run", async () => {
   expect(r.stalled).toBeFalsy();
   expect(r.text).toBe("late");
   expect(r.sleptMs!).toBeGreaterThan(14.9 * 60_000);
-  expect(r.sleptMs!).toBeLessThanOrEqual(15 * 60_000);
+  expect(r.sleptMs!).toBeLessThanOrEqual(15 * 60_000 + 50); // a tick of timer jitter
 });
 
 test("the deadline moves out by the sleep, and awake time still runs it out", async () => {
@@ -208,4 +208,16 @@ test("a genuine hang with no sleep is still caught", async () => {
   expect(r.stalled).toBe(true);
   expect(r.sleptMs).toBeUndefined();
   expect(rpcError(r, 20, 10)).toStartWith("stalled: no activity for 10 min");
+});
+
+test("a request timer that fires after a sleep waits again instead of failing", async () => {
+  const c = jumpable();
+  const w = new PiRpc({ bin: FAKE, args: [], cwd: import.meta.dir, env: process.env as Record<string, string>, clock: c.now });
+  live.push(w);
+  w.start();
+  await w.request("get_state", {}, 5000); // fake pi is up
+  setTimeout(() => c.jump(4 * 60_000), 50); // 10-19: the 60 s prompt ack fired on a DarkWake 4 min later
+  await expect(w.request("slow_ack", { ms: 300 }, 200)).resolves.toEqual({ ok: true });
+  // No sleep: the same slow answer still times out.
+  await expect(w.request("slow_ack", { ms: 400 }, 200)).rejects.toThrow("pi didn't answer slow_ack in 0 s");
 });

@@ -36,6 +36,7 @@ function handle(cmd: any) {
     reply(cmd.id, "abort");
     return running?.abort();
   }
+  if (cmd.type === "slow_ack") return void setTimeout(() => reply(cmd.id, "slow_ack", { ok: true }), Number(cmd.ms)); // a response that takes a while
   if (cmd.type !== "prompt") return out({ id: cmd.id, type: "response", command: cmd.type, success: false, error: "unknown" });
   const m: string = cmd.message;
   reply(cmd.id, "prompt", { disposition: "started" });

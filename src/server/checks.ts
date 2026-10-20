@@ -1,6 +1,8 @@
 // Morning checks: plain shell commands (no pi, no tokens) that run once per
 // workday at the start of the day, so their findings are on the board before
-// the morning plan is answered. A check prints an AgentReport-shaped JSON
+// the morning plan is answered. A check with `everyMin` runs on that interval
+// during work hours instead (e.g. agent runs that keep failing), and toasts
+// only when it finds something new. A check prints an AgentReport-shaped JSON
 // object on stdout — `{ "items": [{ "title", "kind", "source": { "key" } … }] }`.
 //
 // Every item needs a stable `source.key`. An item a check reported before and
@@ -32,6 +34,8 @@ export interface CheckConfig {
   /** Local "HH:MM": don't run before this time of day (e.g. "17:00" for an
    *  end-of-day check ahead of the nightly run). Default: from dayStart. */
   after?: string;
+  /** Run every N minutes (after `after`, in work hours) instead of once a day. */
+  everyMin?: number;
 }
 
 const syncName = (c: CheckConfig) => `check:${c.name}`;
@@ -49,11 +53,15 @@ export function staleCheckItems(items: Item[], checkName: string, report: AgentR
   );
 }
 
-/** True when the check has not succeeded today (since `after`, if set) and has not been tried in the last hour. */
-export function checkDue(state: { lastOkAt?: string; lastRunAt?: string }, now = new Date(), after?: string): boolean {
+/**
+ * Daily check: true when it has not succeeded today (since `after`, if set) and has not been tried in the last hour.
+ * With `everyMin`: true when it has not been tried in the last `everyMin` minutes (and it's past `after`).
+ */
+export function checkDue(state: { lastOkAt?: string; lastRunAt?: string }, now = new Date(), after?: string, everyMin?: number): boolean {
   const m = after?.match(/^(\d{1,2}):(\d{2})$/);
   const from = new Date(now.getFullYear(), now.getMonth(), now.getDate(), m ? +m[1] : 0, m ? +m[2] : 0);
   if (now < from) return false;
+  if (everyMin && everyMin > 0) return !state.lastRunAt || now.getTime() - Date.parse(state.lastRunAt) >= everyMin * 60_000;
   if (state.lastOkAt && Date.parse(state.lastOkAt) >= from.getTime()) return false;
   return !state.lastRunAt || now.getTime() - Date.parse(state.lastRunAt) > 60 * 60_000;
 }
@@ -66,8 +74,16 @@ export class Checks {
   /** Run every due check. Called from the scheduler's cadence during work hours. */
   async runDue(now = new Date()) {
     for (const c of config.checks) {
-      if (checkDue(this.hub.store.syncState(syncName(c)), now, c.after)) await this.run(c);
+      if (checkDue(this.hub.store.syncState(syncName(c)), now, c.after, c.everyMin)) await this.run(c);
     }
+  }
+
+  /** Source keys of this check's open items. */
+  private openKeys(name: string): string[] {
+    return this.hub.store
+      .items()
+      .filter((i) => i.source.type === "check" && i.source.label === name && !["done", "dropped"].includes(i.status) && i.source.key)
+      .map((i) => i.source.key!);
   }
 
   async run(c: CheckConfig) {
@@ -90,12 +106,15 @@ export class Checks {
       const questions = (report.questions ?? [])
         .filter((q) => q.itemKey && items.some((i) => i.source.key === q.itemKey))
         .map((q) => ({ ...q, key: `check:${c.name}:${q.key ?? q.itemKey}`, once: true }));
+      const wasOpen = new Set(this.openKeys(c.name));
       this.hub.ingestReport({ items, questions });
       for (const it of staleCheckItems(this.hub.store.items(), c.name, { items })) {
         this.hub.setStatus(it.id, "done", `${c.name} no longer reports it`, "agent");
       }
       this.hub.putSync({ ...this.hub.store.syncState(name), lastOkAt: nowIso(), error: undefined, cursor: `${items.length} open` });
-      if (items.length) this.hub.toast(`${c.name}: ${items.length} to look at`, "warn");
+      // Interval checks re-report the same items every few minutes: toast only what's new.
+      const fresh = c.everyMin ? items.filter((i) => !wasOpen.has(i.source.key!)).length : items.length;
+      if (fresh) this.hub.toast(`${c.name}: ${fresh} ${c.everyMin ? "new " : ""}to look at`, "warn");
     } finally {
       this.running.delete(c.name);
     }

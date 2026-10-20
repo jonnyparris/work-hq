@@ -21,6 +21,14 @@ describe("morning checks", () => {
     expect(checkDue({ lastOkAt: at(17, 1).toISOString() }, at(18), "17:00")).toBe(false);
   });
 
+  test("everyMin: due on the interval, not once a day, and still held by after", () => {
+    const at = (h: number, m = 0) => new Date(2026, 9, 6, h, m);
+    expect(checkDue({}, at(9), undefined, 10)).toBe(true);
+    expect(checkDue({ lastOkAt: at(8, 55).toISOString(), lastRunAt: at(8, 55).toISOString() }, at(9), undefined, 10)).toBe(false);
+    expect(checkDue({ lastOkAt: at(8, 50).toISOString(), lastRunAt: at(8, 50).toISOString() }, at(9), undefined, 10)).toBe(true);
+    expect(checkDue({}, at(16), "17:00", 10)).toBe(false);
+  });
+
   test("closes only this check's open items that dropped out of the report", () => {
     const hub = new Hub(new Store(":memory:"));
     const src = (key: string, label = "unlanded") => ({ type: "check" as const, label, key });
@@ -55,6 +63,22 @@ describe("Checks.run", () => {
     expect(hub.store.syncState("check:unlanded").lastOkAt).toBeTruthy();
     await checks.run({ name: "unlanded", command: `echo '{"items":[]}'` });
     expect(hub.store.item(it!.id)!.status).toBe("done");
+  });
+
+  test("everyMin: toasts only items it had not reported before", async () => {
+    const { Checks } = await import("../src/server/checks.ts");
+    const hub = new Hub(new Store(":memory:"));
+    const toasts: string[] = [];
+    hub.toast = ((text: string) => void toasts.push(text)) as Hub["toast"];
+    const checks = new Checks(hub);
+    const item = (key: string) => ({ title: `Agent failing ${key}`, kind: "task", source: { key } });
+    const run = (...keys: string[]) => checks.run({ name: "mr-failing", command: `echo '${JSON.stringify({ items: keys.map(item) })}'`, everyMin: 10 });
+    await run("a");
+    await run("a");
+    await run("a", "b");
+    await run("b");
+    expect(toasts).toEqual(["mr-failing: 1 new to look at", "mr-failing: 1 new to look at"]);
+    expect(hub.store.items().find((i) => i.source.key === "a")!.status).toBe("done");
   });
 
   test("no JSON is an error, not an empty board", async () => {

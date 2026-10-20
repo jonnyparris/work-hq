@@ -198,8 +198,8 @@ export const config = {
     disabled: pick<string[]>(undefined, "sweeps.disabled", []),
   },
 
-  /** Checks: shell commands that print `{ items: [...] }` JSON, run once per workday (from dayStart, or `after` "HH:MM"). See src/server/checks.ts. */
-  checks: pick<{ name: string; command: string; timeoutSec?: number; after?: string }[]>(undefined, "checks", []),
+  /** Checks: shell commands that print `{ items: [...] }` JSON, run once per workday (from dayStart, or `after` "HH:MM"), or every `everyMin` minutes in work hours. See src/server/checks.ts. */
+  checks: pick<{ name: string; command: string; timeoutSec?: number; after?: string; everyMin?: number }[]>(undefined, "checks", []),
 
   /**
    * Repos many agents edit at once. A work job on an item of `project` (or whose title matches `match`) gets its own

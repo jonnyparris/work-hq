@@ -50,6 +50,8 @@
   A sweep that still fails after a sleep says `machine slept mid-run (N min), then …` and is due again on
   the next awake tick. No sweeps start for 3 min after a wake: Power Nap DarkWakes (2–10 s) fire the
   overdue cadence tick and froze the sweep they started (10-19: all four non-restart sweep failures).
+  RPC request timeouts (the 60 s prompt ack) follow the same rule: a timer that fires over 30 s late
+  waits again instead of failing the run.
   Dialogs (permission asks) are declined, as print mode does. `pi.runner: "print"` brings back the
   old `pi -p @file` path.
 - **One gateway token for all headless runs** (`pi.gatewayToken`, `src/server/gateway-token.ts`).
