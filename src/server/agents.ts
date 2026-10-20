@@ -1176,10 +1176,16 @@ function listDrafts(): string[] {
 function describeTool(name: string, args: any): string {
   if (name === "bash") return `$ ${String(args?.command ?? "").split("\n")[0]!.slice(0, 90)}`;
   if (name === "read") return `read ${String(args?.path ?? "").replace(process.env.HOME ?? "", "~")}`;
+  // pi built-in MCP: `codemode` scripts call tools.mcp__<server>__<tool>(...); direct tools are mcp__<server>__<tool>.
+  if (name === "codemode") {
+    const code = String(args?.code ?? "");
+    const calls = [...new Set([...code.matchAll(/tools\.mcp__[a-z0-9_]+?__([a-z0-9_]+)/gi)].map((m) => m[1]!))];
+    return `codemode ${calls.join(", ")}`.trim().slice(0, 100);
+  }
   if (name === "mcp" || name.startsWith("mcp")) {
     const code: string = args?.args?.code ?? args?.code ?? "";
     const calls = [...code.matchAll(/codemode\.([a-z_]+)/g)].map((m) => m[1]!.replace(/^[a-z]+(?:_[a-z]+)*?_(?:mcp_server|mcp)_/, ""));
-    const tool = String(args?.tool ?? "").replace(/^.*__/, "");
+    const tool = String(args?.tool ?? (name.startsWith("mcp__") ? name : "")).replace(/^.*__/, "");
     return `mcp ${tool} ${calls.length ? calls.join(", ") : ""}`.slice(0, 100);
   }
   return name;
