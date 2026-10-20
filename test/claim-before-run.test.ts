@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { Agents, type CmuxDeps } from "../src/server/agents.ts";
+import { Agents, claimsDispatch, type CmuxDeps } from "../src/server/agents.ts";
 import { Store } from "../src/server/db.ts";
 import { Hub, queuedNote } from "../src/server/hub.ts";
 import type { Question } from "../src/shared/types.ts";
@@ -95,6 +95,44 @@ test("triage → dispatch that starts: reply untouched (prompt asks for intent w
   const r = await agents.triage("ask Maryna if she owns the webhook");
   expect(dispatched).toHaveLength(1);
   expect(r.reply).toBe("Sent an agent to ask Maryna.");
+});
+
+test("triage → reply claims an agent but dispatch[] is empty: suffix + journal line", async () => {
+  const { hub, agents, dispatched } = setup({ reply: "Dispatched an agent to ask Maryna.", items: [{ title: "Ask Maryna", kind: "message" }] });
+  const r = await agents.triage("ask Maryna if she owns the webhook");
+  expect(dispatched).toHaveLength(0);
+  expect(r.reply).toBe("Dispatched an agent to ask Maryna. (No agent started.)");
+  expect(hub.store.jobs().find((j) => j.kind === "triage" && j.name === "chat")!.summary).toBe(r.reply);
+  expect(hub.store.journal().some((e) => e.text.includes("claimed a dispatch but dispatch[] was empty"))).toBe(true);
+});
+
+test("triage → no claim, no dispatch: reply untouched, no journal line", async () => {
+  const { hub, agents } = setup({ reply: "Captured as a task. Not dispatched." });
+  const r = await agents.triage("note: prune idle cmux sessions");
+  expect(r.reply).toBe("Captured as a task. Not dispatched.");
+  expect(hub.store.journal().some((e) => e.text.includes("claimed a dispatch"))).toBe(false);
+});
+
+// Real triage replies from the jobs table (10-20).
+test("claimsDispatch: past-tense claims hit; offers, negations and questions don't", () => {
+  for (const r of [
+    "Dispatched an agent to tighten the spec and add SVGs; fixed Riri → Rui.",
+    "Sent an agent to check the policy.",
+    "Sending an agent to smoke-test the RTK ear in TechVibeSync.",
+    "Asking Beatriz to figure it out; marked waiting on her.",
+    "Queued: archive the old wiki page. Agent dispatched.",
+    "Added a task and dispatched it to work.",
+  ]) expect([r, claimsDispatch(r)]).toEqual([r, true]);
+  for (const r of [
+    "Captured as a task to auto-prune idle cmux sessions. Not dispatched.",
+    "Captured the bridge idea. Not dispatching anything yet.",
+    "I can't open PROJ-1696 from here. Want me to dispatch a prep task to read the ticket?",
+    "Can't generate images from here. Logged it as a task so you can dispatch it to an agent or do it yourself.",
+    "There's no reopen-from-journal yet. For now, tell me the item and I'll set it back to doing or re-dispatch it.",
+    "Added a blog post idea about Work HQ.",
+    "",
+    undefined,
+  ]) expect([r, claimsDispatch(r)]).toEqual([r, false]);
 });
 
 test("queuedNote: open-and-keep and status picks fall through to the model's reply", () => {

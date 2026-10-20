@@ -3,8 +3,8 @@
 // reply line, it reads as done. Every place that shows one must be on this list, with a `reply-safe:` comment at
 // the site saying why it's true the moment it's shown. A new site fails here until someone writes that reason.
 //
-// Not caught: a reply copied into another variable first (`const msg = out.reply; toast(msg)`), and a triage
-// reply that claims "Dispatched an agent" when dispatch[] is empty. The second needs a reply-vs-dispatch check.
+// Not caught: a reply copied into another variable first (`const msg = out.reply; toast(msg)`). A triage reply that
+// claims "Dispatched an agent" with dispatch[] empty is a runtime check instead (claimsDispatch, claim-before-run.test.ts).
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -24,7 +24,7 @@ const ALLOW: { file: string; line: RegExp; why: string }[] = [
   { file: "server/hub.ts", line: /queuedNote\(q, d, item\?\.title\) \?\? d\.reply \?\? `Noted/, why: "queuedNote takes over when the pick queues work" },
   { file: "server/hub.ts", line: /toast\(d\.reply \?\? `\$\{label\(d\.status\)\}/, why: "setStatus already ran" },
   { file: "server/hub.ts", line: /toast\(d\.reply \? `\$\{d\.reply\} Back/, why: "context only: nothing runs, the reply is an answer" },
-  { file: "server/agents.ts", line: /summary: reply \}\);/, why: "triage: applyTriage ran; missed dispatches appended; prompt words dispatches as handed off" },
+  { file: "server/agents.ts", line: /summary: reply \}\);/, why: "triage: applyTriage ran; missed or unbacked dispatches get a suffix; prompt words dispatches as handed off" },
   { file: "server/agents.ts", line: /summary: queuedNote\(q, out, item\?\.title\) \?\? out\.reply/, why: "queuedNote takes over when the note queues work" },
   { file: "server/agents.ts", line: /toast\(out\?\.reply \?\? "Couldn't tell when/, why: "failure path: the reply asks when" },
   { file: "server/agents.ts", line: /summary: out\.reply \?\? `Scheduled \$\{label\}`/, why: "schedule() ran; calendar create takes fixed words above" },
