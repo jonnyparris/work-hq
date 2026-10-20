@@ -20,6 +20,7 @@ import {
   actionPrompt, calendarPrompt, calendarSweepPrompt, notePrompt, openUrl, postSweepPrompt, schedulePrompt, SITE_LINK, SITE_POSTS,
   transcriptSweepPrompt, triagePrompt, WIKI_DRAFTS,
 } from "./prompts.ts";
+import { cleanupWorktree, createWorktree, repoFor, type WorktreeResult } from "./worktrees.ts";
 
 const modelArgs = () => (config.pi.model ? ["--model", config.pi.model] : []);
 const backoff = () => backoffMs({ minSec: config.pi.rateLimitBackoffSec[0] ?? 60, maxSec: config.pi.rateLimitBackoffSec[1] ?? 90 });
@@ -181,11 +182,20 @@ export class Agents implements Dispatcher {
       void this.launchDemoAction(job.id, title, demoActionScript(item, action, note), useCmux);
       return this.hub.store.job(job.id);
     }
-    const prompt = actionPrompt(job.id, item, action, note);
+    const prompt = actionPrompt(job.id, item, action, note, await this.worktreeFor(job.id, item, action));
     if (useCmux) writeFileSync(promptFile(job.id), prompt);
     // Launch in the background: the gate may hold it for a while and callers shouldn't wait.
     void this.launchAction(job.id, title, prompt, useCmux);
     return this.hub.store.job(job.id);
+  }
+
+  /** Work on a shared repo (config `repos`) gets its own worktree before launch, so the agent can't commit in the main checkout. */
+  private async worktreeFor(jobId: string, item: Item, action: ActionKind): Promise<WorktreeResult | undefined> {
+    const rule = repoFor(item, action);
+    if (!rule) return undefined;
+    const wt = await createWorktree(rule, jobId);
+    this.line(jobId, "error" in wt ? `⚠ worktree: ${wt.error}` : `▸ worktree ${wt.dir}`);
+    return wt;
   }
 
   private async launchAction(jobId: string, title: string, prompt: string, useCmux: boolean) {
@@ -358,6 +368,8 @@ export class Agents implements Dispatcher {
       if (report) this.hub.ingestReport({ ...report, jobId }, "agent");
     }
     const after = this.hub.store.job(jobId)!;
+    // An untouched worktree goes; one with commits or edits stays for the owner (and shows in the feed).
+    void cleanupWorktree(jobId).then((r) => r === "kept" && this.line(jobId, "▸ worktree kept: unlanded commits or edits"));
     this.patch(jobId, {
       status: r.ok ? "done" : "failed",
       error: r.error,

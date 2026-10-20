@@ -82,6 +82,23 @@ export interface Project {
   match?: string;
 }
 
+export interface RepoRule {
+  /** Item project this repo belongs to (case-insensitive), e.g. "work-hq". */
+  project?: string;
+  /** Or: case-insensitive regex on the item title. */
+  match?: string;
+  /** The main checkout. Worktrees go next to it as <dir>-job-<id>. */
+  dir: string;
+  /** Run before landing, in the worktree, e.g. "bun test && bun run typecheck". */
+  check?: string;
+  /** Run in the worktree after landing, e.g. "scripts/publish.sh github". */
+  publish?: string;
+  /** Run after landing when non-doc files changed, e.g. a launchctl kickstart. */
+  restart?: string;
+  /** Action kinds that get a worktree. Default ["work"]. */
+  actions?: string[];
+}
+
 const STATE_DIR = path(pick("WORK_HQ_STATE", "stateDir", "~/.local/state/work-hq"));
 const WORKSPACE = path(pick("WORK_HQ_WORKSPACE", "workspace.dir", "~"));
 const systemTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -183,6 +200,12 @@ export const config = {
 
   /** Checks: shell commands that print `{ items: [...] }` JSON, run once per workday (from dayStart, or `after` "HH:MM"). See src/server/checks.ts. */
   checks: pick<{ name: string; command: string; timeoutSec?: number; after?: string }[]>(undefined, "checks", []),
+
+  /**
+   * Repos many agents edit at once. A work job on an item of `project` (or whose title matches `match`) gets its own
+   * worktree of `dir`, made by the server, and lands it with `whq land <jobId>`. See src/server/worktrees.ts.
+   */
+  repos: pick<RepoRule[]>(undefined, "repos", []).map((r) => ({ ...r, dir: path(r.dir) })),
 
   /** Ticket prefixes / keywords that tag items with a project. */
   projects: pick<Project[]>(undefined, "projects", []),

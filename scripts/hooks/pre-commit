@@ -1,0 +1,16 @@
+#!/bin/bash
+# Warn when committing in the main checkout while other worktrees are live: their sessions may also
+# be staging here, and one `git commit` sweeps up everyone's staged hunks (10-20: 97880fc).
+# Warns, never blocks. Install once per clone: git config core.hooksPath scripts/hooks
+main="$(git worktree list --porcelain | awk 'NR==1 { sub(/^worktree /, ""); print; exit }')"
+[[ "$(git rev-parse --show-toplevel)" == "$main" ]] || exit 0
+others="$(git worktree list | tail -n +2)"
+[[ -n "$others" ]] || exit 0
+{
+  echo "pre-commit: committing in the main checkout while other worktrees are live:"
+  echo "$others" | sed 's/^/  /'
+  echo "  Staged files below go into this commit; check they're all yours (git diff --cached --stat)."
+  git diff --cached --stat | sed 's/^/  /'
+  echo "  Next time: cd \"\$(scripts/worktree.sh new <slug>)\""
+} >&2
+exit 0

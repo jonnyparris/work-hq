@@ -5,7 +5,9 @@
 #   whq say "<text>"          # talk to Work HQ like the command bar does
 #   whq pineapple "<text>"    # capture an action (🍍) from any terminal
 #   whq sync <memory|journal|calendar|transcripts>
+#   whq land <jobId>          # land a work job's worktree: rebase, check, push, publish, clean up, restart
 set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 URL="${WORK_HQ_URL:-http://127.0.0.1:7717}"
 cmd="${1:-}"; shift || true
 post() { curl -sS -X POST "$URL$1" -H 'content-type: application/json' --data-binary @-; echo; }
@@ -17,5 +19,6 @@ case "$cmd" in
   say)       echo "{\"text\": $(jstr "$*")}" | post /api/say ;;
   pineapple) echo "{\"text\": $(jstr "$*"), \"mode\": \"pineapple\"}" | post /api/say ;;
   sync)      echo '{}' | post "/api/sync/${1:?name}" ;;
-  *) sed -n '2,8p' "$0"; exit 2 ;;
+  land)      cd "$ROOT" && exec "${BUN:-$(command -v bun || echo "$HOME/.bun/bin/bun")}" src/cli/land.ts "${1:?usage: whq land <jobId>}" ;;
+  *) sed -n '2,9p' "$0"; exit 2 ;;
 esac

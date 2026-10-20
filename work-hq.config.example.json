@@ -79,6 +79,14 @@
     // { "name": "auth", "command": "~/bin/auth-check --whq", "after": "17:00" }
   ],
 
+  // Repos several agents edit at once. A work job on an item of `project` (or whose title matches `match`)
+  // gets its own worktree of `dir` (scripts/worktree.sh), made before launch, and lands it with
+  // `whq land <jobId>`: rebase on main, `check`, push, `publish`, remove the worktree, `restart` if code changed.
+  "repos": [
+    // { "project": "work-hq", "dir": "~/code/work-hq", "check": "bun test && bun run typecheck",
+    //   "publish": "scripts/publish.sh github", "restart": "launchctl kickstart -k gui/$(id -u)/work-hq.dashboard" }
+  ],
+
   // Ticket prefixes / keywords that tag items with a project badge.
   "projects": [
     { "key": "PAY", "match": "payments|checkout" },

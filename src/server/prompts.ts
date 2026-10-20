@@ -10,6 +10,7 @@ import { resolve } from "node:path";
 import { type DeckGroup, deckGroup, deferTargets, GROUP_ORDER, GROUPS } from "../shared/batch.ts";
 import type { ActionKind, CalendarEvent, Item, Question } from "../shared/types.ts";
 import { config, ROOT } from "./config.ts";
+import { WORKTREE_SCRIPT, type WorktreeResult } from "./worktrees.ts";
 
 const WHQ = `${ROOT}/bin/whq`;
 const { owner, writing, workspace } = config;
@@ -113,13 +114,30 @@ function itemBlock(it: Item) {
     .join("\n");
 }
 
-export function actionPrompt(jobId: string, it: Item, action: ActionKind, note?: string) {
+/** The WORKTREE block for a work job on a shared repo (config `repos`): where to edit, and how to land. */
+export function worktreeBlock(jobId: string, wt: WorktreeResult) {
+  if ("error" in wt) {
+    return `WORKTREE: this item's repo is ${wt.repo}, which other sessions edit at the same time, but Work HQ couldn't
+make a worktree for it (${wt.error}). Make one before you edit anything: \`cd "$(cd ${wt.repo} && ${WORKTREE_SCRIPT} new ${wt.slug}-b)"\`.
+Edit and commit only there, then land it with \`${WORKTREE_SCRIPT} land --check '<tests>'\` run inside it.`;
+  }
+  const after = [wt.publish && `runs \`${wt.publish}\``, "removes the worktree", wt.restart && "restarts the server if non-doc files changed"].filter(Boolean).join(", ");
+  return `WORKTREE: Work HQ made ${wt.dir} (branch ${wt.branch}, from ${wt.repo} main) for this job.
+Edit, test and commit there only. Never edit or commit in ${wt.repo} itself: other sessions work there at the same time.
+Your shell starts elsewhere, so start every repo command with \`cd ${wt.dir} &&\`.
+Land with \`${WHQ} land ${jobId}\`: it rebases on main${wt.check ? `, runs \`${wt.check}\`` : ""}, fast-forwards and pushes main, ${after},
+and prints the landed SHA${wt.publish ? ", mirror SHA" : ""}${wt.restart ? " and server PID" : ""} for your report. If it refuses (conflict, failed check, denylist hit), fix it, commit
+and run it again. Never stash, reset or commit someone else's edits in ${wt.repo}. Nothing to change? Leave the worktree:
+Work HQ removes an empty one when the job ends.`;
+}
+
+export function actionPrompt(jobId: string, it: Item, action: ActionKind, note?: string, worktree?: WorktreeResult) {
   return `You are a Work HQ action agent for ${OWNER_INTRO}. They just confirmed this in their dashboard.
 They can see this session and may answer questions here.
 
 TASK: ${action.toUpperCase()}
 ${template(`actions/${action}`)}
-${note ? `\n${owner.name}'s note: ${note}\n` : ""}
+${worktree ? `\n${worktreeBlock(jobId, worktree)}\n` : ""}${note ? `\n${owner.name}'s note: ${note}\n` : ""}
 ${itemBlock(it)}
 
 ${toolRoutes()}
