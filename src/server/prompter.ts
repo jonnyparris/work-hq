@@ -110,6 +110,10 @@ export class Prompter {
       // An agent is on it, or one already asked you something about it: wait for that, don't say "It's time" again.
       // 10-19: a verify job's question landed at 15:31, the 15-min due cooldown re-asked at 15:45.
       if (busy.has(it.id) || open.some((q) => q.itemId === it.id && !q.key.startsWith("due:"))) continue;
+      // You just answered another card about it (a noop, typed context): give it 15 min too. The due card's own
+      // cooldown is per slot (key), so a reschedule to a new slot still asks.
+      const since = new Date(now.getTime() - 15 * MIN).toISOString();
+      if (store.answeredForItem(it.id, since).some((q) => !q.key.startsWith("due:"))) continue;
       const act = ACTION_FOR[it.kind];
       this.ask(
         {

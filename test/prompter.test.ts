@@ -705,6 +705,37 @@ describe("due cards while an agent works the item", () => {
     expect(dueCards(it.id)).toHaveLength(1);
   });
 
+  /** A non-due question about `it` (an agent's card) answered `min` minutes ago. */
+  const answeredOther = (it: { id: string }, min: number) => {
+    const t = new Date(Date.now() - min * 60_000).toISOString();
+    hub.store.putQuestion({ id: `q_agent_${it.id}_${min}`, kind: "open", itemId: it.id, key: `agent:${it.id}`, prompt: "Which route?", options: [], priority: 80,
+      status: "answered", answer: "noted", createdAt: t, answeredAt: t });
+  };
+
+  test("agent's question answered 5 min ago, item still past due: no 'It's time' yet", () => {
+    const it = due("answered with a noop");
+    answeredDue(it, 40);
+    answeredOther(it, 5);
+    p.tick(new Date());
+    expect(dueCards(it.id)).toHaveLength(0);
+  });
+
+  test("agent's question answered 16 min ago: asks again", () => {
+    const it = due("answered a while back");
+    answeredDue(it, 40);
+    answeredOther(it, 16);
+    p.tick(new Date());
+    expect(dueCards(it.id)).toHaveLength(1);
+  });
+
+  test("an answer on another item doesn't hold this one back", () => {
+    const it = due("mine");
+    const other = due("theirs");
+    answeredOther(other, 5);
+    p.tick(new Date());
+    expect(dueCards(it.id)).toHaveLength(1);
+  });
+
   test("an open due card for the same item doesn't block itself", () => {
     const it = due("reply");
     p.tick(new Date());

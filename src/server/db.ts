@@ -109,6 +109,13 @@ export class Store {
       .all(`${esc}%`, since)
       .map((r: any) => JSON.parse(r.doc));
   }
+  /** Answered questions about `itemId` (any key), answered at or after `since` (ISO). */
+  answeredForItem(itemId: string, since: string): Question[] {
+    return this.db
+      .query("SELECT doc FROM questions WHERE json_extract(doc, '$.itemId') = ? AND status = 'answered' AND updated >= ?")
+      .all(itemId, since)
+      .map((r: any) => JSON.parse(r.doc));
+  }
   putQuestion(q: Question) {
     this.db
       .query(`INSERT INTO questions (id, status, key, updated, doc) VALUES (?, ?, ?, ?, ?)
