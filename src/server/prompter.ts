@@ -173,7 +173,7 @@ export class Prompter {
           prompt: `${ev.title} just ended. Anything you committed to?`,
           context: "Type or say it below — it goes straight to triage. Meeting notes get scanned on the next sweep either way.",
           options: [
-            opt("scan", "Scan the transcript now", { type: "noop" }, "primary"),
+            opt("scan", "Scan the transcript now", { type: "sweep", name: "transcripts" }, "primary"),
             opt("none", "Nothing new", { type: "noop" }, "quiet"),
           ],
         });
@@ -190,7 +190,7 @@ export class Prompter {
         prompt: "Morning. What are today's three?",
         context: "Pick from what memory thinks is live. Everything else stays proposed.",
         options: [
-          opt("plan", "Commit to these", { type: "noop" }, "primary"),
+          opt("plan", "Commit to these", { type: "commitPlan" }, "primary"),
           opt("later", "Ask me in 30 min", { type: "snooze", minutes: 30 }, "quiet"),
         ],
       });
@@ -206,7 +206,7 @@ export class Prompter {
         prompt: "Wrap up. What actually happened today?",
         context: "Confirm the real state of what you touched. It goes to memory, so tonight's reflection starts from the truth.",
         options: [
-          opt("flush", "That's the truth — save it", { type: "noop" }, "primary"),
+          opt("flush", "That's the truth — save it", { type: "flushJournal" }, "primary"),
           opt("later", "Ask me in an hour", { type: "snooze", minutes: 60 }, "quiet"),
         ],
       });
@@ -590,7 +590,7 @@ export function reviewDigest(meetings: Array<{ title: string; day: string }>, no
     prompt: `${when} (${meetings.length}): anything you committed to?`,
     context: meetings.map((m) => `- ${days.length > 1 ? `${m.day.slice(5)} · ` : ""}${m.title}`).join("\n"),
     options: [
-      opt("scan", "Scan the transcripts now", { type: "noop" }, "primary"),
+      opt("scan", "Scan the transcripts now", { type: "sweep", name: "transcripts" }, "primary"),
       opt("none", "Nothing new", { type: "noop" }, "quiet"),
     ],
   };

@@ -5,7 +5,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type {
-  CalendarEvent, Item, Job, JournalEntry, Question, SyncState,
+  CalendarEvent, Effect, Item, Job, JournalEntry, Question, SyncState,
 } from "../shared/types.ts";
 
 type Table = "items" | "questions" | "jobs" | "events" | "journal" | "sync";
@@ -36,6 +36,32 @@ export class Store {
       -- Extra source keys that point at an existing item (a duplicate from another source was merged into it).
       CREATE TABLE IF NOT EXISTS item_keys (key TEXT PRIMARY KEY, item_id TEXT NOT NULL);
     `);
+    this.upgradeRouteEffects();
+  }
+
+  /**
+   * Until 10-20 plan/flush/scan/look were noop options the answer route special-cased by id.
+   * That code now lives in hub.applyEffect behind real Effect types, so an open card asked
+   * before the change would do nothing when tapped. Rewrite those effects in place. Idempotent;
+   * delete once no pre-10-20 card can still be open.
+   */
+  private upgradeRouteEffects() {
+    const legacy = (kind: string, id: string): Effect | undefined =>
+      kind === "plan" && id === "plan" ? { type: "commitPlan" }
+      : kind === "wrap" && id === "flush" ? { type: "flushJournal" }
+      : kind === "review" && id === "scan" ? { type: "sweep", name: "transcripts" }
+      : id === "look" ? { type: "focusSession" }
+      : undefined;
+    for (const q of this.questions("open")) {
+      let changed = false;
+      const options = q.options.map((o) => {
+        const e = o.effect.type === "noop" ? legacy(q.kind, o.id) : undefined;
+        if (!e) return o;
+        changed = true;
+        return { ...o, effect: e };
+      });
+      if (changed) this.putQuestion({ ...q, options });
+    }
   }
 
   private all<T>(table: Table, where = "", ...params: any[]): T[] {

@@ -153,6 +153,14 @@ export type Effect =
   | { type: "gatewayLogin"; app: string }
   /** Run triage again on words a failed triage kept (command bar, 🍍, review notes). */
   | { type: "triage"; text: string; mode: "chat" | "pineapple" | "review" }
+  /** Morning plan: the items picked on the card (sent with the answer as `itemIds`) go to today. */
+  | { type: "commitPlan" }
+  /** Write the journal to memory now (wrap-up). */
+  | { type: "flushJournal" }
+  /** Run a sweep now ("Scan the transcript now"). */
+  | { type: "sweep"; name: "transcripts" | "calendar" }
+  /** Focus the cmux session of the question's item's latest job; toast if it was closed. */
+  | { type: "focusSession" }
   | { type: "multi"; effects: Effect[] };
 
 export interface Question {

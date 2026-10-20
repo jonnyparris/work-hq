@@ -6,10 +6,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../src/server/db.ts";
 import { Hub } from "../src/server/hub.ts";
-import { AFFIRMATIVE, deadOptions, doesNothing, ROUTE_HANDLED } from "../src/shared/dead-button.ts";
+import { AFFIRMATIVE, deadOptions, doesNothing } from "../src/shared/dead-button.ts";
 
 const SERVER = join(import.meta.dir, "../src/server");
-const routeIds = new Set(Object.values(ROUTE_HANDLED).flat());
 
 /** Lines with `type: "noop"` that aren't an option literal. Anything else must parse as one. */
 const NOT_AN_OPTION = [
@@ -48,13 +47,13 @@ describe("dead buttons", () => {
     const { found, unparsed } = walk();
     // A noop line the walker can't read is a gap, not a pass: extend the walker or NOT_AN_OPTION.
     expect(unparsed).toEqual([]);
-    // Not vacuous: prompter + agents have a dozen-odd noop options today.
-    expect(found.length).toBeGreaterThanOrEqual(10);
-    const dead = found.filter((o) => AFFIRMATIVE.test(o.label) && !routeIds.has(o.id)).map((o) => `${o.file}:${o.line} "${o.label}"`);
+    // Not vacuous: prompter + agents still have a handful of noop options ("Nothing new", "Not now").
+    expect(found.length).toBeGreaterThanOrEqual(5);
+    const dead = found.filter((o) => AFFIRMATIVE.test(o.label)).map((o) => `${o.file}:${o.line} "${o.label}"`);
     expect(dead).toEqual([]);
   });
 
-  test("deadOptions: noop and all-noop multi count; real effects and route-handled ids don't", () => {
+  test("deadOptions: noop and all-noop multi count; real effects don't, and no option id is exempt", () => {
     const o = (id: string, label: string, effect: any) => ({ id, label, effect });
     const q = {
       kind: "open" as const,
@@ -65,11 +64,12 @@ describe("dead buttons", () => {
         o("d", "Draft it", { type: "dispatch", action: "draft" }),
         o("e", "Not now", { type: "noop" }),
         o("look", "Yes, show me the session", { type: "noop" }),
+        o("look2", "Yes, show me the session", { type: "focusSession" }),
       ],
     };
-    expect(deadOptions(q).map((x) => x.id)).toEqual(["a", "b"]);
-    expect(deadOptions({ kind: "plan", options: [o("plan", "Yes, commit", { type: "noop" })] })).toEqual([]);
-    expect(deadOptions({ kind: "open", options: [o("plan", "Yes, commit", { type: "noop" })] })).toHaveLength(1);
+    expect(deadOptions(q).map((x) => x.id)).toEqual(["a", "b", "look"]);
+    expect(deadOptions({ options: [o("plan", "Yes, commit", { type: "noop" })] })).toHaveLength(1);
+    expect(deadOptions({ options: [o("plan", "Yes, commit", { type: "commitPlan" })] })).toEqual([]);
     expect(doesNothing({ type: "multi", effects: [] })).toBe(true);
   });
 
@@ -184,5 +184,75 @@ describe("dead buttons", () => {
     const [q] = hub.store.questions("open");
     await hub.answer(q!.id, "o0", "only to Ana");
     expect(calls).toEqual([[it.id, "work", "Agent asked: Send the summary?\nThey answered: Yes\nThey added: only to Ana"]]);
+  });
+
+  // plan/flush/scan/look used to be noop options the answer route special-cased by id
+  // (ROUTE_HANDLED, "keep in step with that route"). Now they are Effect types; tapping one
+  // through hub.answer does the work with no route code, and so does a note that picks it.
+  describe("former route-handled options are real effects", () => {
+    const setup = () => {
+      const hub = new Hub(new Store(":memory:"));
+      const calls: string[] = [];
+      hub.dispatcher = {
+        dispatch: async () => undefined,
+        scheduleFromWords: async () => {},
+        sweep: async (n: string) => void calls.push(`sweep:${n}`),
+        focus: (id: string) => void calls.push(`focus:${id}`),
+      };
+      hub.journalFlusher = async () => void calls.push("flush");
+      return { hub, calls };
+    };
+    const ask = (hub: Hub, kind: any, id: string, effect: any) =>
+      hub.ask({ kind, key: `k:${kind}:${id}`, priority: 50, prompt: `${kind}?`, options: [{ id, label: "Go", effect }] })!;
+
+    test("commitPlan puts the picked items on today and journals the answer", async () => {
+      const { hub } = setup();
+      const a = hub.createItem({ title: "a", status: "proposed" });
+      const b = hub.createItem({ title: "b", status: "proposed" });
+      const q = ask(hub, "plan", "plan", { type: "commitPlan" });
+      await hub.answer(q.id, "plan", undefined, { itemIds: [a.id] });
+      expect(hub.store.item(a.id)!.status).toBe("today");
+      expect(hub.store.item(b.id)!.status).toBe("proposed");
+      expect(hub.store.journal(20).some((j) => j.text === "plan? → Go")).toBe(true);
+    });
+
+    test("flushJournal and sweep run their jobs", async () => {
+      const { hub, calls } = setup();
+      await hub.answer(ask(hub, "wrap", "flush", { type: "flushJournal" }).id, "flush");
+      await hub.answer(ask(hub, "review", "scan", { type: "sweep", name: "transcripts" }).id, "scan");
+      expect(calls).toEqual(["flush", "sweep:transcripts"]);
+    });
+
+    test("focusSession focuses the item's job workspace, or says it was closed", async () => {
+      const { hub, calls } = setup();
+      const toasts: string[] = [];
+      hub.subscribe((e) => e.type === "toast" && void toasts.push((e.data as any).text));
+      const it = hub.createItem({ title: "x", status: "doing" });
+      hub.store.putJob({ id: "j1", kind: "action", name: "work", title: "x", itemId: it.id, workspace: "ws:1", status: "done", tail: [], createdAt: new Date().toISOString() } as any);
+      const q = hub.ask({ kind: "open", itemId: it.id, key: "after:j1", priority: 50, prompt: "Done?", options: [{ id: "look", label: "Show me the session", effect: { type: "focusSession" } }] })!;
+      await hub.answer(q.id, "look");
+      expect(calls).toEqual(["focus:j1"]);
+      const other = hub.createItem({ title: "y", status: "doing" });
+      const q2 = hub.ask({ kind: "open", itemId: other.id, key: "after:j2", priority: 50, prompt: "Done?", options: [{ id: "look", label: "Show me the session", effect: { type: "focusSession" } }] })!;
+      await hub.answer(q2.id, "look");
+      expect(toasts.some((t) => t.includes("session was closed"))).toBe(true);
+    });
+
+    test("an open card asked before the change gets its noop upgraded on load", () => {
+      const store = new Store(":memory:");
+      const now = new Date().toISOString();
+      const card = (id: string, kind: any, opts: [string, any][]) =>
+        store.putQuestion({ id, kind, key: id, priority: 1, prompt: id, status: "open", createdAt: now, options: opts.map(([oid, effect]) => ({ id: oid, label: oid, effect })) });
+      card("p", "plan", [["plan", { type: "noop" }], ["later", { type: "snooze", minutes: 30 }]]);
+      card("w", "wrap", [["flush", { type: "noop" }]]);
+      card("r", "review", [["scan", { type: "noop" }], ["none", { type: "noop" }]]);
+      card("o", "open", [["look", { type: "noop" }], ["plan", { type: "noop" }]]);
+      (store as any).upgradeRouteEffects();
+      const eff = (id: string) => store.question(id)!.options.map((o) => o.effect);
+      expect(eff("p")).toEqual([{ type: "commitPlan" }, { type: "snooze", minutes: 30 }]);
+      expect(eff("w")).toEqual([{ type: "flushJournal" }]);
+      expect(eff("r")).toEqual([{ type: "sweep", name: "transcripts" }, { type: "noop" }]);
+      expect(eff("o")).toEqual([{ type: "focusSession" }, { type: "noop" }]); // "plan" only means commit on a plan card
+    });
   });
 });

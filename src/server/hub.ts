@@ -21,11 +21,21 @@ export interface Dispatcher {
   readNote?(questionId: string, text: string): Promise<NoteDecision | undefined>;
   gatewayLogin?(app: string): Promise<void>;
   triage?(text: string, mode: "chat" | "pineapple" | "review"): Promise<unknown>;
+  sweep?(name: "transcripts" | "calendar"): Promise<unknown>;
+  /** Focus a job's cmux workspace. */
+  focus?(jobId: string): unknown;
+}
+
+/** Context an effect needs from the tap beyond the note: the plan card's picked items. */
+export interface AnswerContext {
+  itemIds?: string[];
 }
 
 export class Hub {
   private listeners = new Set<Listener>();
   dispatcher?: Dispatcher;
+  /** Writes the journal to memory (MemorySync; wired in index.ts). */
+  journalFlusher?: () => Promise<unknown>;
 
   constructor(readonly store: Store) {}
 
@@ -258,7 +268,7 @@ export class Hub {
    * `journalOpen`: also journal "prompt → answer" for an `open` question, unless the effect
    * already wrote that line (item-less status/open/noop do). The answer route sets it.
    */
-  async answer(questionId: string, optionId: string, note?: string, opts: { journalOpen?: boolean } = {}) {
+  async answer(questionId: string, optionId: string, note?: string, opts: { journalOpen?: boolean } & AnswerContext = {}) {
     const q = this.store.question(questionId);
     if (!q || q.status !== "open") throw new Error("question not open");
     const opt = q.options.find((o) => o.id === optionId);
@@ -269,7 +279,7 @@ export class Hub {
     this.store.putQuestion(q);
     this.emit({ type: "question", data: q });
     this.rememberAnswer(q, opt.label, note);
-    const journaled = await this.applyEffect(opt.effect, q, opt, note);
+    const journaled = await this.applyEffect(opt.effect, q, opt, note, { itemIds: opts.itemIds });
     if (opts.journalOpen && q.kind === "open" && !journaled) this.journal(`${q.prompt} → ${q.answer}`);
     return q;
   }
@@ -292,7 +302,7 @@ export class Hub {
   }
 
   /** Returns true when it journaled the "prompt → answer" line itself. */
-  async applyEffect(effect: Effect, q: Question | undefined, opt: QuestionOption | undefined, note?: string): Promise<boolean> {
+  async applyEffect(effect: Effect, q: Question | undefined, opt: QuestionOption | undefined, note?: string, ctx: AnswerContext = {}): Promise<boolean> {
     let itemId = q?.itemId;
     let journaled = false;
     const answerLine = () => {
@@ -361,8 +371,27 @@ export class Hub {
         // A note typed with the tap is part of the answer ("Yes — but only the Q3 numbers").
         void this.dispatcher?.triage?.(note?.trim() ? `${effect.text}\nThey added: ${note.trim()}` : effect.text, effect.mode)?.catch((e) => this.toast(`Triage failed again: ${errText(e)}`, "warn"));
         break;
+      case "commitPlan":
+        for (const id of ctx.itemIds ?? []) this.setStatus(id, "today", "picked in morning plan");
+        if (q && !itemId) answerLine();
+        break;
+      case "flushJournal":
+        void this.journalFlusher?.().catch((e) => this.toast(`Couldn't save the journal: ${errText(e)}`, "warn"));
+        if (q && !itemId) answerLine();
+        break;
+      case "sweep":
+        void this.dispatcher?.sweep?.(effect.name)?.catch((e) => this.toast(`Sweep failed: ${errText(e)}`, "warn"));
+        if (q && !itemId) answerLine();
+        break;
+      case "focusSession": {
+        const job = itemId ? this.store.jobs(100).find((j) => j.itemId === itemId && j.workspace) : undefined;
+        if (job) this.dispatcher?.focus?.(job.id);
+        else this.toast("That session was closed after sitting idle. `pi --resume` in your workspace brings it back.", "warn");
+        if (q && !itemId) answerLine();
+        break;
+      }
       case "multi":
-        for (const e of effect.effects) if (await this.applyEffect(e, q, opt, note)) journaled = true;
+        for (const e of effect.effects) if (await this.applyEffect(e, q, opt, note, ctx)) journaled = true;
         break;
     }
     return journaled;
@@ -730,6 +759,10 @@ export function effectText(e: Effect): string {
     case "when": return "ask when (needs a note)";
     case "noop": return "noop (does nothing)";
     case "gatewayLogin": return "gateway login";
+    case "commitPlan": return "commit the picked items to today";
+    case "flushJournal": return "save the journal to memory";
+    case "sweep": return `run the ${e.name} sweep`;
+    case "focusSession": return "focus the agent session";
     case "multi": return e.effects.map(effectText).join(" + ");
   }
 }
@@ -802,7 +835,7 @@ export function sentAgent(action: ActionKind, title: string) {
 /** Effects that hand work to a job that runs after the toast: an agent, the scheduler, triage, a login. */
 export function runsLater(e: Effect): boolean {
   if (e.type === "multi") return e.effects.some(runsLater);
-  return e.type === "dispatch" || e.type === "when" || e.type === "triage" || e.type === "gatewayLogin";
+  return e.type === "dispatch" || e.type === "when" || e.type === "triage" || e.type === "gatewayLogin" || e.type === "sweep" || e.type === "flushJournal";
 }
 
 /**

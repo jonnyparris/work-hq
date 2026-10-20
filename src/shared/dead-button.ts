@@ -18,28 +18,13 @@ export function promisesAction(label: string): boolean {
   return AFFIRMATIVE.test(label) && !NEGATED.test(label);
 }
 
-/**
- * Option ids whose real work happens in the answer route (src/server/index.ts), after the
- * noop effect. Keyed by question kind; `*` = any kind. Keep in step with that route.
- */
-export const ROUTE_HANDLED: Record<string, readonly string[]> = {
-  plan: ["plan"],
-  wrap: ["flush"],
-  review: ["scan"],
-  "*": ["look"],
-};
-
 /** Nothing happens: plain noop, or a multi made only of noops. */
 export function doesNothing(e: Effect): boolean {
   if (e.type === "noop") return true;
   return e.type === "multi" && e.effects.every(doesNothing);
 }
 
-export function routeHandled(kind: string, optionId: string): boolean {
-  return (ROUTE_HANDLED[kind] ?? []).includes(optionId) || ROUTE_HANDLED["*"]!.includes(optionId);
-}
-
 /** The options on this card that promise an action and do nothing. */
-export function deadOptions(q: Pick<Question, "kind" | "options">): QuestionOption[] {
-  return q.options.filter((o) => promisesAction(o.label) && doesNothing(o.effect) && !routeHandled(q.kind, o.id));
+export function deadOptions(q: Pick<Question, "options">): QuestionOption[] {
+  return q.options.filter((o) => promisesAction(o.label) && doesNothing(o.effect));
 }

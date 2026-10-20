@@ -22,6 +22,7 @@ const store = new Store(config.dbPath);
 const hub = new Hub(store);
 const memory = new MemoryClient();
 const memorySync = new MemorySync(hub, memory);
+hub.journalFlusher = () => memorySync.flushJournal();
 const agents = new Agents(hub);
 const prompter = new Prompter(hub);
 const checks = new Checks(hub);
@@ -138,19 +139,9 @@ const server = Bun.serve({
           const b = await body<{ optionId: string; note?: string; itemIds?: string[] }>(req);
           const q = hub.store.question(req.params.id);
           if (!q) throw new Error("no such question");
-          const answered = await hub.answer(q.id, b.optionId, b.note, { journalOpen: true });
-          // Kind-specific follow-through that doesn't fit a plain Effect.
-          if (q.kind === "plan" && b.optionId === "plan") {
-            for (const id of b.itemIds ?? []) hub.setStatus(id, "today", "picked in morning plan");
-          }
-          if (q.kind === "wrap" && b.optionId === "flush") void memorySync.flushJournal().catch(() => {});
-          if (q.kind === "review" && b.optionId === "scan") void agents.sweep("transcripts");
+          // Option side effects (plan, flush, scan, look) are Effect types run by hub.applyEffect.
+          const answered = await hub.answer(q.id, b.optionId, b.note, { journalOpen: true, itemIds: b.itemIds });
           if (q.kind === "review" && b.note) void agents.triage(reviewUtterance(q, b.note), "review");
-          if (b.optionId === "look") {
-            const job = hub.store.jobs(100).find((j) => j.itemId === q.itemId && j.workspace);
-            if (job) agents.focus(job.id);
-            else hub.toast("That session was closed after sitting idle. `pi --resume` in your workspace brings it back.", "warn");
-          }
           return answered;
         }),
     },
