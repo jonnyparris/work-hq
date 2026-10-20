@@ -116,6 +116,9 @@ export class Agents implements Dispatcher {
         this.relaunchUnstarted(job);
       } else if (job.surface === "cmux" && ["running", "blocked", "queued"].includes(job.status)) {
         this.running.set(job.id, { statusPath: resolve(cmux.jobDir(job.id), "status.json"), seenWork: true });
+      } else if (job.surface === "headless" && job.kind === "action" && ["running", "queued"].includes(job.status)) {
+        // Same path as any stopped action: fail the job and, if the item is still on `doing`, ask where it stands.
+        this.finishAction(job.id, { ok: false, text: "", error: "server restarted mid-run" });
       } else if (job.surface === "headless" && ["running", "queued"].includes(job.status)) {
         hub.putJob({ ...job, status: "failed", error: "server restarted mid-run", finishedAt: nowIso() });
         if (job.kind === "triage") this.reaskTriage(job.id, "server restarted mid-run");

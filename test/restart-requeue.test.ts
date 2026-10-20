@@ -58,9 +58,25 @@ test("job queued before prompts were saved: same hand-back, never a stuck doing"
   expect(hub.store.questions("open")[0]?.key).toBe(`restart:${job.id}`);
 });
 
-test("headless jobs caught mid-run still fail", () => {
-  const { hub, job } = setup("d");
+test("headless action caught mid-run: fail it and ask where the item stands, never a stuck doing", () => {
+  const { hub, item, job } = setup("d");
   hub.store.putJob({ ...job, surface: "headless", status: "running" });
   new Agents(hub, fakeCmux(true));
+  const after = hub.store.job(job.id)!;
+  expect(after.status).toBe("failed");
+  expect(after.error).toBe("server restarted mid-run");
+  const [q] = hub.store.questions("open");
+  expect(q?.key).toBe(`after:${job.id}`);
+  expect(q?.itemId).toBe(item.id);
+  expect(q?.badge).toBe("Agent stopped");
+  expect(q?.context).toBe("server restarted mid-run");
+});
+
+test("headless sweep caught mid-run still just fails, no card", () => {
+  const hub = new Hub(new Store(":memory:"));
+  const job: Job = { id: "job_e", kind: "sweep", name: "calendar", title: "Read the calendar", surface: "headless", status: "running", tail: [], createdAt: new Date().toISOString() };
+  hub.store.putJob(job);
+  new Agents(hub, fakeCmux(true));
   expect(hub.store.job(job.id)!.status).toBe("failed");
+  expect(hub.store.questions("open")).toHaveLength(0);
 });
