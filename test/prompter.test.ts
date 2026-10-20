@@ -5,6 +5,7 @@ import { isOwner, Prompter } from "../src/server/prompter.ts";
 import { config } from "../src/server/config.ts";
 import { type MrInfo, MrStates, parseMrRef } from "../src/server/mr-state.ts";
 import { optionFor } from "../src/shared/batch.ts";
+import { type JiraInfo, JiraStates, parseIssue, parseJiraRef } from "../src/server/jira-state.ts";
 
 let hub: Hub;
 let p: Prompter;
@@ -618,6 +619,102 @@ describe("waiting items whose MRs merged: one daily card", () => {
     await hub.note(card()!.id, "done");
     expect(hub.store.item(a.id)!.status).toBe("done");
   });
+});
+
+describe("waiting items whose JIRA tickets are done share the merged card", () => {
+  const J = (k: string) => `https://jira.example.org/browse/${k}`;
+  const MR = "https://gitlab.example.com/me/api-worker/-/merge_requests/17";
+  const tickets: Record<string, JiraInfo> = {
+    "PAY-1": { state: "done", status: "Done", doneAt: "2026-10-14T10:00:00Z" },
+    "PAY-2": { state: "done", status: "Closed", doneAt: "2026-10-15T10:00:00Z" },
+    "OPS-3": { state: "open", status: "In Progress" },
+    "STALE-1": { state: "unknown" },
+  };
+  const setup = (mrStates: Record<string, MrInfo> = { [MR]: { state: "merged", mergedAt: "2026-10-13T10:00:00Z" } }) => {
+    const calls: string[] = [];
+    const mrs = new MrStates(async (r) => mrStates[r.url] ?? { state: "unknown" });
+    const jira = new JiraStates(async (r) => (calls.push(r.key), tickets[r.key] ?? { state: "unknown" }), new Set(["jira.example.org"]));
+    return { calls, jira, mrs, p: new Prompter(hub, mrs, jira) };
+  };
+  const card = () => hub.store.questions("open").find((q) => q.key === "wait:merged");
+  const run = async (s: ReturnType<typeof setup>, now = new Date()) => {
+    s.p.tick(now);
+    await Promise.all([s.mrs.settled(), s.jira.settled()]);
+    s.p.tick(now);
+  };
+
+  test("JIRA-only and MR+JIRA items join MR-only ones; an open, unknown or half-done item stays off", async () => {
+    const s = setup();
+    const a = hub.createItem({ title: "geo-egress", status: "waiting", links: [J("PAY-1")] });
+    const b = hub.createItem({ title: "fix pay-2", status: "waiting", links: [J("PAY-2"), MR], source: { type: "agent", url: `${J("PAY-1")}` } });
+    hub.createItem({ title: "open ticket", status: "waiting", links: [J("OPS-3")] });
+    hub.createItem({ title: "stale token", status: "waiting", links: [J("STALE-1")] });
+    hub.createItem({ title: "merged MR, open ticket", status: "waiting", links: [MR, J("OPS-3")] });
+    s.p.tick(new Date());
+    expect(card()).toBeUndefined(); // held until JIRA answers
+    await Promise.all([s.mrs.settled(), s.jira.settled()]);
+    s.p.tick(new Date());
+    const q = card()!;
+    expect(q.prompt).toBe("2 waiting items: their MRs merged or tickets closed. Mark all done?");
+    expect(q.badge).toBe("Merged / done");
+    expect(q.context).toBe("- geo-egress — PAY-1 Done 10-14.\n- fix pay-2 — api-worker!17 merged 10-13; PAY-2 Closed 10-15; PAY-1 Done 10-14.");
+    await hub.answer(q.id, "done");
+    expect(hub.store.item(a.id)!.status).toBe("done");
+    expect(hub.store.item(b.id)!.status).toBe("done");
+  });
+
+  test("one JIRA-only item: 'Done (ticket closed MM-DD)', badge 'Ticket done'; one lookup per key", async () => {
+    const s = setup();
+    hub.createItem({ title: "geo-egress", status: "waiting", links: [J("PAY-1"), `${J("PAY-1")}?focusedId=1`] });
+    await run(s);
+    for (let i = 0; i < 3; i++) s.p.tick(new Date());
+    expect(card()!.prompt).toBe("Waiting on this, but its tickets are done: geo-egress");
+    expect(card()!.badge).toBe("Ticket done");
+    expect(card()!.options[0]!.label).toBe("Done (ticket closed 10-14)");
+    expect(s.calls).toEqual(["PAY-1"]);
+  });
+
+  test("an open MR keeps a done-ticket item off the card without waiting on JIRA", async () => {
+    const s = setup({ [MR]: { state: "opened" } });
+    hub.createItem({ title: "x", status: "waiting", links: [MR, J("PAY-1")] });
+    await run(s);
+    expect(card()).toBeUndefined();
+  });
+
+  test("state-unknown item whose ticket is done leads with Done", async () => {
+    const s = setup();
+    const it = hub.createItem({ title: "billing", status: "proposed", links: [J("PAY-2")], signals: { stateUnknown: true } });
+    s.p.tick(at(15));
+    await s.jira.settled();
+    s.p.tick(at(15, 1));
+    const q = hub.store.questions("open").find((q) => q.key === `state:${it.id}`)!;
+    expect(q.badge).toBe("Ticket done");
+    expect(q.options[0]).toMatchObject({ label: "Done (ticket closed 10-15)", tone: "primary" });
+    expect(q.context).toBe("PAY-2 Closed 10-15. Probably done.");
+  });
+});
+
+test("parseJiraRef: only configured JIRA hosts, /browse/KEY-N, query and trailing slash ignored", () => {
+  const hosts = new Set(["jira.example.org"]);
+  expect(parseJiraRef("https://jira.example.org/browse/OPS-3?focusedId=1", hosts)).toEqual({
+    url: "https://jira.example.org/browse/OPS-3",
+    host: "jira.example.org",
+    key: "OPS-3",
+  });
+  expect(parseJiraRef("https://jira.example.com/browse/X-1", hosts)).toBeUndefined();
+  expect(parseJiraRef("https://jira.example.org/projects/OPS", hosts)).toBeUndefined();
+  expect(parseJiraRef("not a url", hosts)).toBeUndefined();
+});
+
+test("parseIssue: statusCategory done is done; 401, Access login HTML or a 404 are unknown, never done", () => {
+  const issue = (cat: string, name: string, res: string | null) =>
+    JSON.stringify({ key: "X-1", fields: { resolutiondate: res, status: { name, statusCategory: { key: cat } } } });
+  expect(parseIssue(200, issue("done", "Resolved", "2026-10-14T11:53:30.000+0000"))).toEqual({ state: "done", status: "Resolved", doneAt: "2026-10-14T11:53:30.000Z" });
+  expect(parseIssue(200, issue("indeterminate", "In Review", null))).toEqual({ state: "open", status: "In Review", doneAt: undefined });
+  expect(parseIssue(401, issue("done", "Done", null)).state).toBe("unknown");
+  expect(parseIssue(200, "<html>Cloudflare Access</html>").state).toBe("unknown");
+  expect(parseIssue(404, '{"errorMessages":["Issue Does Not Exist"]}').state).toBe("unknown");
+  expect(parseIssue(200, "{}").state).toBe("unknown");
 });
 
 test("parseMrRef reads MR URLs and ignores everything else", () => {

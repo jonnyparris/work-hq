@@ -98,6 +98,9 @@
   // Words used in prompts and the UI.
   // trackerUrl: ticket keys like PAY-123 anywhere in the UI become links to <trackerUrl>PAY-123.
   "labels": { "tracker": "Linear", "chat": "Slack", "trackerUrl": "https://linear.app/acme/issue/" },
+  // jira.hosts: JIRA hosts whose /browse/KEY links are checked (cloudflared Access token) so waiting items whose tickets
+  // are all done reach the "Ticket done" card. Default: labels.trackerUrl's host when it ends in /browse/.
+  // "jira": { "hosts": ["jira.example.com"] },
 
   // Blog-post scouting and drafting. Leave site.postsDir out if you don't have a public site.
   "writing": {

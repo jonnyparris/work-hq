@@ -121,7 +121,7 @@ and cheap to run every 30 seconds. The model decides what things *mean*. The rul
 | **Meeting ended** | ≤ 45 min after a meeting with others | "anything come out of it?" |
 | **State unknown** | your notes admit they don't know | max 3 open |
 | **Still waiting** | waiting on someone for > 3 days | |
-| **MR merged** | waiting items whose GitLab MRs all merged | one card for all, at most daily: mark all done, one by one, or keep waiting |
+| **MR merged / Ticket done** | waiting items whose GitLab MRs all merged and JIRA tickets are all done (status category Done) | one card for all, at most daily: mark all done, one by one, or keep waiting. A JIRA lookup that fails (stale Access token) keeps the item off |
 | **Wrap up** | 90 min before end of day | what actually happened |
 | **Post idea / Draft to review** | the weekly writing scout found something | never nags |
 
@@ -145,7 +145,8 @@ meeting's notes. The sweep runs 10–25 min after the meeting, so most cards clo
 work arriving from two places (memory rewords a todo, a transcript finds what an agent already filed) becomes
 one item. Something you dropped isn't brought back under a new title. Details: [architecture](docs/ARCHITECTURE.md#duplicates-across-sources-srcserverdedupets).
 
-Set `labels.trackerUrl` and every ticket key (`PAY-123`) in a question, a card or an item becomes a link to it.
+Set `labels.trackerUrl` and every ticket key (`PAY-123`) in a question, a card or an item becomes a link to it. If it's a JIRA `/browse/` URL (or you set `jira.hosts`), waiting items whose linked tickets are all done also
+reach the "Ticket done" card; lookups use `cloudflared access token`, and a failed one keeps the item off.
 
 ### Let your reflection tune it
 

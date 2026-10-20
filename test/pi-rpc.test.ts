@@ -175,16 +175,23 @@ const jumpable = () => {
   return { now: () => Date.now() + offset, jump: (ms: number) => (offset += ms) };
 };
 
+/** A clock that stands still except when we jump it: a tick's gap is exactly the jump, with no timer jitter in it. */
+const frozen = () => {
+  let t = Date.now();
+  return { now: () => t, jump: (ms: number) => (t += ms) };
+};
+
 test("a 15-minute sleep mid-tool doesn't stall the run", async () => {
   const w = started();
-  const c = jumpable();
+  // Frozen, not jumpable: on real time the sleeping tick's gap also holds the timer's lateness, so sleptMs
+  // came out at 900001-900003 about 1 run in 3 (10-20). The jump alone would still trip idleMs without the credit.
+  const c = frozen();
   setTimeout(() => c.jump(15 * 60_000), 150); // laptop sleeps while pi is busy
   const r = await w.run("LATE:600", { timeoutMs: 20 * 60_000, idleMs: 10 * 60_000, clock: c.now, tickMs: 50 });
   expect(r.ok).toBe(true);
   expect(r.stalled).toBeFalsy();
   expect(r.text).toBe("late");
-  expect(r.sleptMs!).toBeGreaterThan(14.9 * 60_000);
-  expect(r.sleptMs!).toBeLessThanOrEqual(15 * 60_000 + 50); // a tick of timer jitter
+  expect(r.sleptMs).toBe(15 * 60_000 - 50); // the gap, less the one tick of awake time it would have held
 });
 
 test("the deadline moves out by the sleep, and awake time still runs it out", async () => {

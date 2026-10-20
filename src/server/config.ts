@@ -108,6 +108,16 @@ const memoryToken = env("WORK_HQ_MEMORY_TOKEN") ?? get(raw, "memory.token") ?? r
 
 const caFile = path(pick<string | undefined>("WORK_HQ_CA_FILE", "tls.caFile", undefined));
 
+/** labels.trackerUrl "https://jira.example.com/browse/" → ["jira.example.com"]; a non-JIRA tracker → []. */
+function jiraHostFromTracker(u: string): string[] {
+  try {
+    const url = new URL(u);
+    return /^\/browse\/?$/.test(url.pathname) ? [url.host] : [];
+  } catch {
+    return [];
+  }
+}
+
 export const config = {
   file: CONFIG_FILE,
   /** Demo mode: made-up data, scripted agents, nothing real reached. Set by `bin/work-hq demo`. */
@@ -216,6 +226,11 @@ export const config = {
     chat: pick<string>(undefined, "labels.chat", "team chat"),
     /** Ticket keys (ABC-123) anywhere in the UI link to `<trackerUrl><KEY>`, e.g. "https://linear.app/acme/issue/". */
     trackerUrl: pick<string>("WORK_HQ_TRACKER_URL", "labels.trackerUrl", ""),
+  },
+
+  jira: {
+    /** Hosts whose /browse/KEY links are looked up (cloudflared Access token) for the "Ticket done" card. */
+    hosts: pick<string[]>(undefined, "jira.hosts", jiraHostFromTracker(pick<string>("WORK_HQ_TRACKER_URL", "labels.trackerUrl", ""))),
   },
 
   writing: {

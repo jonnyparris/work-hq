@@ -6,7 +6,8 @@ import type { ActionKind, CalendarEvent, Coaching, Item, Question, QuestionOptio
 import { config } from "./config.ts";
 import type { Hub } from "./hub.ts";
 import { localDate } from "./memory-sync.ts";
-import { type MrVerdict, MrStates } from "./mr-state.ts";
+import { type JiraDone, JiraStates } from "./jira-state.ts";
+import { type MrRef, MrStates, mrRefs } from "./mr-state.ts";
 import { plain } from "./parse.ts";
 import { openUrl } from "./prompts.ts";
 
@@ -82,7 +83,27 @@ export class Prompter {
     private hub: Hub,
     /** MR state for items whose ref is an MR. Tests pass a stubbed fetch. */
     readonly mrs = new MrStates(),
+    /** JIRA state for items whose ref is a ticket. Tests pass a stubbed fetch. */
+    readonly jira = new JiraStates(),
   ) {}
+
+  /**
+   * Has everything the item links to landed? Every MR merged and every JIRA ticket done → Landed. "pending" while a
+   * lookup is in flight. undefined when it has neither, or any is open — or unknown: a stale Access token or glab
+   * failure never counts as landed.
+   */
+  landed(it: Item): "pending" | Landed | undefined {
+    const hasMr = mrRefs(it).length > 0;
+    const hasJira = this.jira.refs(it).length > 0;
+    if (!hasMr && !hasJira) return undefined;
+    const mr = this.mrs.verdict(it);
+    const jr = this.jira.verdict(it);
+    if ((hasMr && mr === undefined) || (hasJira && jr === undefined)) return undefined; // something's open: no need to wait
+    if (mr === "pending" || jr === "pending") return "pending";
+    const tickets = jr?.done ?? [];
+    const at = [mr?.mergedAt ?? "", ...tickets.map((t) => t.doneAt ?? "")].sort().pop() || undefined;
+    return { mrs: mr?.refs ?? [], mergedAt: mr?.mergedAt, tickets, at };
+  }
 
   tick(now = new Date()) {
     const store = this.hub.store;
@@ -290,15 +311,15 @@ export class Prompter {
       .sort((a, b) => rank(a) - rank(b) || a.createdAt.localeCompare(b.createdAt));
     for (const it of unknown) {
       if (budget <= 0 || openCount("state", (q) => q.key.startsWith("state:")) >= CAP.state) break;
-      // An MR ref answers the question better than memory can. Hold the card until glab has replied.
-      const mr = this.mrs.verdict(it);
+      // An MR or ticket ref answers the question better than memory can. Hold the card until glab / JIRA has replied.
+      const mr = this.landed(it);
       if (mr === "pending") continue;
       if (
         this.ask({
           kind: "state",
           itemId: it.id,
           key: `state:${it.id}`,
-          ...(mr ? { badge: "MR merged" } : {}),
+          ...(mr ? { badge: landedBadge([mr]) } : {}),
           priority: 60,
           prompt: it.title,
           context: mr ? `${mergedLine(mr)} Probably done.` : `Memory doesn't know where this stands.${it.detail ? ` ${excerpt(it.detail)}` : ""}`,
@@ -345,7 +366,7 @@ export class Prompter {
         budget--;
     }
 
-    // 9. Waiting on work whose MRs all merged: one card for all of them, daily, instead of one per item after 3 days.
+    // 9. Waiting on work whose MRs all merged and tickets are done: one card for all of them, daily, instead of one per item after 3 days.
     const batched = budget > 0 ? this.sweepMergedWaiting(items, now) : this.mergedCardItems();
     if (batched.asked) budget--;
 
@@ -356,7 +377,7 @@ export class Prompter {
     for (const it of items.filter((i) => i.status === "waiting" && overdue(i))) {
       if (budget <= 0 || openCount("state", (q) => q.key.startsWith("wait:") && q.key !== MERGED_KEY) >= CAP.waiting) break;
       if (batched.ids.has(it.id)) continue;
-      const mr = this.mrs.verdict(it);
+      const mr = this.landed(it);
       if (mr === "pending") continue;
       const waited = `You've been waiting on this for ${Math.round((now.getTime() - Date.parse(it.updatedAt)) / DAY)} days.`;
       if (
@@ -364,7 +385,7 @@ export class Prompter {
           kind: "state",
           itemId: it.id,
           key: `wait:${it.id}`,
-          badge: mr ? "MR merged" : "Still waiting",
+          badge: mr ? landedBadge([mr]) : "Still waiting",
           priority: 50,
           prompt: it.title,
           context: mr ? `${waited} ${mergedLine(mr)}` : waited,
@@ -436,7 +457,7 @@ export class Prompter {
   }
 
   /**
-   * Waiting items whose MRs all merged, on one card ("N waiting items: their MRs merged"), at most once a day.
+   * Waiting items whose MRs all merged and JIRA tickets are done, on one card ("N waiting items: their MRs merged"), at most once a day.
    * 10-18: eight items sat in Waiting on MRs merged 10-14/10-15, and the per-item card only fires after 3 days, two at a time.
    * "Keep waiting" remembers those items (per merge date), so the card doesn't come back for them; the per-item card still can.
    * An open card is refreshed as items close on their own, and expires when none are left.
@@ -449,17 +470,17 @@ export class Prompter {
       const last = store.lastAnswered(MERGED_KEY);
       if (last?.answeredAt && now.getTime() - Date.parse(last.answeredAt) < MERGED_COOLDOWN_MIN * MIN) return { asked: false, ids: new Set() };
     }
-    const found: Array<{ it: Item; mr: Merged }> = [];
+    const found: Array<{ it: Item; mr: Landed }> = [];
     let pending = false;
     for (const it of items) {
       if (it.status !== "waiting") continue;
-      const mr = this.mrs.verdict(it);
+      const mr = this.landed(it);
       if (mr === "pending") pending = true;
-      else if (mr && !(kept[it.id] !== undefined && (mr.mergedAt ?? "") <= kept[it.id]!)) found.push({ it, mr });
+      else if (mr && !(kept[it.id] !== undefined && (mr.at ?? "") <= kept[it.id]!)) found.push({ it, mr });
     }
     // Hold until every lookup has landed, so the card doesn't grow one item per tick.
     if (pending) return { asked: false, ids: new Set(mergedIds(prev)) };
-    found.sort((a, b) => (a.mr.mergedAt ?? "").localeCompare(b.mr.mergedAt ?? "") || a.it.createdAt.localeCompare(b.it.createdAt));
+    found.sort((a, b) => (a.mr.at ?? "").localeCompare(b.mr.at ?? "") || a.it.createdAt.localeCompare(b.it.createdAt));
     const ids = new Set(found.map((f) => f.it.id));
     if (prev) {
       if (!found.length) this.hub.expireQuestion(prev.id, "nothing left");
@@ -705,19 +726,42 @@ export function dueOptions(act: { action: ActionKind; label: string } | undefine
   ];
 }
 
-type Merged = Exclude<MrVerdict, "pending" | undefined>;
-
-/** "10-14" (local), or "" when GitLab gave no date. */
-function mergedDay(mr: Merged) {
-  return mr.mergedAt ? localDate(new Date(mr.mergedAt)).slice(5) : "";
+/** Everything the item links to has landed: MRs merged, tickets done. `at` is the latest of those dates. */
+export interface Landed {
+  mrs: MrRef[];
+  mergedAt?: string;
+  tickets: JiraDone[];
+  at?: string;
 }
 
-const mergedLabel = (mr: Merged) => `Done (merged${mr.mergedAt ? ` ${mergedDay(mr)}` : ""})`;
+/** "10-14" (local), or "" when GitLab / JIRA gave no date. */
+const day = (iso?: string) => (iso ? ` ${localDate(new Date(iso)).slice(5)}` : "");
 
-/** "agent-relay-mcp!1 merged 10-14." */
-function mergedLine(mr: Merged) {
-  const names = mr.refs.map((r) => `${r.project.split("/").pop()}!${r.iid}`).join(", ");
-  return `${names} ${mr.refs.length > 1 ? "all merged" : "merged"}${mr.mergedAt ? ` ${mergedDay(mr)}` : ""}.`;
+/** "Done (merged 10-14)", "Done (ticket closed 10-14)", "Done (all closed 10-15)". */
+function mergedLabel(l: Landed) {
+  const what = !l.tickets.length ? "merged" : l.mrs.length ? "all closed" : l.tickets.length > 1 ? "tickets closed" : "ticket closed";
+  return `Done (${what}${day(l.at)})`;
+}
+
+/** "agent-relay-mcp!1 merged 10-14.", "PAY-12 Done 10-14.", "api-worker!17 merged 10-14; PAY-12 Done 10-15." */
+function mergedLine(l: Landed) {
+  const parts: string[] = [];
+  if (l.mrs.length) {
+    const names = l.mrs.map((r) => `${r.project.split("/").pop()}!${r.iid}`).join(", ");
+    parts.push(`${names} ${l.mrs.length > 1 ? "all merged" : "merged"}${day(l.mergedAt)}`);
+  }
+  for (const t of l.tickets) parts.push(`${t.ref.key} ${t.status}${day(t.doneAt)}`);
+  return `${parts.join("; ")}.`;
+}
+
+/** What the refs on these items are: "mr" only, "jira" only, or "both". */
+function refKinds(ls: Landed[]): "mr" | "jira" | "both" {
+  const mr = ls.some((l) => l.mrs.length), jira = ls.some((l) => l.tickets.length);
+  return mr && jira ? "both" : jira ? "jira" : "mr";
+}
+
+function landedBadge(ls: Landed[]) {
+  return { mr: "MR merged", jira: "Ticket done", both: "Merged / done" }[refKinds(ls)];
 }
 
 const MERGED_KEY = "wait:merged";
@@ -733,17 +777,20 @@ function mergedIds(q: Question | undefined): string[] {
   return e?.type === "multi" ? e.effects.flatMap((x) => (x.type === "status" && x.itemId ? [x.itemId] : [])) : [];
 }
 
-/** The batched card: titles and MR lines in the context, one tap closes them all. */
-export function mergedCard(found: Array<{ it: Pick<Item, "id" | "title">; mr: Merged }>) {
+/** The batched card: titles and MR / ticket lines in the context, one tap closes them all. */
+export function mergedCard(found: Array<{ it: Pick<Item, "id" | "title">; mr: Landed }>) {
   const n = found.length;
-  const each = (status: "done" | "waiting", note: (mr: Merged) => string): QuestionOption["effect"] => ({
+  const kinds = refKinds(found.map((f) => f.mr));
+  const one = { mr: "its MRs merged", jira: "its tickets are done", both: "its MRs merged and tickets closed" }[kinds];
+  const many = { mr: "their MRs merged", jira: "their tickets are done", both: "their MRs merged or tickets closed" }[kinds];
+  const each = (status: "done" | "waiting", note: (mr: Landed) => string): QuestionOption["effect"] => ({
     type: "multi",
     effects: found.map((f) => ({ type: "status", status, itemId: f.it.id, note: note(f.mr) })),
   });
   return {
-    badge: "MR merged",
+    badge: landedBadge(found.map((f) => f.mr)),
     priority: 55,
-    prompt: n === 1 ? `Waiting on this, but its MRs merged: ${found[0]!.it.title}` : `${n} waiting items: their MRs merged. Mark all done?`,
+    prompt: n === 1 ? `Waiting on this, but ${one}: ${found[0]!.it.title}` : `${n} waiting items: ${many}. Mark all done?`,
     context: found.map((f) => `- ${f.it.title} — ${mergedLine(f.mr)}`).join("\n"),
     options: [
       opt("done", n === 1 ? mergedLabel(found[0]!.mr) : `Mark all ${n} done`, each("done", mergedLine), "primary"),
