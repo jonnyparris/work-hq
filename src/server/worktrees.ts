@@ -19,6 +19,8 @@ export interface WorktreeInfo {
   repo: string;
   dir: string;
   branch: string;
+  /** The commit the worktree started from. `whq land` diffs from here, so a retry after a failed publish still restarts for code the first attempt already pushed. */
+  base?: string;
   check?: string;
   publish?: string;
   restart?: string;
@@ -70,7 +72,8 @@ export async function createWorktree(rule: RepoRule, jobId: string, script = WOR
   const r = await run(["bash", script, "new", slug], rule.dir);
   const dir = r.out.split("\n").pop() ?? "";
   if (!r.ok || !dir || !existsSync(dir)) return { repo: rule.dir, slug, error: (r.err || r.out || "worktree.sh new failed").split("\n").pop()! };
-  const info: WorktreeInfo = { jobId, repo: rule.dir, dir, branch: `wt/${slug}`, check: rule.check, publish: rule.publish, restart: rule.restart };
+  const base = (await run(["git", "rev-parse", "HEAD"], dir)).out || undefined;
+  const info: WorktreeInfo = { jobId, repo: rule.dir, dir, branch: `wt/${slug}`, base, check: rule.check, publish: rule.publish, restart: rule.restart };
   writeFileSync(infoPath(jobId), JSON.stringify(info, null, 2));
   return info;
 }

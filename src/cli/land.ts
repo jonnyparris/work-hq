@@ -37,8 +37,10 @@ export async function land(info: WorktreeInfo, opts: { script?: string; port?: n
   const script = opts.script ?? WORKTREE_SCRIPT;
   if (!existsSync(info.dir)) return { ok: false, error: `${info.dir} is gone — already landed or removed` };
 
-  // What this job changes, measured before the rebase moves the base.
-  const base = run(["git", "merge-base", "HEAD", "main"], info.dir).out;
+  // What this job changes. From the worktree's start, not merge-base with main: after a failed publish the first
+  // attempt's commits are already on main, so a retry's merge-base would see only the fix commit and skip the
+  // restart (job_mvgb7t9fh3uxm). Rebased-in main commits can add files too; an extra restart is the cheap side.
+  const base = info.base ?? run(["git", "merge-base", "HEAD", "main"], info.dir).out;
   const files = base ? run(["git", "diff", "--name-only", base, "HEAD"], info.dir).out.split("\n").filter(Boolean) : [];
 
   const landArgs = ["bash", script, "land", "--keep", ...(info.check ? ["--check", info.check] : [])];

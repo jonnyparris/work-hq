@@ -157,6 +157,27 @@ describe("whq land", () => {
     expect(r.error).toContain("publish failed: denylist matches");
     expect(existsSync(wt.dir)).toBe(true);
   });
+
+  test("a retry after a failed publish still restarts for code the first attempt pushed", async () => {
+    const { main } = setup();
+    const marker = join(main, "..", "restarted");
+    const wt = (await createWorktree({ dir: main, publish: "test -f fixed.md || exit 1", restart: `touch ${marker}` }, jobId())) as WorktreeInfo;
+    writeFileSync(join(wt.dir, "a.ts"), "code\n");
+    git(wt.dir, "commit", "-q", "-am", "code");
+    expect((await land(wt)).ok).toBe(false);
+    writeFileSync(join(wt.dir, "fixed.md"), "reworded\n"); // docs-only fix: merge-base with main would see just this
+    git(wt.dir, "add", "fixed.md");
+    git(wt.dir, "commit", "-q", "-m", "reword");
+    const server = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+    try {
+      const r = await land(readWorktree(wt.jobId)!, { port: server.port });
+      expect(r.ok).toBe(true);
+      expect(r.restarted).toBe(true);
+      expect(existsSync(marker)).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  });
 });
 
 describe("pre-commit hook", () => {
