@@ -284,11 +284,17 @@ function relDay(iso: string) {
   return days === 0 ? t : days === 1 ? `yesterday ${t}` : d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
-function score(i: Item, now = Date.now()) {
+const DAY = 86400000;
+
+/** Planner/lane priority. Exported for tests. */
+export function score(i: Item, now = Date.now()) {
   let s = 0;
   const kill = i.signals?.killDate ? Date.parse(i.signals.killDate) : undefined;
-  if (kill && kill - now < 3 * 86400000) s += 3;
-  if (i.signals?.dueDate && Date.parse(i.signals.dueDate) - now < 7 * 86400000) s += 2;
+  if (kill && kill - now < 3 * DAY) s += 3;
+  // Due soon: boost from 3 days overdue to 7 days ahead. Older overdue dates get no boost,
+  // so a missed target doesn't sit on top of the planner forever.
+  const due = i.signals?.dueDate ? Date.parse(i.signals.dueDate) : NaN;
+  if (due - now < 7 * DAY && due - now >= -3 * DAY) s += 2;
   if (i.signals?.pineapple) s += 2;
   if (i.source.label?.includes("Immediate")) s += 2;
   if (i.kind === "decision") s += 1;
