@@ -413,7 +413,8 @@ export class Hub {
         const job = itemId ? this.store.jobs(100).find((j) => j.itemId === itemId && j.workspace) : undefined;
         if (job) this.dispatcher?.focus?.(job.id);
         else this.toast("That session was closed after sitting idle. `pi --resume` in your workspace brings it back.", "warn");
-        if (q && !itemId) answerLine();
+        if (effect.keep && q) this.reopen(q, 0);
+        else if (q && !itemId) answerLine();
         break;
       }
       case "multi":
@@ -546,7 +547,7 @@ export class Hub {
 
     const opt = d.pick ? q.options.find((o) => o.id === d.pick) : undefined;
     // "Open the link" keeps the question open; that's not an answer.
-    if (opt && !(opt.effect.type === "open" && opt.effect.keep)) {
+    if (opt && !((opt.effect.type === "open" || opt.effect.type === "focusSession") && opt.effect.keep)) {
       const words = opt.effect.type === "when" ? d.when?.trim() || text : note;
       await this.answer(q.id, opt.id, words);
       // reply-safe: queuedNote takes over when the pick only queues work; otherwise answer() already applied it.
@@ -916,7 +917,7 @@ export function runsLater(e: Effect): boolean {
  */
 export function queuedNote(q: Pick<Question, "options">, d: NoteDecision, title?: string): string | undefined {
   const opt = d.pick ? q.options.find((o) => o.id === d.pick) : undefined;
-  if (opt && !(opt.effect.type === "open" && opt.effect.keep)) return runsLater(opt.effect) ? `Noted → ${opt.label}` : undefined;
+  if (opt && !((opt.effect.type === "open" || opt.effect.type === "focusSession") && opt.effect.keep)) return runsLater(opt.effect) ? `Noted → ${opt.label}` : undefined;
   if (title && d.dispatch?.action) return sentAgent(d.dispatch.action, title);
   if (title && d.when?.trim()) return `Working out when from “${d.when.trim()}”`;
   return undefined;

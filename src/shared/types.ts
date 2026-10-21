@@ -159,8 +159,11 @@ export type Effect =
   | { type: "flushJournal" }
   /** Run a sweep now ("Scan the transcript now"). */
   | { type: "sweep"; name: "transcripts" | "calendar" }
-  /** Focus the cmux session of the question's item's latest job; toast if it was closed. */
-  | { type: "focusSession" }
+  /**
+   * Focus the cmux session of the question's item's latest job; toast if it was closed. `keep`: the card stays
+   * open, like `open` with keep — looking at the session isn't an answer (10-19: the after-card closed, item stuck on doing).
+   */
+  | { type: "focusSession"; keep?: boolean }
   | { type: "multi"; effects: Effect[] };
 
 export interface Question {

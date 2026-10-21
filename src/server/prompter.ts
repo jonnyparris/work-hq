@@ -2,7 +2,7 @@
 // what to ask. Rules are deliberately boring and deterministic — the AI does
 // extraction and verification; *when to interrupt* stays predictable.
 
-import type { ActionKind, CalendarEvent, Coaching, Item, Question, QuestionOption } from "../shared/types.ts";
+import type { ActionKind, CalendarEvent, Coaching, Item, Job, Question, QuestionOption } from "../shared/types.ts";
 import { config } from "./config.ts";
 import type { Hub } from "./hub.ts";
 import { localDate } from "./memory-sync.ts";
@@ -15,7 +15,7 @@ const MIN = 60_000;
 const DAY = 86_400_000;
 
 /** Caps so the app asks, rather than nags. */
-const CAP = { state: 3, kill: 3, proposal: 2, post: 2, inbox: 6, waiting: 2, total: 14 };
+const CAP = { state: 3, doing: 3, kill: 3, proposal: 2, post: 2, inbox: 6, waiting: 2, total: 14 };
 
 const nameTokens = (s: string) => s.toLowerCase().split("@")[0]!.split(/[\s._-]+/).filter(Boolean);
 
@@ -27,6 +27,26 @@ export function isOwner(attendee: string, aliases: string[] = config.owner.alias
     return t.length > 0 && t.every((w, i) => who[i] === w);
   });
 }
+
+/**
+ * Milliseconds of work time between `from` and `to`: weekdays, inside `hours` ([start, end) local, may be fractional).
+ * "4 work hours" set at 17:00 Friday means 13:00 Monday, not 21:00 Friday.
+ */
+export function workMsBetween(from: Date, to: Date, hours: [number, number] = config.sweeps.workHours) {
+  let total = 0;
+  const day = new Date(from);
+  day.setHours(0, 0, 0, 0);
+  for (; day < to; day.setDate(day.getDate() + 1)) {
+    if (day.getDay() === 0 || day.getDay() === 6) continue;
+    const start = day.getTime() + hours[0] * 3600_000;
+    const end = day.getTime() + hours[1] * 3600_000;
+    total += Math.max(0, Math.min(end, to.getTime()) - Math.max(start, from.getTime()));
+  }
+  return total;
+}
+
+/** A `doing` item with no live job and nothing asked gets "Still on it?" after this much work time. */
+export const DOING_IDLE_MS = 4 * 3600_000;
 
 export function atLocal(hours: number, minutes = 0, dayOffset = 0, from = new Date()) {
   const d = new Date(from);
@@ -275,6 +295,36 @@ export class Prompter {
         budget--;
     }
 
+    // 5b. `doing` with nobody on it: no live job, no open question, quiet for 4 work hours. 10-19..10-21 three items
+    // sat there: a failed job whose after-card got "Show me the session", and two "I'm on it" taps on due cards.
+    for (const it of this.idleDoing(items, busy, now)) {
+      if (budget <= 0 || openCount("state", (q) => q.key.startsWith("doing:")) >= CAP.doing) break;
+      const since = new Date(it.since);
+      const last = it.job?.summary ?? it.job?.error;
+      if (
+        this.ask({
+          kind: "state",
+          itemId: it.item.id,
+          key: `doing:${it.item.id}`,
+          badge: "Still on it?",
+          priority: 62,
+          prompt: `Still on it? ${it.item.title}`,
+          context: [
+            `On “doing” since ${since.toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}, with no agent running and nothing asked.`,
+            it.job ? `Last agent run ${it.job.status}${last ? `: ${excerpt(last, 200)}` : "."}` : "",
+          ].filter(Boolean).join(" "),
+          options: [
+            opt("done", "Done", { type: "status", status: "done" }, "good"),
+            opt("wait", "Waiting on someone", { type: "status", status: "waiting" }),
+            opt("today", "Still mine today", { type: "status", status: "today" }, "primary"),
+            opt("drop", "Drop it", { type: "status", status: "dropped" }, "danger"),
+          ],
+          cooldownMin: 24 * 60,
+        })
+      )
+        budget--;
+    }
+
     // 6. Kill dates from the reflection — keep or kill.
     for (const it of items) {
       if (budget <= 0 || openCount("state", (q) => q.key.startsWith("kill:")) >= CAP.kill) break;
@@ -443,6 +493,24 @@ export class Prompter {
 
   private open: Question[] = [];
 
+  /**
+   * `doing` items nobody is on: no live job, no open question about it, and DOING_IDLE_MS of work time since the
+   * last sign of life (the item's own update, its latest job, its latest answered card). Oldest first.
+   */
+  private idleDoing(items: Item[], busy: Set<string | undefined>, now: Date) {
+    const doing = items.filter((i) => i.status === "doing" && !busy.has(i.id) && !this.open.some((q) => q.itemId === i.id));
+    if (!doing.length) return [];
+    const jobs = this.hub.store.jobs(500);
+    const out: { item: Item; since: string; job?: Job }[] = [];
+    for (const item of doing) {
+      const job = jobs.find((j) => j.itemId === item.id); // newest first
+      let since = [item.updatedAt, job?.finishedAt ?? job?.startedAt ?? job?.createdAt ?? ""].sort().pop()!;
+      for (const q of this.hub.store.answeredForItem(item.id, since)) if (q.answeredAt && q.answeredAt > since) since = q.answeredAt;
+      if (workMsBetween(new Date(since), now) >= DOING_IDLE_MS) out.push({ item, since, job });
+    }
+    return out.sort((a, b) => a.since.localeCompare(b.since));
+  }
+
   private askCoachMove(now: Date, open: Question[]) {
     const c = this.hub.coaching();
     const key = c ? coachKey(c) : undefined;
@@ -583,6 +651,8 @@ export class Prompter {
       if (q.itemId && (!it || ["done", "dropped"].includes(it.status))) this.hub.expireQuestion(q.id, "moot");
       // Rescheduled (or started / un-scheduled) since this was asked: the old slot's prompt is stale.
       else if (q.key.startsWith("due:") && it && (it.status !== "scheduled" || q.key !== `due:${it.id}:${it.scheduledFor}`)) this.hub.expireQuestion(q.id, "rescheduled");
+      // "Still on it?" once it's off `doing` (answered elsewhere, re-dispatched) or an agent picked it up again.
+      else if (q.key.startsWith("doing:") && it && (it.status !== "doing" || this.hub.store.liveJobs().some((j) => j.itemId === it.id))) this.hub.expireQuestion(q.id, "moved on");
       else if (q.kind === "confirm" && it && it.status !== "inbox") this.hub.expireQuestion(q.id, "triaged");
       else if (q.kind === "post" && it && q.key.endsWith(":idea") && hasDraft(it)) this.hub.expireQuestion(q.id, "drafted");
       else if (q.kind === "prep" && q.eventId && this.startedAgo(q.eventId, now) > 10 * MIN) this.hub.expireQuestion(q.id, "meeting started");

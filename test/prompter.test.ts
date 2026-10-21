@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { Store } from "../src/server/db.ts";
 import { Hub } from "../src/server/hub.ts";
-import { isOwner, Prompter } from "../src/server/prompter.ts";
+import { isOwner, Prompter, workMsBetween } from "../src/server/prompter.ts";
 import { config } from "../src/server/config.ts";
 import { type MrInfo, MrStates, parseMrRef } from "../src/server/mr-state.ts";
 import { optionFor } from "../src/shared/batch.ts";
@@ -965,5 +965,93 @@ describe("coaching move follow-up", () => {
     // Reopened: back to handed off.
     hub.setStatus(b, "doing");
     expect(hub.coachHistory()[0]!.outcome).toBe("agent");
+  });
+});
+
+describe("doing with nobody on it", () => {
+  // Wed 2026-09-23. Work hours come from config (default 8–19).
+  const doing = (title: string, since: Date) => {
+    const it = hub.createItem({ title, status: "doing" });
+    hub.store.putItem({ ...it, updatedAt: since.toISOString() });
+    return it;
+  };
+  const cards = (id: string) => hub.store.questions("open").filter((q) => q.itemId === id && q.key.startsWith("doing:"));
+
+  test("workMsBetween counts weekday work hours only", () => {
+    const h = 3600_000;
+    expect(workMsBetween(at(9), at(14), [8, 19])).toBe(5 * h);
+    expect(workMsBetween(at(6), at(9), [8, 19])).toBe(1 * h);
+    // Fri 17:00 → Mon 11:00: 2 h Friday + 3 h Monday, the weekend is free.
+    expect(workMsBetween(new Date(2026, 8, 25, 17), new Date(2026, 8, 28, 11), [8, 19])).toBe(5 * h);
+  });
+
+  test("5 work hours with no job: exactly one 'Still on it?' card, not again on the next ticks", () => {
+    const it = doing("devtools!5962", new Date(at(15).getTime() - 5 * 3600_000));
+    p.tick(at(15));
+    p.tick(at(15, 5));
+    p.tick(at(16));
+    const qs = cards(it.id);
+    expect(qs).toHaveLength(1);
+    expect(qs[0]!.kind).toBe("state");
+    expect(qs[0]!.options.map((o) => o.effect)).toEqual([
+      { type: "status", status: "done" },
+      { type: "status", status: "waiting" },
+      { type: "status", status: "today" },
+      { type: "status", status: "dropped" },
+    ]);
+  });
+
+  test("under 4 work hours, or 5 wall hours that are mostly night: no card", () => {
+    const [start, end] = config.sweeps.workHours;
+    const a = doing("fresh", at(end - 3));
+    p.tick(at(end - 1)); // 2 work hours
+    expect(cards(a.id)).toHaveLength(0);
+    // Yesterday 1 h before close → today 2 h after open: 3 work hours, ~13+ wall hours.
+    const b = doing("overnight", new Date(2026, 8, 22, end - 1));
+    p.tick(at(start + 2));
+    expect(cards(b.id)).toHaveLength(0);
+  });
+
+  test("a live job, or any open card about it (the after-card), holds it back", () => {
+    const a = doing("agent running", at(8));
+    const b = doing("after-card open", at(8));
+    hub.putJob({ id: "j_live", kind: "action", name: "work", title: "x", surface: "headless", status: "running", itemId: a.id, tail: [], createdAt: at(8).toISOString() } as any);
+    hub.ask({ kind: "state", itemId: b.id, key: "after:j", priority: 75, prompt: "Agent stopped", options: [] });
+    p.tick(at(15));
+    expect(cards(a.id)).toHaveLength(0);
+    expect(cards(b.id)).toHaveLength(0);
+  });
+
+  test("the clock starts at the last job's finish or answered card, not when it went to doing", () => {
+    const it = doing("redispatched", at(8));
+    hub.putJob({ id: "j_done", kind: "action", name: "work", title: "x", surface: "headless", status: "done", itemId: it.id, tail: [], createdAt: at(8).toISOString(), finishedAt: at(13).toISOString() } as any);
+    p.tick(at(15));
+    expect(cards(it.id)).toHaveLength(0);
+    p.tick(at(17, 30));
+    expect(cards(it.id)).toHaveLength(1);
+  });
+
+  test("answering moves it off doing; an expired card waits 24 h", async () => {
+    const it = doing("answered", at(8));
+    p.tick(at(15));
+    await hub.answer(cards(it.id)[0]!.id, "today");
+    expect(hub.store.item(it.id)!.status).toBe("today");
+    const other = doing("ignored", at(8));
+    p.tick(at(15));
+    const q = cards(other.id)[0]!;
+    hub.store.putQuestion({ ...q, status: "answered", answer: "x", answeredAt: new Date().toISOString() }); // closed without moving it
+    p.tick(at(16));
+    expect(cards(other.id)).toHaveLength(0);
+  });
+
+  test("the card expires once the item leaves doing or an agent picks it up", () => {
+    const a = doing("moved", at(8));
+    const b = doing("picked up", at(8));
+    p.tick(at(15));
+    hub.store.putItem({ ...hub.store.item(a.id)!, status: "today" });
+    hub.putJob({ id: "j_b", kind: "action", name: "work", title: "x", surface: "headless", status: "queued", itemId: b.id, tail: [], createdAt: new Date().toISOString() } as any);
+    p.tick(at(15, 1));
+    expect(cards(a.id)).toHaveLength(0);
+    expect(cards(b.id)).toHaveLength(0);
   });
 });

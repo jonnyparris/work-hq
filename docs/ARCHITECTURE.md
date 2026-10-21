@@ -141,6 +141,7 @@ server? Work HQ still runs; you just lose import and the flush.
 | Agent asks | a dispatched agent needs a decision | 72 |
 | Meeting ended | ≤ 45 min after a meeting with others | 70 |
 | Capture triage | new transcript item | 65 |
+| Still on it? | `doing`, no live job, no open card for the item, 4 work hours (weekdays, `sweeps.workHours`) since its last update / job finish / answered card; 24 h cooldown; expires when it leaves `doing` or a job starts | 62 (max 3 open) |
 | State unknown | memory admits it doesn't know | 60 (max 3 open) |
 | MR merged / Ticket done (batched) | waiting items whose MRs all merged and JIRA tickets are all done (`jira-state.ts`: REST + cloudflared token, 30 min cache; a failed lookup is unknown, never done); one card, ≤ once per 20 h; "Keep waiting" stops it re-listing them | 55 |
 | Still waiting | waiting > 3 days | 50 |

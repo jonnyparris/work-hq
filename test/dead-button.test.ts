@@ -246,6 +246,30 @@ describe("dead buttons", () => {
       expect(toasts.some((t) => t.includes("session was closed"))).toBe(true);
     });
 
+    test("'Show me the session' with keep leaves the card open and the item on doing (10-19 kitesurf-oss!3)", async () => {
+      const { hub, calls } = setup();
+      const it = hub.createItem({ title: "rebuild", status: "doing" });
+      hub.store.putJob({ id: "j1", kind: "action", name: "work", title: "x", itemId: it.id, workspace: "ws:1", status: "failed", tail: [], createdAt: new Date().toISOString() } as any);
+      const q = hub.ask({ kind: "state", itemId: it.id, key: "after:j1", priority: 75, prompt: "Agent stopped", options: [
+        { id: "done", label: "Done", effect: { type: "status", status: "done" } },
+        { id: "look", label: "Show me the session", effect: { type: "focusSession", keep: true } },
+      ] })!;
+      await hub.answer(q.id, "look");
+      expect(calls).toEqual(["focus:j1"]);
+      const open = hub.store.questions("open").filter((x) => x.key === "after:j1");
+      expect(open).toHaveLength(1);
+      await hub.answer(open[0]!.id, "done");
+      expect(hub.store.item(it.id)!.status).toBe("done");
+    });
+
+    test("a pre-10-21 focusSession card gets keep on load", () => {
+      const store = new Store(":memory:");
+      store.putQuestion({ id: "a", kind: "state", key: "after:j", priority: 1, prompt: "a", status: "open", createdAt: new Date().toISOString(),
+        options: [{ id: "look", label: "look", effect: { type: "focusSession" } }] });
+      (store as any).upgradeRouteEffects();
+      expect(store.question("a")!.options[0]!.effect).toEqual({ type: "focusSession", keep: true });
+    });
+
     test("an open card asked before the change gets its noop upgraded on load", () => {
       const store = new Store(":memory:");
       const now = new Date().toISOString();
@@ -260,7 +284,7 @@ describe("dead buttons", () => {
       expect(eff("p")).toEqual([{ type: "commitPlan" }, { type: "snooze", minutes: 30 }]);
       expect(eff("w")).toEqual([{ type: "flushJournal" }]);
       expect(eff("r")).toEqual([{ type: "sweep", name: "transcripts" }, { type: "noop" }]);
-      expect(eff("o")).toEqual([{ type: "focusSession" }, { type: "noop" }]); // "plan" only means commit on a plan card
+      expect(eff("o")).toEqual([{ type: "focusSession", keep: true }, { type: "noop" }]); // "plan" only means commit on a plan card
     });
   });
 });

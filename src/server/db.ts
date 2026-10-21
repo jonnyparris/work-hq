@@ -43,19 +43,23 @@ export class Store {
    * Until 10-20 plan/flush/scan/look were noop options the answer route special-cased by id.
    * That code now lives in hub.applyEffect behind real Effect types, so an open card asked
    * before the change would do nothing when tapped. Rewrite those effects in place. Idempotent;
-   * delete once no pre-10-20 card can still be open.
+   * delete once no pre-10-20 card can still be open. Also gives a pre-10-21 focusSession its `keep`.
    */
   private upgradeRouteEffects() {
     const legacy = (kind: string, id: string): Effect | undefined =>
       kind === "plan" && id === "plan" ? { type: "commitPlan" }
       : kind === "wrap" && id === "flush" ? { type: "flushJournal" }
       : kind === "review" && id === "scan" ? { type: "sweep", name: "transcripts" }
-      : id === "look" ? { type: "focusSession" }
+      : id === "look" ? { type: "focusSession", keep: true }
       : undefined;
     for (const q of this.questions("open")) {
       let changed = false;
       const options = q.options.map((o) => {
-        const e = o.effect.type === "noop" ? legacy(q.kind, o.id) : undefined;
+        const e: Effect | undefined =
+          o.effect.type === "noop" ? legacy(q.kind, o.id)
+          // 10-21: "Show me the session" keeps the card open; cards drawn before that close it and strand the item on doing.
+          : o.effect.type === "focusSession" && !o.effect.keep ? { type: "focusSession", keep: true }
+          : undefined;
         if (!e) return o;
         changed = true;
         return { ...o, effect: e };

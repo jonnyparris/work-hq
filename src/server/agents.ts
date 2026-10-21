@@ -427,7 +427,7 @@ export class Agents implements Dispatcher {
           { id: "wait", label: "Waiting on someone", effect: { type: "status", status: "waiting" } },
           { id: "today", label: "Still mine today", tone: "primary", effect: { type: "status", status: "today" } },
           { id: "when", label: "Scheduled for…", hint: "say when", effect: { type: "when" } },
-          ...(job.workspace ? [{ id: "look", label: "Show me the session", tone: "quiet" as const, effect: { type: "focusSession" as const } }] : []),
+          ...(job.workspace ? [{ id: "look", label: "Show me the session", tone: "quiet" as const, effect: { type: "focusSession" as const, keep: true } }] : []),
         ],
       });
     }

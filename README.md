@@ -120,6 +120,7 @@ and cheap to run every 30 seconds. The model decides what things *mean*. The rul
 | **Kill date** | ≤ 2 days to a decision deadline | |
 | **Meeting ended** | ≤ 45 min after a meeting with others | "anything come out of it?" |
 | **State unknown** | your notes admit they don't know | max 3 open |
+| **Still on it?** | an item on *doing* with no agent running and no open card, quiet for 4 work hours | Done / Waiting / Today / Drop; at most daily per item, max 3 open |
 | **Still waiting** | waiting on someone for > 3 days | |
 | **MR merged / Ticket done** | waiting items whose GitLab MRs all merged and JIRA tickets are all done (status category Done) | one card for all, at most daily: mark all done, one by one, or keep waiting. A JIRA lookup that fails (stale Access token) keeps the item off |
 | **Wrap up** | 90 min before end of day | what actually happened |
