@@ -27,3 +27,28 @@ describe("score due-date boost", () => {
     expect(boost("not-a-date")).toBe(0);
   });
 });
+
+const killItem = (killDate?: string): Item =>
+  ({ id: "i", title: "t", kind: "task", status: "proposed", source: { type: "agent" }, signals: killDate ? { killDate } : {} }) as unknown as Item;
+const killBoost = (killDate?: string) => score(killItem(killDate), NOW) - score(killItem(), NOW);
+
+describe("score kill-date boost", () => {
+  test("boosts kill dates within the next 3 days", () => {
+    expect(killBoost("2026-10-21")).toBe(3);
+    expect(killBoost("2026-10-23")).toBe(3);
+  });
+  test("no boost for kill dates further out", () => {
+    expect(killBoost("2026-10-30")).toBe(0);
+  });
+  test("boosts just-passed kill dates (up to 3 days)", () => {
+    expect(killBoost("2026-10-19")).toBe(3);
+    expect(killBoost("2026-10-18")).toBe(3);
+  });
+  test("no boost once more than 3 days past", () => {
+    expect(killBoost("2026-10-10")).toBe(0);
+    expect(killBoost("2025-01-01")).toBe(0);
+  });
+  test("bad dates are ignored", () => {
+    expect(killBoost("not-a-date")).toBe(0);
+  });
+});
