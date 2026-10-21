@@ -2,6 +2,7 @@
 // Pure functions; no I/O. Tested in test/parse.test.ts.
 
 import type { Coaching, ItemKind } from "../shared/types.ts";
+import { resolveDue } from "./deadlines.ts";
 
 export interface ParsedItem {
   key: string;
@@ -16,6 +17,8 @@ export interface ParsedItem {
     stateUnknown: boolean;
     killDate?: string; // YYYY-MM-DD
     dueDate?: string; // YYYY-MM-DD
+    /** Set when the date came from the Clairic pass, not the text parser. */
+    dueFrom?: "clairic";
     lowConfidence: boolean;
     pineapple: boolean;
   };
@@ -102,9 +105,10 @@ function links(text: string): string[] {
   return [...out].slice(0, 8);
 }
 
-function flags(text: string) {
+function flags(text: string, today = new Date()) {
   const kill = /\bkill\b[^.]*?(\d{4}-\d{2}-\d{2})/i.exec(text)?.[1];
-  const due = /\b(?:by|target|due)\b[^.]*?(\d{4}-\d{2}-\d{2})/i.exec(text)?.[1];
+  // "by 30 Oct", "due 10-10", "before Friday", "end of next week"; then the older loose "by … YYYY-MM-DD".
+  const due = resolveDue(plain(text), today) ?? /\b(?:by|target|due)\b[^.]*?(\d{4}-\d{2}-\d{2})/i.exec(text)?.[1];
   return {
     stateUnknown: /state unknown|completion unknown|unconfirmed|not checked|confirm whether|intent unknown/i.test(text),
     killDate: kill,
@@ -115,7 +119,7 @@ function flags(text: string) {
 }
 
 /** Parse the to-do list (`memory.todosPath`). Only unchecked checkbox lines become items. */
-export function parseActiveTodos(md: string, file = "active-todos", projects: ProjectRule[] = []): ParsedItem[] {
+export function parseActiveTodos(md: string, file = "active-todos", projects: ProjectRule[] = [], today = new Date()): ParsedItem[] {
   const out: ParsedItem[] = [];
   let section = "";
   const lines = md.split("\n");
@@ -144,14 +148,14 @@ export function parseActiveTodos(md: string, file = "active-todos", projects: Pr
       section,
       project: projectOf(body, projects),
       links: links(body),
-      flags: flags(body),
+      flags: flags(body, today),
     });
   }
   return out;
 }
 
 /** Parse the numbered proposals in a `*-improvement-proposals.md` file. */
-export function parseProposals(md: string, date: string): ParsedItem[] {
+export function parseProposals(md: string, date: string, today = new Date()): ParsedItem[] {
   const out: ParsedItem[] = [];
   let section = "";
   const blocks = md.split(/\n(?=#{2,3}\s)/);
@@ -173,7 +177,7 @@ export function parseProposals(md: string, date: string): ParsedItem[] {
       section: `Proposals ${date} · ${section}`,
       project: undefined,
       links: links(body),
-      flags: { ...flags(body), stateUnknown: false },
+      flags: { ...flags(body, today), stateUnknown: false },
     });
   }
   return out;

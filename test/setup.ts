@@ -2,6 +2,8 @@
 process.env.WORK_HQ_CONFIG = "none";
 process.env.WORK_HQ_SWEEPS = "off";
 delete process.env.WORK_HQ_MEMORY_TOKEN;
+delete process.env.WORK_HQ_CLAIRIC_TOKEN;
+delete process.env.WORK_HQ_CLAIRIC_ACCOUNT;
 // Job dirs (prompts, beacons) go to a throwaway state dir, not ~/.local/state/work-hq.
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

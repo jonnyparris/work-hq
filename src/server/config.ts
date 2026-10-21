@@ -106,6 +106,9 @@ const systemTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const memoryTokenFile = path(pick<string | undefined>("WORK_HQ_MEMORY_TOKEN_FILE", "memory.tokenFile", undefined));
 const memoryToken = env("WORK_HQ_MEMORY_TOKEN") ?? get(raw, "memory.token") ?? readToken(memoryTokenFile);
 
+const clairicTokenFile = path(pick<string | undefined>("WORK_HQ_CLAIRIC_TOKEN_FILE", "deadlines.clairic.tokenFile", undefined));
+const clairicToken = env("WORK_HQ_CLAIRIC_TOKEN") ?? readToken(clairicTokenFile);
+
 const caFile = path(pick<string | undefined>("WORK_HQ_CA_FILE", "tls.caFile", undefined));
 
 /** labels.trackerUrl "https://jira.example.com/browse/" → ["jira.example.com"]; a non-JIRA tracker → []. */
@@ -269,6 +272,19 @@ export const config = {
     },
     /** Silence that ends a recorded dictation. */
     silenceMs: Number(pick(undefined, "voice.silenceMs", 1400)),
+  },
+
+  /**
+   * Deadlines the to-do text states in words ("before the offsite", "within two weeks") that the built-in
+   * parser can't resolve: one batched call per import to Workers AI's Clairic model. Needs an account ID
+   * and a token with Workers AI Read only. Unset = off. See src/server/deadlines.ts.
+   */
+  deadlines: {
+    clairic: {
+      accountId: pick<string | undefined>("WORK_HQ_CLAIRIC_ACCOUNT", "deadlines.clairic.accountId", undefined),
+      token: clairicToken,
+      minConfidence: Number(pick(undefined, "deadlines.clairic.minConfidence", 0.9)),
+    },
   },
 
   /** Corporate TLS interception? Point at the root CA bundle; exported to every child process. */

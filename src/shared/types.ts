@@ -66,6 +66,7 @@ export interface Item {
     stateUnknown?: boolean;
     killDate?: string;
     dueDate?: string;
+    dueFrom?: "clairic";
     lowConfidence?: boolean;
     pineapple?: boolean;
   };

@@ -56,6 +56,10 @@
     // "gatewayToken": { "env": "OPENCODE_CF_TOKEN", "command": "cloudflared access token -app=https://…" }
   },
 
+  // Optional: read deadlines the built-in parser can't ("before the offsite", "within two weeks") with
+  // Workers AI's Clairic model, one batched call per memory import. Token: Workers AI Read only.
+  // "deadlines": { "clairic": { "accountId": "…", "tokenFile": "~/.config/work-hq/workers-ai-token", "minConfidence": 0.9 } },
+
   // Background sweeps. Only run on weekdays inside work hours.
   "sweeps": {
     "dayStart": 8,

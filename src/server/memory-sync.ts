@@ -9,12 +9,17 @@ import { nowIso } from "./db.ts";
 import type { Hub } from "./hub.ts";
 import type { MemoryClient } from "./memory.ts";
 import { resolve } from "node:path";
-import { parseActiveTodos, parseCoaching, parseProposals, type ParsedItem } from "./parse.ts";
+import { parseActiveTodos, parseCoaching, parseProposals, plain, type ParsedItem } from "./parse.ts";
+import { ClairicDeadlines } from "./deadlines.ts";
 import { openUrl, template } from "./prompts.ts";
 
 
 export class MemorySync {
-  constructor(private hub: Hub, private memory: MemoryClient) {}
+  constructor(
+    private hub: Hub,
+    private memory: MemoryClient,
+    private clairic: ClairicDeadlines | undefined = clairicFromConfig(),
+  ) {}
 
   async importAll() {
     const s = { ...this.hub.store.syncState("memory"), lastRunAt: nowIso() };
@@ -40,16 +45,30 @@ export class MemorySync {
           break;
         }
       }
+      const extra = await this.fillDeadlines(parsed);
       const seen = this.upsert(parsed);
       const dropped = this.retire(seen);
       this.hub.dedupeExisting();
       this.markMergedProposals(parsed);
-      this.hub.putSync({ ...s, lastOkAt: nowIso(), error: undefined, cursor: `${parsed.length} items · proposals ${proposalsLabel}` });
+      this.hub.putSync({ ...s, lastOkAt: nowIso(), error: undefined, cursor: `${parsed.length} items · proposals ${proposalsLabel}${extra}` });
       return { imported: parsed.length, dropped };
     } catch (e) {
       this.hub.putSync({ ...s, error: String((e as Error).message ?? e) });
       throw e;
     }
+  }
+
+  /** Second pass on to-dos the parser left undated (Clairic). Sets flags.dueDate in place; returns a cursor note. */
+  private async fillDeadlines(parsed: ParsedItem[]): Promise<string> {
+    if (!this.clairic) return "";
+    const undated = parsed.filter((p) => !p.flags.dueDate && !p.key.startsWith("memory:proposals:"));
+    const found = await this.clairic.fill(undated.map((p) => ({ key: p.key, text: plain(`${p.title}. ${p.detail}`) })));
+    for (const p of undated) {
+      const d = found.get(p.key);
+      if (d) p.flags = { ...p.flags, dueDate: d, dueFrom: "clairic" };
+    }
+    if (this.clairic.lastError) return ` · deadlines: ${this.clairic.lastError.slice(0, 80)}`;
+    return found.size ? ` · ${found.size} deadline${found.size === 1 ? "" : "s"} read by Clairic` : "";
   }
 
   private upsert(parsed: ParsedItem[]): Set<string> {
@@ -146,6 +165,12 @@ export class MemorySync {
       throw e;
     }
   }
+}
+
+function clairicFromConfig() {
+  const c = config.deadlines.clairic;
+  if (config.demo || !c.accountId || !c.token) return undefined;
+  return new ClairicDeadlines({ accountId: c.accountId, token: c.token, minConfidence: c.minConfidence });
 }
 
 /** Header of the journal file in memory. Override with prompts/journal-header.md. */

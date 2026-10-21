@@ -92,7 +92,11 @@
 - **Item** — the unit of work. `kind` (task, ticket, message, email, followup, decision,
   review, meeting, idea) decides which action fits; `status` walks inbox → proposed →
   today/scheduled → doing/waiting → done/dropped. `signals` carries what the parser found
-  in memory text (state unknown, kill date, pineapple).
+  in memory text (state unknown, kill date, due date, pineapple). Due dates come from
+  `src/server/deadlines.ts`: a cue ("by", "due", "before", "target") right before a date phrase
+  ("30 Oct", "10-19", "Friday", "end of next week"), resolved against today. With
+  `deadlines.clairic` set, what that leaves unresolved goes to Workers AI's Clairic model in one
+  batched call per import (cue clauses only, confidence ≥ 0.9, a date copied from the text refused).
 - **Question** — one ask with 2–6 options. Each option has an **Effect** (status, schedule,
   snooze, dispatch). Keyed for dedupe with cooldowns, so answering "Doing it today" doesn't
   bring the same question back tomorrow morning.
