@@ -54,9 +54,12 @@
   waits again instead of failing the run.
   Dialogs (permission asks) are declined, as print mode does. `pi.runner: "print"` brings back the
   old `pi -p @file` path.
-- **One gateway token for all headless runs** (`pi.gatewayToken`, `src/server/gateway-token.ts`).
+- **One gateway token for all pi runs** (`pi.gatewayToken`, `src/server/gateway-token.ts`).
   The server runs the token command once, passes the token in the env var the provider's key command
-  prefers, refreshes it 5 min before the JWT's `exp`, and drops it on an auth error.
+  prefers, refreshes it 5 min before the JWT's `exp`, and drops it on an auth error. cmux sessions
+  get it too (in `launch.sh`, mode 0600), but only with 24 h left: the key command never re-mints
+  while the env var is set, and a session can stay open for hours. A cmux turn that ends on an auth
+  error raises the same "Login expired" card as a headless one; a clean turn retires it.
 - **Company-specific instructions are data, not code.** Which tools to call, how tickets are
   filed, what voice replies use: all in `prompts/*.md`, overridable per user (`promptsDir`).
   Output shapes the server parses stay in `src/server/prompts.ts`.

@@ -97,6 +97,7 @@ export function launchInCmux(opts: {
       "exec /bin/zsh -l",
       "",
     ].join("\n"),
+    { mode: 0o600 }, // may hold the gateway token; zsh runs it as an argument, so no exec bit needed
   );
 
   const group = ensureGroup(opts.group);

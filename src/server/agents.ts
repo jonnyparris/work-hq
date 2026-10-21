@@ -30,6 +30,8 @@ const TRIAGE_FLAGS = ["-nt", "-nc", "-ns", "-np", "--no-session"];
 const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
 /** How long a cmux turn that ended on a model error gets to recover (new turn or report) before the job fails. */
 export const ERROR_GRACE_MS = 180_000;
+/** A cmux session only gets the shared gateway token if it has at least this long left (see GatewayToken.env). */
+export const CMUX_TOKEN_TTL_MS = 24 * 3600_000;
 const RESUME_NUDGE = "Your last request failed on a provider rate limit. Carry on from where you stopped.";
 
 /** `slept`: ms the laptop slept mid-run (rpc runner). A failure after a sleep gets rerun, not counted as a stall. */
@@ -46,6 +48,8 @@ interface Running {
   retry?: { at: number; seq: number; sent?: number };
   /** cmux: the turn ended on a model error at this beacon seq. pi keeps the session, so wait for it to recover or report. */
   errored?: { at: number; seq: number };
+  /** cmux: last settled turn (beacon seq) already passed to noteGateway. */
+  gatewaySeq?: number;
 }
 
 export interface TriageResult {
@@ -220,6 +224,9 @@ export class Agents implements Dispatcher {
         prompt,
         cwd: config.workspace.dir,
         piArgs: [...modelArgs(), "-n", `work-hq: ${title}`],
+        // The shared gateway token, as headless runs get it: no per-run key mint, and a lapsed login shows up
+        // here as one auth error. Only a token with a day left — the session can stay open for hours.
+        env: await this.token.env(Date.now(), CMUX_TOKEN_TTL_MS),
       });
       if (launched) {
         this.running.set(jobId, { statusPath: launched.statusPath, seenWork: false });
@@ -301,6 +308,14 @@ export class Agents implements Dispatcher {
         continue;
       }
       if (!b) continue;
+      // A settled turn tells us about the model gateway too: an auth error raises the "Login expired" card
+      // (and drops the shared token), a clean turn retires it. Once per turn.
+      if (b.state === "idle" && b.seq >= 1 && b.seq !== r.gatewaySeq && (b.outcome === "error" || b.outcome === "completed")) {
+        r.gatewaySeq = b.seq;
+        const ok = b.outcome === "completed";
+        this.noteGateway({ ok, text: "", error: ok ? undefined : b.detail });
+        if (!ok && isAuthFailure(b.detail ?? "")) this.token.invalidate();
+      }
       // Waiting out a provider rate limit. Any new turn (seq bump — ours or the owner's) ends the wait.
       if (r.retry && b.seq > r.retry.seq) {
         r.retry = undefined;

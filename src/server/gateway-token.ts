@@ -33,17 +33,26 @@ export function jwtExpiry(token: string): number | undefined {
 export class GatewayToken {
   private token?: string;
   private until = 0;
+  /** JWT expiry of the current token, if it is a JWT. */
+  private exp?: number;
   private failedAt = Number.NEGATIVE_INFINITY;
   private inflight?: Promise<string | undefined>;
   lastError?: string;
 
   constructor(private src: TokenSource | undefined, private run = runCommand) {}
 
-  /** Env to merge into a pi run. Empty when unset or the command fails (pi falls back to its own command). */
-  async env(now = Date.now()): Promise<Record<string, string>> {
+  /**
+   * Env to merge into a pi run. Empty when unset or the command fails (pi falls back to its own command).
+   * `minTtlMs`: also empty when the token expires sooner than that. pi's key command prefers the env var
+   * over minting, so a long-lived session (cmux) handed a token near expiry would keep sending it after it
+   * lapsed; with nothing passed it mints its own.
+   */
+  async env(now = Date.now(), minTtlMs = 0): Promise<Record<string, string>> {
     if (!this.src) return {};
     const t = await this.get(now);
-    return t ? { [this.src.env]: t } : {};
+    if (!t) return {};
+    if (minTtlMs > 0 && this.exp !== undefined && this.exp - now < minTtlMs) return {};
+    return { [this.src.env]: t };
   }
 
   async get(now = Date.now()): Promise<string | undefined> {
@@ -58,6 +67,7 @@ export class GatewayToken {
   invalidate() {
     this.token = undefined;
     this.until = 0;
+    this.exp = undefined;
     this.failedAt = Number.NEGATIVE_INFINITY;
   }
 
@@ -79,6 +89,7 @@ export class GatewayToken {
       return undefined;
     }
     this.token = t;
+    this.exp = exp;
     this.until = exp ? exp - REFRESH_EARLY_MS : now + FALLBACK_TTL_MS;
     this.lastError = undefined;
     return t;
