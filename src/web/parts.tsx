@@ -715,7 +715,7 @@ export function Drawer({ it, journal, jobs, onClose }: { it: Item; journal: Jour
             <div className="correct">
               <textarea
                 value={note}
-                placeholder="What's actually true? “Already done on Tuesday”, “Sam owns this now”, “not a ticket, just a chat”… Goes to memory."
+                placeholder="What's actually true? “Sam owns this now”, “not a ticket, just a chat”… Goes to memory. An instruction (“do it”, “ask Sam…”, “check…”) gets acted on."
                 onChange={(e) => setNote(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) sendNote(); }}
               />

@@ -88,10 +88,13 @@ const server = Bun.serve({
             item = hub.updateItem(item.id, { ...rest, confirmedAt: nowIso() });
             hub.journal(`Corrected: ${item.title}${rest.kind ? ` (now a ${rest.kind})` : ""}`, { itemId: item.id });
           }
-          if (note?.trim()) item = hub.updateItem(item.id, { notes: [...(item.notes ?? []), { at: nowIso(), text: note.trim() }].slice(-20) });
-          if (status) item = hub.setStatus(item.id, status, note);
-          else if (note) hub.journal(`Note on ${item.title}: ${note}`, { itemId: item.id });
-          return item;
+          if (status) {
+            if (note?.trim()) item = hub.updateItem(item.id, { notes: [...(item.notes ?? []), { at: nowIso(), text: note.trim() }].slice(-20) });
+            return hub.setStatus(item.id, status, note);
+          }
+          // No status: an instruction goes to the note reader like a card note; background stays on the item.
+          if (note?.trim()) await hub.itemNote(item.id, note);
+          return hub.store.item(item.id) ?? item;
         }),
     },
 

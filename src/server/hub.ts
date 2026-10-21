@@ -533,6 +533,47 @@ export class Hub {
     return { pending: true };
   }
 
+  /**
+   * A note typed in the item drawer (PATCH /api/items/:id with a note, no status). Background stays background:
+   * kept on the item, journalled, nothing runs. An instruction ("do it", "ask Bernardo", "check the logs") goes
+   * through the same reader as a card note: on the item's open card if it has one, else on a hidden one-off
+   * `drawer:` card that expires if the reader calls it context. 10-15 14:58: "do it" on it_mv7a0vsjsewtj was
+   * filed as context and the item sat in today for six days.
+   */
+  async itemNote(itemId: string, text: string): Promise<{ pending: boolean; routed: boolean }> {
+    const item = this.store.item(itemId);
+    if (!item) throw new Error("no such item");
+    const t = text.trim();
+    if (!t) throw new Error("empty note");
+    if (!isInstruction(t) || ["done", "dropped"].includes(item.status)) {
+      this.updateItem(item.id, { notes: [...(item.notes ?? []), { at: nowIso(), text: t }].slice(-20) });
+      this.journal(`Note on ${item.title}: ${t}`, { itemId: item.id });
+      return { pending: false, routed: false };
+    }
+    const card = this.store
+      .questions("open")
+      .find((q) => q.itemId === item.id && !["review", "plan", "wrap"].includes(q.kind));
+    const q = card ?? this.ask({
+      kind: "dispatch",
+      itemId: item.id,
+      key: `drawer:${item.id}:${Date.now()}`,
+      priority: 60,
+      // Born parked: note() takes it from here, and it only resurfaces if the reader couldn't be run.
+      notBefore: new Date(Date.now() + 15 * 60_000).toISOString(),
+      prompt: `What should happen with: ${item.title}?`,
+      context: `You wrote in the item drawer: “${t.slice(0, 300)}”`,
+      options: [
+        { id: "go", label: "Send an agent", tone: "primary", effect: { type: "dispatch", action: "work" } },
+        { id: "when", label: "Scheduled for…", hint: "say when", effect: { type: "when" } },
+        { id: "done", label: "Done", effect: { type: "status", status: "done" } },
+        { id: "drop", label: "Drop it", tone: "quiet", effect: { type: "status", status: "dropped" } },
+      ],
+    });
+    if (!q) throw new Error("couldn't open a card for that note");
+    const r = await this.note(q.id, t);
+    return { ...r, routed: true };
+  }
+
   async applyNote(questionId: string, d: NoteDecision, text: string, now = new Date()) {
     const q = this.store.question(questionId);
     if (!q || q.status !== "open") return; // answered some other way meanwhile
@@ -589,6 +630,13 @@ export class Hub {
         cur.context = [cur.context, `**You asked:** ${text}\n**HQ:** ${reply}`].filter(Boolean).join("\n\n");
         this.store.putQuestion(cur);
       }
+    }
+    // A drawer note read as background: nobody asked a question, so there's no card to bring back.
+    if (q.key.startsWith("drawer:")) {
+      this.expireQuestion(q.id, `Note: ${text}`);
+      // reply-safe: context only, nothing runs; the reply is an answer.
+      this.toast(d.reply ? `${d.reply} Kept as context.` : "Kept as context.", "info");
+      return;
     }
     this.park(q, back.toISOString());
     // reply-safe: context only, nothing runs; the reply is an answer.
@@ -897,6 +945,19 @@ const SENT: Record<ActionKind, string> = {
   ticket: "file the ticket", reply: "send the message", email: "send the email", prep: "prep it",
   work: "do the work", verify: "check", draft: "draft it", publish: "publish it",
 };
+
+/** Verbs a drawer note opens with when it's an instruction, not background. */
+const IMPERATIVE = /^(please\s+|can you\s+|could you\s+|pls\s+)?(do|go|ask|check|chase|ping|nudge|send|email|message|dm|tell|remind|draft|write|file|raise|open|close|follow[- ]?up|find|look|research|verify|confirm|schedule|book|move|assign|reply|respond|post|share|update|fix|review|dispatch|drop|kill|mark|escalate|investigate|summari[sz]e|prep|set up|sort|handle|get|make|add|create|cancel|loop in|cc)\b/i;
+
+/**
+ * Is a drawer note an instruction? The shared AFFIRMATIVE words ("do it", "send", "verify"…) not opened by a no,
+ * or an imperative first word. "context:", "fyi", "note:" and "bg:" prefixes are background whatever follows.
+ */
+export function isInstruction(text: string): boolean {
+  const t = text.trim();
+  if (/^(context|fyi|note|bg|background|for context|nb)\b\s*[:\-—,]?/i.test(t)) return false;
+  return promisesAction(t) || IMPERATIVE.test(t) || quickNote(t, { options: [] }) !== undefined || /^(done|drop)\b/i.test(t);
+}
 
 /** "Sent an agent to send the message: <title>". True as soon as dispatch() returns: the job exists, nothing has run. */
 export function sentAgent(action: ActionKind, title: string) {

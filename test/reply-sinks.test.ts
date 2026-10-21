@@ -24,6 +24,7 @@ const ALLOW: { file: string; line: RegExp; why: string }[] = [
   { file: "server/hub.ts", line: /queuedNote\(q, d, item\?\.title\) \?\? d\.reply \?\? `Noted/, why: "queuedNote takes over when the pick queues work" },
   { file: "server/hub.ts", line: /toast\(d\.reply \?\? `\$\{label\(d\.status\)\}/, why: "setStatus already ran" },
   { file: "server/hub.ts", line: /toast\(d\.reply \? `\$\{d\.reply\} Back/, why: "context only: nothing runs, the reply is an answer" },
+  { file: "server/hub.ts", line: /toast\(d\.reply \? `\$\{d\.reply\} Kept as context/, why: "drawer note read as context: nothing runs, the reply is an answer" },
   { file: "server/agents.ts", line: /summary: reply \}\);/, why: "triage: applyTriage ran; missed or unbacked dispatches get a suffix; prompt words dispatches as handed off" },
   { file: "server/agents.ts", line: /summary: queuedNote\(q, out, item\?\.title\) \?\? out\.reply/, why: "queuedNote takes over when the note queues work" },
   { file: "server/agents.ts", line: /toast\(out\?\.reply \?\? "Couldn't tell when/, why: "failure path: the reply asks when" },

@@ -122,7 +122,8 @@ function noteFate(j: JournalEntry): string {
   // Older entries have no questionId. Without an item there's nothing to match on.
   if (!j.itemId) return "can't trace (no item, written before notes recorded their question)";
   const parked = asked.some((q) => q.itemId === j.itemId && q.status === "open" && q.notBefore && q.notBefore > j.at);
-  // A note added from the item drawer or by an agent, with no card on screen, is context by design.
+  // A drawer note that reads as background, or one added by an agent, with no card on screen, is context by design.
+  // Drawer instructions ("do it") go through the note reader on a card since 10-21, so they carry a questionId.
   const onCard = allQuestions.some((q) => q.itemId === j.itemId && q.createdAt <= j.at && (!q.answeredAt || q.answeredAt >= j.at));
   return parked ? "parked till morning (read as background)" : onCard ? "**nothing happened**" : "kept as context (no card open)";
 }
