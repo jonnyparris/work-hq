@@ -60,6 +60,12 @@
   get it too (in `launch.sh`, mode 0600), but only with 24 h left: the key command never re-mints
   while the env var is set, and a session can stay open for hours. A cmux turn that ends on an auth
   error raises the same "Login expired" card as a headless one; a clean turn retires it.
+  Without the env var, pi-plugin (0.18+, native pi) mints once, keeps the token in-process,
+  re-mints 15 min before `exp` and logs in again by itself when the session lapsed. Access JWTs
+  last 30 days, so the 24 h cut-off costs one `cloudflared` spawn per session start on the last day.
+  A token file the plugin re-reads (proposed 10-21) was dropped: it needs a plugin MR, puts the
+  token on disk, and like the env var it is an override the plugin's own re-login can't change, so
+  a lapse would wait on the server rewriting the file instead of being fixed in the session.
 - **Company-specific instructions are data, not code.** Which tools to call, how tickets are
   filed, what voice replies use: all in `prompts/*.md`, overridable per user (`promptsDir`).
   Output shapes the server parses stay in `src/server/prompts.ts`.
