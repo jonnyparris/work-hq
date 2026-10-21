@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { config, ROOT } from "./config.ts";
+import type { Job, Question } from "../shared/types.ts";
 
 export const BEACON_EXTENSION = resolve(ROOT, "pi/status-beacon.ts");
 
@@ -189,15 +190,22 @@ export function idleSince(jobId: string): number | undefined {
   }
 }
 
+/** Done, and no open card on its item (incl. its own "Agent finished" card): nothing left to look at in the session. */
+export function finishedCleanly(job: Pick<Job, "id" | "status" | "itemId"> | undefined, open: Pick<Question, "key" | "itemId">[]) {
+  if (job?.status !== "done") return false;
+  return !open.some((q) => q.key === `after:${job.id}` || (job.itemId !== undefined && q.itemId === job.itemId));
+}
+
 /** Which job workspaces have sat idle long enough to close. Pure, for tests. */
 export function pickIdle(
   workspaces: JobWorkspace[],
-  o: { now: number; idleMs: number; busy: Set<string>; idleSince: (jobId: string) => number | undefined },
+  o: { now: number; idleMs: number; busy: Set<string>; idleSince: (jobId: string) => number | undefined; idleMsFor?: (jobId: string) => number | undefined },
 ): JobWorkspace[] {
   return workspaces.filter((w) => {
     if (w.keep || o.busy.has(w.jobId)) return false;
     const since = o.idleSince(w.jobId);
-    return since !== undefined && o.now - since >= o.idleMs;
+    const ms = o.idleMsFor?.(w.jobId) ?? o.idleMs;
+    return since !== undefined && ms > 0 && o.now - since >= ms;
   });
 }
 

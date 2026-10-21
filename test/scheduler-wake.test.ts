@@ -15,3 +15,13 @@ test("no sweeps for 3 min after the laptop wakes; normal ticks are unaffected", 
   // DarkWake again 20 min later: grace restarts.
   expect(s.justWoke(wake + WAKE_GRACE_MS + 20 * 60_000)).toBe(true);
 });
+
+// 10-21: every boot swept the calendar and transcripts again, so a run of landings started a sweep per restart.
+test("boot sweeps only what's due by its last good run", () => {
+  const ok: Record<string, string | undefined> = { calendar: new Date(Date.now() - 30 * 60_000).toISOString(), transcripts: undefined };
+  const hub = { store: { syncState: (n: string) => ({ lastOkAt: ok[n] }) } };
+  const s = new Scheduler(hub as any, {} as any, {} as any, {} as any);
+  expect(s.bootDue("calendar", 120)).toBe(false); // 30 min ago, every 120
+  expect(s.bootDue("calendar", 20)).toBe(true);
+  expect(s.bootDue("transcripts", 30)).toBe(true); // never ran
+});

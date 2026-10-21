@@ -15,6 +15,7 @@ import { Hub } from "./hub.ts";
 import { MemoryClient } from "./memory.ts";
 import { MemorySync } from "./memory-sync.ts";
 import { Prompter, reviewUtterance } from "./prompter.ts";
+import { RestartGate } from "./restart.ts";
 import { Scheduler } from "./scheduler.ts";
 import { dictationEngine, transcribe } from "./transcribe.ts";
 
@@ -28,6 +29,8 @@ const prompter = new Prompter(hub);
 const checks = new Checks(hub);
 const scheduler = new Scheduler(hub, prompter, agents, memorySync, checks);
 const sandbox = config.demo ? undefined : new DemoSandbox();
+const restart = new RestartGate({ live: () => store.liveJobs(), command: config.demo ? undefined : RestartGate.commandFor() });
+scheduler.held = () => Boolean(restart.pending);
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (msg: string, status = 400) => json({ error: msg }, status);
@@ -194,6 +197,16 @@ const server = Bun.serve({
     },
 
     "/api/tick": { POST: () => handle(() => prompter.tick()) },
+
+    // `whq land` asks here instead of kickstarting: restart once no headless job would die (src/server/restart.ts).
+    // 409 = not this server's checkout, or no restart command configured: the caller runs its own.
+    "/api/restart": {
+      POST: async (req) => {
+        const b = await body<{ repo?: string; reason?: string }>(req);
+        if (!b.repo || !restart.handles(b.repo)) return bad("not this server's checkout", 409);
+        return json(restart.request(b.reason ?? "landing"));
+      },
+    },
 
     // Demo toggle. The live server starts the sandbox (a separate process on its own port and
     // database) and the browser hops over; "Exit demo" comes back here and stops it.

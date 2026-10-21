@@ -74,8 +74,14 @@
   server when a turn settles, blocks on input, or exits. Sweeps are read-only and headless,
   but stream tool calls into the Agents panel. `WORK_HQ_SWEEP_SURFACE=cmux` if you want those
   in cmux too. Every 10 minutes the scheduler closes job workspaces whose session has been idle
-  (beacon `idle`/`exited`) longer than `cmux.pruneIdleHours` (default 3). It never touches a
+  (beacon `idle`/`exited`) longer than `cmux.pruneIdleHours` (default 3), or `cmux.pruneDoneMinutes`
+  (default 20) when the job finished cleanly and nothing is open on its item. It never touches a
   workspace that is selected, pinned, still working, or waiting on you.
+- **Restarts wait for headless runs.** `whq land` on the server's own checkout asks the server
+  (`POST /api/restart`) instead of kickstarting it. The server runs its repo rule's `restart` once no
+  headless job (sweep, triage) is live, starts no new sweeps meanwhile, folds several landings into one
+  restart, and gives up waiting after 25 min (`src/server/restart.ts`). Boot sweeps only what's due by
+  its last good run, so a restart doesn't start a fresh calendar sweep for the next one to kill.
 - **Provider rate limits are waited out, not fatal.** Every pi launch with tools (cmux actions,
   sweeps) goes through one launch gate (`src/server/launch-gate.ts`) that spaces starts at least
   `pi.launchSpacingSec` apart (default 20). Tool-less triage skips the gate. If a run still dies

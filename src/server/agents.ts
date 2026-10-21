@@ -377,19 +377,28 @@ export class Agents implements Dispatcher {
     }
   }
 
-  /** Close cmux workspaces whose job finished and whose session has sat idle past the threshold. */
+  /**
+   * Close cmux workspaces whose session has sat idle past the threshold: `cmux.pruneDoneMinutes` (20) for a job
+   * that finished cleanly with no open card on its item, `cmux.pruneIdleHours` (3) for the rest (failed, or
+   * something still to answer, where you may want the session). 10-21: 31 finished sessions sat open, all under 3 h.
+   */
   pruneCmux(now = Date.now()) {
     const hours = config.cmux.pruneIdleHours;
-    if (config.demo || !config.cmux.bin || !(hours > 0)) return [];
+    const doneMin = config.cmux.pruneDoneMinutes;
+    if (config.demo || !config.cmux.bin || !(hours > 0 || doneMin > 0)) return [];
     const all = cmux.jobWorkspaces();
     if (!all) return [];
-    const idle = cmux.pickIdle(all, { now, idleMs: hours * 3600_000, busy: new Set(this.running.keys()), idleSince: cmux.idleSince });
+    const open = this.hub.store.questions("open");
+    const quick = (jobId: string) => doneMin > 0 && cmux.finishedCleanly(this.hub.store.job(jobId), open);
+    const idleMsFor = (jobId: string) => (quick(jobId) ? doneMin * 60_000 : hours * 3600_000);
+    const idle = cmux.pickIdle(all, { now, idleMs: hours * 3600_000, busy: new Set(this.running.keys()), idleSince: cmux.idleSince, idleMsFor });
     const closed = idle.filter((w) => cmux.closeWorkspace(w.id));
     for (const w of closed) {
       const job = this.hub.store.job(w.jobId);
-      if (job?.workspace) this.patch(job.id, { workspace: undefined, tail: [...job.tail, `▸ cmux workspace closed after ${hours}h idle`].slice(-12) });
+      const after = quick(w.jobId) ? `${doneMin} min` : `${hours}h`;
+      if (job?.workspace) this.patch(job.id, { workspace: undefined, tail: [...job.tail, `▸ cmux workspace closed after ${after} idle`].slice(-12) });
     }
-    if (closed.length) console.log(`[cmux] closed ${closed.length} idle workspace(s) (> ${hours}h): ${closed.map((w) => w.jobId).join(", ")}`);
+    if (closed.length) console.log(`[cmux] closed ${closed.length} idle workspace(s): ${closed.map((w) => w.jobId).join(", ")}`);
     return closed;
   }
 

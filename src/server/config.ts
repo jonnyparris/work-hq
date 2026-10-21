@@ -257,6 +257,8 @@ export const config = {
     group: pick<string>(undefined, "cmux.group", "Work HQ"),
     /** Close a job's cmux workspace once its pi session has been idle this long. 0 = never. The pi session file stays, so `pi --resume` brings it back. */
     pruneIdleHours: Number(pick("WORK_HQ_CMUX_PRUNE_HOURS", "cmux.pruneIdleHours", 3)),
+    /** Sooner for a job that finished cleanly with nothing left to ask: close after this many idle minutes. 0 = use pruneIdleHours. */
+    pruneDoneMinutes: Number(pick("WORK_HQ_CMUX_PRUNE_DONE_MINUTES", "cmux.pruneDoneMinutes", 20)),
   },
 
   /** Push-to-talk dictation ("Scheduled for…", the command-bar mic). See src/server/transcribe.ts. */

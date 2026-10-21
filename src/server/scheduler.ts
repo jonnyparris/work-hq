@@ -23,6 +23,8 @@ export class Scheduler {
   private last: Record<string, number> = {};
   private lastCadence = Date.now();
   private wokeAt = 0;
+  /** True while a restart waits for headless jobs (src/server/restart.ts): start no new sweeps meanwhile. */
+  held: () => boolean = () => false;
 
   constructor(
     private hub: Hub,
@@ -56,12 +58,25 @@ export class Scheduler {
     this.prompter.tick();
     this.last.memory = Date.now();
     if (config.sweeps.enabled && this.inWorkHours()) {
-      if (sweepOn("calendar")) void this.agents.sweep("calendar");
-      this.last.calendar = Date.now();
+      // Only what's due. Every boot used to sweep the calendar and transcripts again, so a run of restarts
+      // (landings) started a sweep each time, and the next restart killed it (10-21).
+      const cal = this.bootDue("calendar", config.sweeps.calendarEveryMin);
+      const tr = this.bootDue("transcripts", config.sweeps.transcriptsEveryMin);
+      if (cal && sweepOn("calendar")) void this.agents.sweep("calendar");
       // Stagger: transcripts a minute later so two cold pi starts don't collide.
-      if (sweepOn("transcripts")) setTimeout(() => void this.agents.sweep("transcripts"), 60_000);
-      this.last.transcripts = Date.now();
+      if (tr && sweepOn("transcripts")) setTimeout(() => void this.agents.sweep("transcripts"), cal ? 60_000 : 0);
     }
+  }
+
+  /**
+   * At boot: is this sweep due, going by its last good run (persisted)? Seeds the cadence clock either way,
+   * so a sweep that ran 10 min before a restart waits out the rest of its interval.
+   */
+  bootDue(name: "calendar" | "transcripts", everyMin: number, now = Date.now()) {
+    const ok = Date.parse(this.hub.store.syncState(name).lastOkAt ?? "");
+    const due = Number.isNaN(ok) || now - ok >= everyMin * 60_000;
+    this.last[name] = due ? now : ok;
+    return due;
   }
 
   inWorkHours(now = new Date()) {
@@ -109,7 +124,7 @@ export class Scheduler {
       this.last.memory = Date.now();
       await this.memory.importAll().catch((e) => console.error("[memory]", e.message));
     }
-    if (!config.sweeps.enabled || !this.inWorkHours() || woke) return;
+    if (!config.sweeps.enabled || !this.inWorkHours() || woke || this.held()) return;
     // Model gateway login lapsed: every pi run would fail. One retry every 30 min, else wait for the login.
     if (this.agents.gatewayBlocked()) return;
     // Cheap shell checks, once per workday, ahead of the morning plan.

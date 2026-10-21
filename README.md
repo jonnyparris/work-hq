@@ -215,7 +215,8 @@ The server runs from the main checkout, so restart it after `land`, not before.
 Dispatched work jobs don't have to remember any of this. List the repo under `repos` in your config and a work job
 on an item of that project gets its own worktree before pi starts; the prompt names it, and
 `bin/whq land <jobId>` lands it, runs `publish`, removes the worktree and runs `restart` (only when non-doc files
-changed), printing the SHA, mirror SHA and server PID. A job that ends with nothing committed has its worktree
+changed), printing the SHA, mirror SHA and server PID. For the server's own checkout the server does the restart itself,
+after any running sweep finishes. A job that ends with nothing committed has its worktree
 removed. For your own sessions in the main checkout, `git config core.hooksPath scripts/hooks` adds a pre-commit
 warning whenever other worktrees are live.
 
@@ -227,6 +228,6 @@ All optional. They override the config file.
 `WORK_HQ_CONFIG` (path, or `none`) · `WORK_HQ_PORT` · `WORK_HQ_DB` · `WORK_HQ_STATE` · `WORK_HQ_OWNER` ·
 `WORK_HQ_TZ` · `WORK_HQ_WORKSPACE` · `WORK_HQ_PROMPTS` · `WORK_HQ_MODEL` · `WORK_HQ_PI` ·
 `WORK_HQ_SWEEPS=off` · `WORK_HQ_DAY_START` / `_END` · `WORK_HQ_CALENDAR_EVERY` · `WORK_HQ_TRANSCRIPTS_EVERY` ·
-`WORK_HQ_POSTS_EVERY_DAYS` · `WORK_HQ_SWEEP_SURFACE=cmux` · `WORK_HQ_CMUX_PRUNE_HOURS` · `WORK_HQ_MEMORY_URL` · `WORK_HQ_MEMORY_TOKEN` ·
+`WORK_HQ_POSTS_EVERY_DAYS` · `WORK_HQ_SWEEP_SURFACE=cmux` · `WORK_HQ_CMUX_PRUNE_HOURS` · `WORK_HQ_CMUX_PRUNE_DONE_MINUTES` · `WORK_HQ_MEMORY_URL` · `WORK_HQ_MEMORY_TOKEN` ·
 `WORK_HQ_MEMORY_TOKEN_FILE` · `WORK_HQ_MEMORY_WRITE` · `WORK_HQ_CA_FILE` · `WORK_HQ_LAUNCHD_LABEL` · `WORK_HQ_TRACKER_URL`
 </details>

@@ -117,9 +117,10 @@
   "promptsDir": "~/.config/work-hq/prompts",
 
   // Dispatched agents run in cmux workspaces under this group. Once a job's session has sat idle
-  // pruneIdleHours, its workspace is closed (0 = never). Selected or pinned workspaces are left alone,
+  // pruneIdleHours, its workspace is closed (0 = never); a job that finished cleanly with no open card on its
+  // item goes after pruneDoneMinutes. Selected or pinned workspaces are left alone,
   // and the pi session file stays, so `pi --resume` brings it back.
-  "cmux": { "group": "Work HQ", "pruneIdleHours": 3 },
+  "cmux": { "group": "Work HQ", "pruneIdleHours": 3, "pruneDoneMinutes": 20 },
 
   // Push-to-talk dictation (command-bar mic, "Scheduled for…"). The 🍍 listener always uses Chrome's Web Speech.
   //   "auto"    → HEX if it's running (found via its local API, no setup), else "command" if set, else Web Speech

@@ -122,6 +122,47 @@ describe("whq land", () => {
     }
   });
 
+  // 10-21: the server's own checkout asks the server, which holds the restart while a sweep runs.
+  test("the server takes the restart: queued behind a sweep, no command run here", async () => {
+    const { main } = setup();
+    const wt = (await createWorktree({ dir: main, restart: "exit 1" }, jobId())) as WorktreeInfo;
+    writeFileSync(join(wt.dir, "a.ts"), "q\n");
+    git(wt.dir, "commit", "-q", "-am", "q");
+    let asked: any;
+    const server = Bun.serve({
+      port: 0,
+      fetch: async (req) => {
+        asked = await req.json();
+        return Response.json({ status: "queued", waitingFor: ["Read the calendar"], pid: 1 });
+      },
+    });
+    try {
+      const r = await land(wt, { port: server.port });
+      expect(r.ok).toBe(true);
+      expect(asked).toEqual({ repo: main, reason: wt.jobId });
+      expect(r.queuedBehind).toEqual(["Read the calendar"]);
+      expect(summarize(r)).toContain("restart queued behind Read the calendar");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("the server restarts now: waits for a new PID, no command run here", async () => {
+    const { main } = setup();
+    const wt = (await createWorktree({ dir: main, restart: "exit 1" }, jobId())) as WorktreeInfo;
+    writeFileSync(join(wt.dir, "a.ts"), "n\n");
+    git(wt.dir, "commit", "-q", "-am", "n");
+    const server = Bun.serve({ port: 0, fetch: () => Response.json({ status: "now", waitingFor: [], pid: 999999 }) });
+    try {
+      const r = await land(wt, { port: server.port });
+      expect(r.ok).toBe(true);
+      expect(r.restarted).toBe(true);
+      expect(r.pid).toBe(String(process.pid));
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("docs-only change: no restart", async () => {
     const { main } = setup();
     const wt = (await createWorktree({ dir: main, restart: "exit 1" }, jobId())) as WorktreeInfo;
