@@ -6,7 +6,7 @@ import { type Pin, pinQueue, takePin } from "../shared/pin.ts";
 import { Deck } from "./deck.tsx";
 import { AgentsPanel, Board, CoachingPanel, Drawer, Focus, JournalPage, JournalPanel, NowPanel, Timeline, TodayPanel } from "./parts.tsx";
 import { api, useHQ, useNow } from "./store.ts";
-import { Icon, ago } from "./ui.tsx";
+import { Icon, ago, useStoredFlag } from "./ui.tsx";
 import { Voice, chime, micSupported, speechSupported } from "./voice.ts";
 
 function App() {
@@ -25,8 +25,7 @@ function App() {
   const [skipped, setSkipped] = useState<string[]>(() => { try { return JSON.parse(sessionStorage.getItem("whq:skipped") ?? "[]"); } catch { return []; } });
   useEffect(() => { sessionStorage.setItem("whq:skipped", JSON.stringify(skipped.slice(-200))); }, [skipped]);
   const [deck, setDeck] = useState(false);
-  const [quick, setQuick] = useState(() => localStorage.getItem("whq:quickFirst") === "1");
-  useEffect(() => { localStorage.setItem("whq:quickFirst", quick ? "1" : "0"); }, [quick]);
+  const [quick, setQuick] = useStoredFlag("whq:quickFirst", false);
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.closest("input, textarea, select, [contenteditable]") || e.metaKey || e.ctrlKey || e.altKey) return;

@@ -1,6 +1,15 @@
-import { useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useEffect, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { blocks, detailBlocks } from "../shared/detail.ts";
 import type { ActionKind, ItemKind, QuestionKind } from "../shared/types.ts";
+
+/** A boolean kept in localStorage ("1"/"0") so it survives a reload. Private mode or a full store falls back to `fallback`. */
+export function useStoredFlag(key: string, fallback: boolean): [boolean, (f: boolean | ((x: boolean) => boolean)) => void] {
+  const [v, setV] = useState(() => {
+    try { const s = localStorage.getItem(key); return s === null ? fallback : s === "1"; } catch { return fallback; }
+  });
+  useEffect(() => { try { localStorage.setItem(key, v ? "1" : "0"); } catch { /* not persisted, still works */ } }, [key, v]);
+  return [v, setV];
+}
 
 const P: Record<string, ReactNode> = {
   task: <path d="M4 12l5 5L20 6" />,

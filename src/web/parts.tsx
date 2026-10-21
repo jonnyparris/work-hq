@@ -4,7 +4,7 @@ import { explainKey } from "../shared/detail.ts";
 import { type PlanGroup, planView, score, searchPlan } from "../shared/plan.ts";
 import { CalmScene } from "./calm.tsx";
 import { api } from "./store.ts";
-import { ACTIONS, Icon, KIND_LABEL, Md, Q_BADGE, ago, dictateInto, finishDictation, hhmm, people, shortUrl, stopDictation, ticketKeys, ticketUrl, whenLabel } from "./ui.tsx";
+import { ACTIONS, Icon, KIND_LABEL, Md, Q_BADGE, ago, dictateInto, finishDictation, hhmm, people, shortUrl, stopDictation, ticketKeys, ticketUrl, useStoredFlag, whenLabel } from "./ui.tsx";
 
 // ── Now + timeline ────────────────────────────────────────────────────────
 export function NowPanel({ now, events, workHours }: { now: Date; events: CalendarEvent[]; workHours: [number, number] }) {
@@ -468,8 +468,9 @@ const LANES: Array<{ id: string; label: string; test: (i: Item) => boolean }> = 
 export function Board({ items, selected, onOpen }: { items: Item[]; selected?: string; onOpen: (id: string) => void }) {
   const [lane, setLane] = useState<string>(() => (items.some((i) => i.status === "inbox") ? "inbox" : "proposed"));
   const [q, setQ] = useState("");
-  // Starts folded: the tabs (with counts) stay as a one-line header; a tab or the chevron opens it.
-  const [open, setOpen] = useState(false);
+  // Folded by default: the tabs (with counts) stay as a one-line header; a tab or the chevron opens it.
+  // Open/closed is remembered per browser (whq:open:lists), so a list you keep open stays open after a reload.
+  const [open, setOpen] = useStoredFlag("whq:open:lists", false);
   const L = LANES.find((l) => l.id === lane)!;
   const list = items
     .filter(L.test)
@@ -503,8 +504,9 @@ export function TodayPanel({ items, onOpen, selected }: { items: Item[]; onOpen:
   ).sort((a, b) => Number(a.status === "done") - Number(b.status === "done"));
   const [adding, setAdding] = useState("");
   const done = list.filter((i) => i.status === "done").length;
-  // Starts folded to a one-line header with the count; click it to see the list and the add box.
-  const [open, setOpen] = useState(false);
+  // Folded by default to a one-line header with the count; click it to see the list and the add box.
+  // Open/closed is remembered per browser (whq:open:committed).
+  const [open, setOpen] = useStoredFlag("whq:open:committed", false);
   return (
     <div className={`panel today ${open ? "" : "folded"}`}>
       <button className="panel-h fold-h" aria-expanded={open} onClick={() => setOpen((x) => !x)} title={open ? "Collapse" : "Show commitments"}>
