@@ -28,6 +28,8 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** Tool-less triage: no tools, no context files, skills or prompt templates, no session file. */
 const TRIAGE_FLAGS = ["-nt", "-nc", "-ns", "-np", "--no-session"];
 const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
+/** How long a cmux turn that ended on a model error gets to recover (new turn or report) before the job fails. */
+export const ERROR_GRACE_MS = 180_000;
 const RESUME_NUDGE = "Your last request failed on a provider rate limit. Carry on from where you stopped.";
 
 /** `slept`: ms the laptop slept mid-run (rpc runner). A failure after a sleep gets rerun, not counted as a stall. */
@@ -42,6 +44,8 @@ interface Running {
   /** cmux: rate-limit nudges sent so far, and the pending one (if any). */
   rateRetries?: number;
   retry?: { at: number; seq: number; sent?: number };
+  /** cmux: the turn ended on a model error at this beacon seq. pi keeps the session, so wait for it to recover or report. */
+  errored?: { at: number; seq: number };
 }
 
 export interface TriageResult {
@@ -318,6 +322,7 @@ export class Agents implements Dispatcher {
         }
         continue;
       }
+      if (b.state !== "idle" || (r.errored && b.seq !== r.errored.seq)) r.errored = undefined;
       if (b.state === "working" && job.status !== "running") {
         r.seenWork = true;
         this.patch(id, { status: "running" });
@@ -337,8 +342,19 @@ export class Agents implements Dispatcher {
         this.patch(id, { status: "running", tail: [...job.tail, `⏳ rate limited — retrying in ${Math.round(ms / 1000)} s (${r.rateRetries}/${config.pi.rateLimitRetries})`].slice(-12) });
       } else if (b.state === "idle" && b.seq >= 1 && (r.seenWork || job.status === "running")) {
         // Turn settled. The session stays open for follow-ups; the job is done.
+        // An errored turn isn't the end: pi keeps the session and the agent often recovers and reports.
+        // A report wins; otherwise wait ERROR_GRACE_MS for a new turn before calling it stopped.
+        if (b.outcome === "error" && !job.reported) {
+          if (!r.errored) {
+            r.errored = { at: Date.now(), seq: b.seq };
+            this.line(id, `⚠ ${b.detail ?? "model error"} — giving the session ${Math.round(ERROR_GRACE_MS / 60_000)} min to recover`);
+            continue;
+          }
+          if (Date.now() - r.errored.at < ERROR_GRACE_MS) continue;
+        }
         this.running.delete(id);
-        this.finishAction(id, { ok: b.outcome !== "error", text: "", error: b.outcome === "error" ? b.detail ?? "model error" : undefined });
+        const failed = b.outcome === "error" && !job.reported;
+        this.finishAction(id, { ok: !failed, text: "", error: failed ? b.detail ?? "model error" : undefined });
       } else if (b.state === "exited") {
         this.running.delete(id);
         this.finishAction(id, { ok: job.reported ?? false, text: "", error: job.reported ? undefined : `pi exited (${b.code ?? "?"})` });

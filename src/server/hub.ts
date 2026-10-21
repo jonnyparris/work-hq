@@ -792,7 +792,13 @@ export class Hub {
     if (r.events) this.setEvents(r.events, r.eventsThrough);
     if (job) {
       const tail = r.summary ? [...job.tail, `✓ ${r.summary}`].slice(-12) : job.tail;
-      this.putJob({ ...job, summary: r.summary ?? job.summary, tail, reported: true });
+      // A job already marked failed (e.g. a cmux turn errored, then the agent recovered) that now
+      // reports a result isn't stopped: mark it done and retire the "Agent stopped" card.
+      const recovered = job.status === "failed" && r.status !== "failed" && r.status !== "progress";
+      this.putJob({ ...job, summary: r.summary ?? job.summary, tail, reported: true, ...(recovered ? { status: "done" as const, error: undefined } : {}) });
+      if (recovered) {
+        for (const q of this.store.questions("open").filter((q) => q.key === `after:${job.id}`)) this.expireQuestion(q.id, "agent reported");
+      }
     }
     return { created: created.map((i) => i.id), ...(asked.length ? { questions: asked } : {}) };
   }
