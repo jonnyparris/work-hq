@@ -147,7 +147,7 @@ work arriving from two places (memory rewords a todo, a transcript finds what an
 one item. Something you dropped isn't brought back under a new title. Details: [architecture](docs/ARCHITECTURE.md#duplicates-across-sources-srcserverdedupets).
 
 Set `labels.trackerUrl` and every ticket key (`PAY-123`) in a question, a card or an item becomes a link to it. If it's a JIRA `/browse/` URL (or you set `jira.hosts`), waiting items whose linked tickets are all done also
-reach the "Ticket done" card; lookups use `cloudflared access token`, and a failed one keeps the item off.
+(links only, not the source URL, which is usually the parent ticket) reach the "Ticket done" card; lookups use `cloudflared access token`, and a failed one keeps the item off.
 
 ### Let your reflection tune it
 

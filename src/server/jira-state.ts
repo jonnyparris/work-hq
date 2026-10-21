@@ -42,10 +42,14 @@ export function parseJiraRef(u: string, hosts: ReadonlySet<string> = JIRA_HOSTS)
   }
 }
 
-/** The item's JIRA refs: its links, then its source URL. Deduped. */
-export function jiraRefs(it: Pick<Item, "links" | "source">, hosts: ReadonlySet<string> = JIRA_HOSTS): JiraRef[] {
+/**
+ * The item's JIRA refs: its links only, deduped. Not its source URL: that's usually the ticket the item came out of
+ * (a parent feature, a review, a "verify after deploy"), so its closing says nothing about this item. 10-21: ETI-1075
+ * (Resolved) put an untested follow-up on the "Ticket done" card; 4 of 5 open source-URL tickets were context like that.
+ */
+export function jiraRefs(it: Pick<Item, "links">, hosts: ReadonlySet<string> = JIRA_HOSTS): JiraRef[] {
   const out = new Map<string, JiraRef>();
-  for (const u of [...(it.links ?? []), it.source.url ?? ""]) {
+  for (const u of it.links ?? []) {
     const r = parseJiraRef(u, hosts);
     if (r && !out.has(r.url)) out.set(r.url, r);
   }
@@ -76,11 +80,11 @@ export class JiraStates {
     this.cache = new RefCache(fetch, (i) => (i.state === "unknown" ? FAIL_TTL : TTL), { state: "unknown" });
   }
 
-  refs(it: Pick<Item, "links" | "source">) {
+  refs(it: Pick<Item, "links">) {
     return jiraRefs(it, this.hosts);
   }
 
-  verdict(it: Pick<Item, "links" | "source">): JiraVerdict {
+  verdict(it: Pick<Item, "links">): JiraVerdict {
     const now = Date.now();
     const refs = this.refs(it);
     if (!refs.length) return undefined;

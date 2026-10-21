@@ -658,7 +658,7 @@ describe("waiting items whose JIRA tickets are done share the merged card", () =
     const q = card()!;
     expect(q.prompt).toBe("2 waiting items: their MRs merged or tickets closed. Mark all done?");
     expect(q.badge).toBe("Merged / done");
-    expect(q.context).toBe("- geo-egress — PAY-1 Done 10-14.\n- fix pay-2 — api-worker!17 merged 10-13; PAY-2 Closed 10-15; PAY-1 Done 10-14.");
+    expect(q.context).toBe("- geo-egress — PAY-1 Done 10-14.\n- fix pay-2 — api-worker!17 merged 10-13; PAY-2 Closed 10-15.");
     await hub.answer(q.id, "done");
     expect(hub.store.item(a.id)!.status).toBe("done");
     expect(hub.store.item(b.id)!.status).toBe("done");
@@ -673,6 +673,14 @@ describe("waiting items whose JIRA tickets are done share the merged card", () =
     expect(card()!.badge).toBe("Ticket done");
     expect(card()!.options[0]!.label).toBe("Done (ticket closed 10-14)");
     expect(s.calls).toEqual(["PAY-1"]);
+  });
+
+  test("a done ticket only in the source URL doesn't count: it's the parent, not the work", async () => {
+    const s = setup();
+    hub.createItem({ title: "live-test follow-up", status: "waiting", source: { type: "agent", url: J("PAY-1") } });
+    await run(s);
+    expect(card()).toBeUndefined();
+    expect(s.calls).toEqual([]);
   });
 
   test("an open MR keeps a done-ticket item off the card without waiting on JIRA", async () => {
