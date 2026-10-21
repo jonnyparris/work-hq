@@ -4,6 +4,7 @@
 //   action  — interactive pi in a cmux workspace. Anything the owner dispatches. Highly visible.
 
 import { type BulkRequest, deferHorizon } from "../shared/batch.ts";
+import { explainKey, sentences } from "../shared/detail.ts";
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -17,7 +18,7 @@ import { GatewayToken } from "./gateway-token.ts";
 import { backoffMs, isRateLimited, LaunchGate } from "./launch-gate.ts";
 import { assertShortArgs, PiPool, PiRpc, piStamp, type RunOutcome } from "./pi-rpc.ts";
 import {
-  actionPrompt, calendarPrompt, calendarSweepPrompt, notePrompt, openUrl, postSweepPrompt, schedulePrompt, SITE_LINK, SITE_POSTS,
+  actionPrompt, calendarPrompt, calendarSweepPrompt, explainPrompt, notePrompt, openUrl, postSweepPrompt, schedulePrompt, SITE_LINK, SITE_POSTS,
   transcriptSweepPrompt, triagePrompt, WIKI_DRAFTS,
 } from "./prompts.ts";
 import { cleanupWorktree, createWorktree, repoFor, type WorktreeResult } from "./worktrees.ts";
@@ -655,6 +656,42 @@ export class Agents implements Dispatcher {
     // reply-safe: queuedNote covers every queued path; out.reply only shows when the change is synchronous.
     this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: queuedNote(q, out, item?.title) ?? out.reply ?? "Read the note" });
     return out;
+  }
+
+  // ── "Explain simply" — a plain-English read of an item ─────────────────────
+  private explaining = new Map<string, Promise<Item>>();
+
+  /** Writes `item.explain` and returns the item. One run per item at a time; a second click waits on the first. Throws on failure. */
+  explainItem(itemId: string): Promise<Item> {
+    const running = this.explaining.get(itemId);
+    if (running) return running;
+    const p = this.runExplain(itemId).finally(() => this.explaining.delete(itemId));
+    this.explaining.set(itemId, p);
+    return p;
+  }
+
+  private async runExplain(itemId: string): Promise<Item> {
+    const item = this.hub.store.item(itemId);
+    if (!item) throw new Error("no such item");
+    const key = explainKey(item);
+    if (config.demo) {
+      const what = item.detail ? sentences(item.detail)[0] ?? item.title : item.title;
+      return this.hub.updateItem(itemId, { explain: { at: nowIso(), for: key, what, why: "Demo mode: this is the first sentence of the detail, not a model's read." } });
+    }
+    const job = this.newJob("triage", "explain", `Explain: ${item.title}`.slice(0, 80), "headless", itemId);
+    const r = await this.runHeadless(job.id, explainPrompt(item, { now: new Date() }), { tools: false, thinking: config.pi.triageThinking, perms: false, timeoutMin: 3 });
+    const out = extractJson<{ what?: string; why?: string; done?: string; terms?: Array<{ term?: string; meaning?: string }> }>(r.text);
+    if (!r.ok || !out?.what?.trim()) {
+      const error = r.error ?? "couldn't parse the explanation";
+      this.patch(job.id, { status: "failed", error, finishedAt: nowIso() });
+      throw new Error(error);
+    }
+    const clean = (s?: string) => s?.trim() || undefined;
+    const terms = (out.terms ?? []).filter((t) => t.term?.trim() && t.meaning?.trim()).slice(0, 4).map((t) => ({ term: t.term!.trim(), meaning: t.meaning!.trim() }));
+    this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: out.what.trim() });
+    return this.hub.updateItem(itemId, {
+      explain: { at: nowIso(), for: key, what: out.what.trim(), why: clean(out.why), done: clean(out.done), ...(terms.length ? { terms } : {}) },
+    });
   }
 
   // ── "Scheduled for…" — the owner says when, in words ──────────────────────

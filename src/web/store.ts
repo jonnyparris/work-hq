@@ -101,6 +101,7 @@ export const api = {
   item: (id: string) => call<Item>("GET", `/api/items/${id}`),
   setStatus: (id: string, status: ItemStatus, note?: string) => call("PATCH", `/api/items/${id}`, { status, note }),
   patch: (id: string, patch: Record<string, unknown>) => call("PATCH", `/api/items/${id}`, patch),
+  explain: (id: string) => call<Item>("POST", `/api/items/${id}/explain`),
   dispatch: (id: string, action: ActionKind, note?: string) => call("POST", `/api/items/${id}/dispatch`, { action, note }),
   schedule: (id: string, at: string, label?: string) => call("POST", `/api/items/${id}/schedule`, { at, label }),
   add: (title: string, status: ItemStatus = "today") => call("POST", "/api/items", { title, status }),

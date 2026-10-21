@@ -423,3 +423,32 @@ function laterThisWeek(now: Date) {
   const t = deferTargets(now).find((x) => new Date(x.at).getDay() === want) ?? deferTargets(now).at(-1)!;
   return `${t.label} (${t.at})`;
 }
+
+/** "Explain simply" in the item drawer. No tools: it explains only what the item already says. */
+export function explainPrompt(it: Item, ctx: { now: Date }) {
+  const notes = (it.notes ?? []).slice(-5).map((n) => `- ${n.who === "hq" ? "Work HQ" : owner.name}: ${n.text}`).join("\n");
+  return `You explain an item from ${owner.name}'s work list in plain English. They opened it and the text below is not clear to them.
+Now: ${ctx.now.toString()}
+
+Title: ${it.title}
+Kind: ${it.kind} · status: ${it.status}${it.project ? ` · project: ${it.project}` : ""}
+Source: ${it.source.type}${it.source.label ? ` · ${it.source.label}` : ""}${it.source.quote ? `\nQuote from the source: "${it.source.quote}"` : ""}${it.links?.length ? `\nLinks: ${it.links.join(", ")}` : ""}
+Detail:
+"""
+${(it.detail ?? "(none)").slice(0, 4000)}
+"""${notes ? `\nNotes on it:\n${notes}` : ""}
+
+Rules:
+- Use only what is above. If something is unclear or missing, say so in plain words. Do not invent facts, people or dates.
+- Write to ${owner.name} as "you" (they are the reader), never in the third person.
+- Write for a smart reader who has forgotten the context. Short sentences, active voice, no semicolons or em-dashes.
+- Leave out job ids, timestamps and SHAs unless they are the point. Keep ticket keys, MR numbers and product names.
+- "what": one or two sentences. What this item is, in everyday words.
+- "why": one or two sentences. Why it is on ${owner.name}'s list, or what happens if nobody does it.
+- "done": one sentence. What finished looks like. Omit if the text gives no clue.
+- "terms": up to 3 technical terms or acronyms from the item that a non-specialist would not know, each with a meaning under 12 words.
+  Skip everyday work words (1-1, MR, PR, ticket, standup), names, project keys, and anything whose meaning you would have to guess. Usually empty.
+
+OUTPUT: ONLY JSON, no prose, no fences:
+{"what": "...", "why": "...", "done": "...", "terms": [{"term": "...", "meaning": "..."}]}`;
+}

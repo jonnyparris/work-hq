@@ -1,4 +1,5 @@
-import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import { useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { blocks, detailBlocks } from "../shared/detail.ts";
 import type { ActionKind, ItemKind, QuestionKind } from "../shared/types.ts";
 
 const P: Record<string, ReactNode> = {
@@ -57,8 +58,7 @@ export function ticketKeys(text = ""): string[] {
 const stopClick = (e: ReactMouseEvent) => e.stopPropagation();
 
 /** Inline markdown: links, bold, code, bare URLs, ticket keys. Enough for memory text. */
-export function Md({ text, className = "md", inline }: { text?: string; className?: string; inline?: boolean }) {
-  if (!text) return null;
+function inlineMd(text: string, key = ""): ReactNode[] {
   const out: ReactNode[] = [];
   const re = /\[([^\]]+)\]\((https?:[^)\s]+)\)|\*\*([^*]+)\*\*|`([^`]+)`|(https?:\/\/[^\s)]+)|\b([A-Z][A-Z0-9]{1,9}-\d{1,7})\b/g;
   let last = 0;
@@ -68,15 +68,50 @@ export function Md({ text, className = "md", inline }: { text?: string; classNam
     const ticket = m[6] ? ticketUrl(m[6]) : undefined;
     if (m[6] && !ticket) continue; // looks like a key, isn't (or no tracker configured): leave as text
     if (m.index > last) out.push(text.slice(last, m.index));
-    if (m[1]) out.push(<a key={k++} href={m[2]} target="_blank" rel="noreferrer" onClick={stopClick}>{m[1]}</a>);
-    else if (m[3]) out.push(<strong key={k++}>{m[3]}</strong>);
-    else if (m[4]) out.push(<code key={k++}>{m[4]}</code>);
-    else if (m[5]) out.push(<a key={k++} href={m[5]} target="_blank" rel="noreferrer" onClick={stopClick}>{shortUrl(m[5])}</a>);
-    else if (ticket) out.push(<a key={k++} className="ticket" href={ticket} target="_blank" rel="noreferrer" onClick={stopClick} title={`Open ${m[6]}`}>{m[6]}</a>);
+    const id = `${key}${k++}`;
+    if (m[1]) out.push(<a key={id} href={m[2]} target="_blank" rel="noreferrer" onClick={stopClick}>{m[1]}</a>);
+    else if (m[3]) out.push(<strong key={id}>{m[3]}</strong>);
+    else if (m[4]) out.push(<code key={id}>{m[4]}</code>);
+    else if (m[5]) out.push(<a key={id} href={m[5]} target="_blank" rel="noreferrer" onClick={stopClick}>{shortUrl(m[5])}</a>);
+    else if (ticket) out.push(<a key={id} className="ticket" href={ticket} target="_blank" rel="noreferrer" onClick={stopClick} title={`Open ${m[6]}`}>{m[6]}</a>);
     last = re.lastIndex;
   }
   if (last < text.length) out.push(text.slice(last));
-  return inline ? <span className={className}>{out}</span> : <div className={className}>{out}</div>;
+  return out;
+}
+
+/**
+ * Markdown-ish text. `inline`: one run of inline markup. Otherwise blocks: paragraphs, line breaks, "- " / "1. "
+ * lists, "# " headings (src/shared/detail.ts). `skim`: also split one long prose paragraph into a lead sentence
+ * and bullets. `collapseAfter`: show that many bullets, then "Show all".
+ */
+export function Md({ text, className = "md", inline, skim, collapseAfter }: { text?: string; className?: string; inline?: boolean; skim?: boolean; collapseAfter?: number }) {
+  const [open, setOpen] = useState(false);
+  if (!text) return null;
+  if (inline) return <span className={className}>{inlineMd(text)}</span>;
+  const bs = skim ? detailBlocks(text) : blocks(text);
+  const bullets = bs.reduce((n, b) => n + (b.type === "ul" || b.type === "ol" ? b.items.length : 0), 0);
+  let budget = collapseAfter && !open && bullets > collapseAfter + 1 ? collapseAfter : Infinity;
+  const hidden = Number.isFinite(budget) ? bullets - budget : 0;
+  const out: ReactNode[] = [];
+  bs.forEach((b, i) => {
+    if (b.type === "h") out.push(<div key={i} className="md-h">{inlineMd(b.text, `${i}-`)}</div>);
+    else if (b.type === "p") out.push(<p key={i}>{b.lines.flatMap((l, j) => (j ? [<br key={`br${j}`} />, ...inlineMd(l, `${i}-${j}-`)] : inlineMd(l, `${i}-${j}-`)))}</p>);
+    else {
+      if (budget <= 0) return;
+      const items = b.items.slice(0, budget);
+      budget -= items.length;
+      const Tag = b.type;
+      out.push(<Tag key={i}>{items.map((t, j) => <li key={j}>{inlineMd(t, `${i}-${j}-`)}</li>)}</Tag>);
+    }
+  });
+  return (
+    <div className={`${className} md-blocks`}>
+      {out}
+      {hidden > 0 && <button className="md-more" onClick={(e) => { e.stopPropagation(); setOpen(true); }}>Show {hidden} more</button>}
+      {open && collapseAfter && bullets > collapseAfter + 1 && <button className="md-more" onClick={(e) => { e.stopPropagation(); setOpen(false); }}>Show less</button>}
+    </div>
+  );
 }
 
 export function shortUrl(u: string) {

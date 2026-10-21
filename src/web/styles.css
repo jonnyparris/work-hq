@@ -591,3 +591,33 @@ a.ticket:hover { text-decoration-color: currentColor; }
 .coaching .coach-track > span:last-child { color: var(--text-3); white-space: nowrap; }
 .coaching .coach-why { margin-top: 8px; font-size: 12px; color: var(--text-2); display: grid; gap: 3px; }
 .coaching .coach-h { font: 600 10px/1 var(--font); letter-spacing: .12em; text-transform: uppercase; color: var(--text-3); margin: 6px 0 2px; }
+
+/* block markdown (Md non-inline): paragraphs, lists, headings */
+.md-blocks p { margin: 0 0 6px; }
+.md-blocks p:last-child, .md-blocks ul:last-child, .md-blocks ol:last-child { margin-bottom: 0; }
+.md-blocks ul, .md-blocks ol { margin: 2px 0 8px; padding-left: 18px; }
+.md-blocks li { margin: 3px 0; }
+.md-blocks li::marker { color: var(--text-3); }
+.md-h { color: var(--text); font-weight: 600; margin: 8px 0 4px; }
+.md-more { margin-top: 2px; font-size: 12px; color: var(--text-3); text-decoration: underline; text-underline-offset: 2px; }
+.md-more:hover { color: var(--text); }
+
+/* drawer: why this exists */
+.sec-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.sec-h h4 { margin: 0; }
+.why .md-blocks > p:first-child { color: var(--text); }
+.why .quote-block { margin: 0 0 10px; }
+.quote-block cite { display: block; margin-top: 4px; font-style: normal; font-size: 11.5px; color: var(--text-3); }
+.quote-block cite::before { content: "— "; }
+.explain { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 6px; }
+.explain.stale { opacity: .7; }
+.explain-row { display: grid; grid-template-columns: 52px 1fr; gap: 8px; font-size: 13.5px; line-height: 1.5; }
+.explain-row b { font: 600 11px/1.9 var(--font); letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
+.explain-row .md { color: var(--text); }
+.terms { margin: 4px 0 0; padding-top: 6px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; line-height: 1.5; }
+.terms > div { display: block; }
+.terms dt { display: inline; font: 12px var(--mono); color: var(--text); }
+.terms dt::after { content: " — "; font-family: var(--font); color: var(--text-3); }
+.terms dd { display: inline; margin: 0; color: var(--text-2); }
+.explain-foot { font-size: 11px; color: var(--text-3); }
+.empty-why { font-size: 12.5px; color: var(--text-3); }

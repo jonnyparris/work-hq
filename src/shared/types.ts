@@ -82,8 +82,24 @@ export interface Item {
    * its own source, so without this the proposal card (prompter §8) never fires for it.
    */
   proposalOf?: string;
+  /** "Explain simply" in the drawer: a plain-English read of title + detail + quote. `for` = what it was written from. */
+  explain?: ItemExplain;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ItemExplain {
+  at: string;
+  /** Fingerprint of the title, detail and quote it explained. A mismatch means the item changed since. */
+  for: string;
+  /** What this is, in one or two plain sentences. */
+  what: string;
+  /** Why it matters / why it's on your list. */
+  why?: string;
+  /** What "done" looks like. */
+  done?: string;
+  /** Jargon from the item, each explained in a few words. */
+  terms?: Array<{ term: string; meaning: string }>;
 }
 
 export interface ItemNote {

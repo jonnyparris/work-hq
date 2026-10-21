@@ -101,6 +101,9 @@ const server = Bun.serve({
         }),
     },
 
+    // "Explain simply" in the drawer: waits for the plain-English read (a few seconds, no tools) and returns the item.
+    "/api/items/:id/explain": { POST: (req) => handle(() => agents.explainItem(req.params.id)) },
+
     "/api/items/:id/dispatch": {
       POST: (req) =>
         handle(async () => {

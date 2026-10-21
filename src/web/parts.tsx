@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CalendarEvent, Coaching, CoachOutcome, Item, ItemStatus, Job, JournalEntry, Question, SyncState } from "../shared/types.ts";
+import { explainKey } from "../shared/detail.ts";
 import { CalmScene } from "./calm.tsx";
 import { api } from "./store.ts";
 import { ACTIONS, Icon, KIND_LABEL, Md, Q_BADGE, ago, dictateInto, finishDictation, hhmm, people, shortUrl, stopDictation, ticketKeys, ticketUrl, whenLabel } from "./ui.tsx";
@@ -653,6 +654,57 @@ export function JournalPage({ journal, journalPath, onOpenItem }: { journal: Jou
 }
 
 // ── Drawer ────────────────────────────────────────────────────────────────
+/**
+ * The context first: a plain-English read on demand ("Explain simply", no tools, a few seconds), the source
+ * quote with where it came from, then the detail split for skimming (lead sentence + bullets, long ones folded).
+ */
+function WhySection({ it }: { it: Item }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | undefined>();
+  useEffect(() => { setBusy(false); setErr(undefined); }, [it.id]);
+  const ex = it.explain;
+  const stale = Boolean(ex && ex.for !== explainKey(it));
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    setErr(undefined);
+    try { await api.explain(it.id); }
+    catch (e) { setErr((e as Error).message); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="sec why">
+      <div className="sec-h">
+        <h4>Why this exists</h4>
+        <button className="mini" disabled={busy} onClick={run} title="A short plain-English read of this item. Uses only what's written here.">
+          {busy ? <><span className="thinking"><i /><i /><i /></span> Explaining…</> : ex ? (stale ? "Explain again (changed)" : "Explain again") : "Explain simply"}
+        </button>
+      </div>
+      {ex && (
+        <div className={`explain ${stale ? "stale" : ""}`}>
+          <div className="explain-row"><b>What</b><Md inline className="md" text={ex.what} /></div>
+          {ex.why && <div className="explain-row"><b>Why</b><Md inline className="md" text={ex.why} /></div>}
+          {ex.done && <div className="explain-row"><b>Done</b><Md inline className="md" text={ex.done} /></div>}
+          {ex.terms?.length ? (
+            <dl className="terms">
+              {ex.terms.map((t) => <div key={t.term}><dt>{t.term}</dt><dd>{t.meaning}</dd></div>)}
+            </dl>
+          ) : null}
+          <div className="explain-foot">Plain-English read · {ago(ex.at)}{stale ? " · the item changed since" : ""}</div>
+        </div>
+      )}
+      {err && <div className="ctx" style={{ color: "var(--coral)" }}>Couldn't explain: {err}</div>}
+      {it.source.quote && (
+        <blockquote className="quote-block">
+          “{it.source.quote}”
+          <cite>{it.source.label ?? it.source.type}</cite>
+        </blockquote>
+      )}
+      {it.detail ? <Md skim collapseAfter={5} text={it.detail} /> : !it.source.quote && !ex && <div className="empty-why">No detail written down. “Explain simply” works from the title alone.</div>}
+    </div>
+  );
+}
+
 const STATUSES: ItemStatus[] = ["inbox", "proposed", "today", "scheduled", "doing", "waiting", "done", "dropped"];
 
 export function Drawer({ it, journal, jobs, onClose }: { it: Item; journal: JournalEntry[]; jobs: Job[]; onClose: () => void }) {
@@ -709,6 +761,8 @@ export function Drawer({ it, journal, jobs, onClose }: { it: Item; journal: Jour
           )}
         </div>
         <div className="drawer-b">
+          <WhySection it={it} />
+
           <div className="sec">
             <h4>State</h4>
             <div className="status-row">
@@ -760,14 +814,6 @@ export function Drawer({ it, journal, jobs, onClose }: { it: Item; journal: Jour
               {at && <button className="st on" onClick={() => api.schedule(it.id, new Date(at).toISOString())}>Set</button>}
             </div>
           </div>
-
-          {(it.source.quote || it.detail) && (
-            <div className="sec">
-              <h4>Why this exists</h4>
-              {it.source.quote && <div className="quote-block">“{it.source.quote}”</div>}
-              <Md text={it.detail} />
-            </div>
-          )}
 
           <div className="sec">
             <h4>Source</h4>
