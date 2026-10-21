@@ -34,6 +34,9 @@ function setup() {
 
 const item = (p: Partial<Item>): Item => ({ id: "it_1", title: "Fix the thing", kind: "task", status: "inbox", source: { type: "agent" }, createdAt: "", updatedAt: "", ...p }) as Item;
 let n = 0;
+// Git-heavy tests (setup + worktree + land) take 1.4-3.5 s idle, close to bun's 5 s default once other suites
+// run in parallel; worktree.test.ts flaked the same way (10-21, bb78e82).
+const SLOW = 30_000;
 const jobId = () => `job_t${Date.now().toString(36)}${n++}`;
 
 describe("repoFor", () => {
@@ -62,7 +65,7 @@ describe("server-made worktree", () => {
     expect(wt.dir).toBe(join(root, `repo-${slugFor(id)}`));
     expect(git(wt.dir, "symbolic-ref", "--short", "HEAD")).toBe(`wt/${slugFor(id)}`);
     expect(readWorktree(id)).toEqual(wt);
-  });
+  }, SLOW);
 
   test("a repo that isn't there gives an error result, not a throw", async () => {
     const wt = await createWorktree({ dir: "/nope/never" }, jobId());
@@ -82,7 +85,7 @@ describe("server-made worktree", () => {
     const failed = actionPrompt(id, item({}), "work", undefined, { repo: main, slug: "job-x", error: "boom" });
     expect(failed).toContain("couldn't\nmake a worktree for it (boom)");
     expect(actionPrompt(id, item({}), "work")).not.toContain("WORKTREE");
-  });
+  }, SLOW);
 
   test("cleanup removes an untouched worktree and keeps one with commits", async () => {
     const { main } = setup();
@@ -96,7 +99,7 @@ describe("server-made worktree", () => {
     expect(existsSync(wa.dir)).toBe(false);
     expect(await cleanupWorktree(b)).toBe("kept");
     expect(existsSync(wb.dir)).toBe(true);
-  });
+  }, SLOW);
 });
 
 describe("whq land", () => {
@@ -120,7 +123,7 @@ describe("whq land", () => {
     } finally {
       server.stop(true);
     }
-  });
+  }, SLOW);
 
   // 10-21: the server's own checkout asks the server, which holds the restart while a sweep runs.
   test("the server takes the restart: queued behind a sweep, no command run here", async () => {
@@ -145,7 +148,7 @@ describe("whq land", () => {
     } finally {
       server.stop(true);
     }
-  });
+  }, SLOW);
 
   test("the server restarts now: waits for a new PID, no command run here", async () => {
     const { main } = setup();
@@ -161,7 +164,7 @@ describe("whq land", () => {
     } finally {
       server.stop(true);
     }
-  });
+  }, SLOW);
 
   test("docs-only change: no restart", async () => {
     const { main } = setup();
@@ -172,7 +175,7 @@ describe("whq land", () => {
     const r = await land(wt);
     expect(r.ok).toBe(true);
     expect(r.restarted).toBe(false);
-  });
+  }, SLOW);
 
   test("a failed check lands nothing and leaves the worktree for a fix", async () => {
     const { main } = setup();
@@ -185,7 +188,7 @@ describe("whq land", () => {
     expect(r.error).toContain("check failed");
     expect(git(main, "rev-parse", "HEAD")).toBe(before);
     expect(existsSync(wt.dir)).toBe(true);
-  });
+  }, SLOW);
 
   test("a failed publish keeps the worktree so a reworded commit can land again", async () => {
     const { main } = setup();
@@ -197,7 +200,7 @@ describe("whq land", () => {
     expect(r.sha).toBeTruthy();
     expect(r.error).toContain("publish failed: denylist matches");
     expect(existsSync(wt.dir)).toBe(true);
-  });
+  }, SLOW);
 
   test("a retry after a failed publish still restarts for code the first attempt pushed", async () => {
     const { main } = setup();
@@ -218,7 +221,7 @@ describe("whq land", () => {
     } finally {
       server.stop(true);
     }
-  });
+  }, SLOW);
 });
 
 describe("pre-commit hook", () => {
@@ -236,5 +239,5 @@ describe("pre-commit hook", () => {
     expect(r.err).toContain("other worktrees are live");
     expect(r.err).toContain(wt.dir);
     expect(hook(wt.dir)).toEqual({ code: 0, err: "" });
-  });
+  }, SLOW);
 });
