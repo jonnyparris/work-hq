@@ -71,13 +71,16 @@ test("a run that goes silent after agent_start leaves rpc.jsonl ending in agent_
   const w = new PiRpc({ bin: FAKE, args: [], cwd: import.meta.dir, env: process.env as Record<string, string>, logPath });
   live.push(w);
   w.start();
+  // Warm up first: the 300 ms idle clock starts at run(), and a cold fake pi under load can take longer than
+  // that to boot, so the run "stalls" before agent_start ever arrives (10-20 flake, Received: undefined).
+  await w.request("get_state");
   const r = await w.run("SLOW", { timeoutMs: 60_000, idleMs: 300, killAfterMs: 500 });
   expect(r.stalled).toBe(true);
   expect(r.lastEvent?.type).toBe("agent_start");
   expect(rpcError(r, 30, 10)).toMatch(/^stalled: no activity for 10 min \(last event: agent_start at \d\d:\d\d:\d\dZ\)$/);
   const lines = readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
   // Everything up to the stall: our prompt, pi's reply, agent_start. Then our abort.
-  const upToStall = lines.slice(0, lines.findIndex((l) => l.dir === "out" && l.type === "abort"));
+  const upToStall = lines.slice(lines.findIndex((l) => l.dir === "out" && l.type === "prompt"), lines.findIndex((l) => l.dir === "out" && l.type === "abort"));
   expect(upToStall.map((l) => `${l.dir}:${l.type}`)).toEqual(["out:prompt", "in:response", "in:agent_start"]);
   expect(upToStall.at(-1).type).toBe("agent_start");
   expect(lines.every((l) => typeof l.t === "string" && !("message" in l))).toBe(true); // no prompt text in the log
