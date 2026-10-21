@@ -523,16 +523,17 @@ export function CoachTrack({ history }: { history: CoachOutcome[] }) {
   const last = history[0]!;
   const o = COACH_OUTCOME[last.outcome];
   const done = history.filter((h) => h.outcome === "done").length;
-  const handed = history.filter((h) => h.outcome === "agent").length;
+  const handed = history.filter((h) => h.outcome === "agent" || h.via === "agent").length;
+  const text = (h: CoachOutcome) => `${COACH_OUTCOME[h.outcome].label}${h.via === "agent" ? " (via agent)" : ""}`;
   return (
     <div className="coach-track">
-      <span title={last.note ? `${o.label} — ${last.note}` : undefined}>
-        {last.date.slice(5)}: <b style={{ color: o.color }}>{o.label}</b>
+      <span title={last.note ? `${text(last)} — ${last.note}` : undefined}>
+        {last.date.slice(5)}: <b style={{ color: o.color }}>{text(last)}</b>
       </span>
       <span className="spacer" />
       <span className="coach-dots" aria-hidden>
         {[...history].reverse().map((h) => (
-          <span key={h.date} title={`${h.date.slice(5)}: ${COACH_OUTCOME[h.outcome].label}${h.note ? ` — ${h.note}` : ""}`} style={{ color: COACH_OUTCOME[h.outcome].color }}>{COACH_OUTCOME[h.outcome].mark}</span>
+          <span key={h.date} title={`${h.date.slice(5)}: ${text(h)}${h.note ? ` — ${h.note}` : ""}`} style={{ color: COACH_OUTCOME[h.outcome].color }}>{COACH_OUTCOME[h.outcome].mark}</span>
         ))}
       </span>
       <span title={handed ? `${handed} handed to an agent` : undefined}>{history.length > 1 ? `${done} of last ${history.length} done` : done ? "done" : "not done"}</span>

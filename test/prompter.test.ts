@@ -941,4 +941,29 @@ describe("coaching move follow-up", () => {
     expect(it.source.key).toBe("coach:move:2026-10-19");
     expect(hub.store.journal().some((j) => j.text === `${q.prompt} → Hand to an agent`)).toBe(true);
   });
+
+  test("a handed-off move counts once its agent item closes: done → done (via agent), dropped → not", async () => {
+    const sent: string[] = [];
+    hub.dispatcher = { dispatch: async (itemId: string) => void sent.push(itemId) } as any;
+    const pushed: any[] = [];
+    hub.subscribe((e: any) => e.type === "coaching" && pushed.push(e.data));
+    const hand = async (date: string, day: number) => {
+      coaching(date, "tomorrow");
+      p.tick(new Date(2026, 9, day, 10));
+      await hub.answer(coach()[0]!.id, "agent");
+      return sent.at(-1)!;
+    };
+    const a = await hand("2026-10-18", 19);
+    const b = await hand("2026-10-19", 20);
+    expect(hub.coachHistory().map((x) => x.outcome)).toEqual(["agent", "agent"]);
+    hub.setStatus(b, "done", undefined, "agent");
+    expect(hub.coachHistory()[0]).toEqual({ date: "2026-10-19", outcome: "done", via: "agent" });
+    // Closing the item re-sends the panel, so it updates without a reload.
+    expect(pushed.at(-1).history[0]).toEqual({ date: "2026-10-19", outcome: "done", via: "agent" });
+    hub.setStatus(a, "dropped");
+    expect(hub.coachHistory()[1]).toEqual({ date: "2026-10-18", outcome: "not", via: "agent" });
+    // Reopened: back to handed off.
+    hub.setStatus(b, "doing");
+    expect(hub.coachHistory()[0]!.outcome).toBe("agent");
+  });
 });

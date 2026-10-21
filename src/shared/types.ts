@@ -278,12 +278,18 @@ export interface Coaching {
   history?: CoachOutcome[];
 }
 
-/** One reflection's move and its card's answer. "missed": the card expired unanswered (a newer reflection came first). */
+/**
+ * One reflection's move and its card's answer. "missed": the card expired unanswered (a newer reflection came first).
+ * "agent": handed off and its `coach:move:<date>` item is still open; once that item closes the outcome becomes
+ * "done" or "not" with `via: "agent"`.
+ */
 export interface CoachOutcome {
   date: string;
   outcome: "done" | "agent" | "not" | "missed";
   /** The note typed with the answer, if any. */
   note?: string;
+  /** Set when the move was handed to an agent and its item has since closed. */
+  via?: "agent";
 }
 
 export interface Snapshot {

@@ -193,6 +193,11 @@ export class Hub {
     };
     this.store.putItem(next);
     this.emit({ type: "item", data: next });
+    // A handed-off coaching move's outcome follows its item (coachHistory): re-send the panel when it changes.
+    if (next.status !== cur.status && next.source.key?.startsWith("coach:move:")) {
+      const c = this.coaching();
+      if (c) this.emit({ type: "coaching", data: c });
+    }
     return next;
   }
 
@@ -704,6 +709,7 @@ export class Hub {
   /**
    * What became of the last `n` moves, newest first, from the closed "M5 move" cards (key `coach:<date>`).
    * A move whose card was never asked (stale reflection, server off) isn't counted.
+   * A move handed to an agent stays "agent" until its `coach:move:<date>` item closes: done → "done", dropped → "not".
    */
   coachHistory(n = 5): CoachOutcome[] {
     const seen = new Set<string>();
@@ -720,6 +726,13 @@ export class Hub {
       const opt = q.options.find((o) => a === o.label || a.startsWith(`${o.label} — `));
       const id = opt?.id;
       const note = opt && a.length > opt.label.length ? a.slice(opt.label.length + 3) : undefined;
+      if (id === "agent") {
+        const st = this.store.itemBySourceKey(`coach:move:${date}`)?.status;
+        if (st === "done" || st === "dropped") {
+          out.push({ date, outcome: st === "done" ? "done" : "not", via: "agent", ...(note ? { note } : {}) });
+          continue;
+        }
+      }
       out.push({ date, outcome: id === "done" || id === "agent" || id === "not" ? id : "missed", ...(note ? { note } : {}) });
     }
     return out.sort((a, b) => b.date.localeCompare(a.date)).slice(0, n);
