@@ -12,7 +12,8 @@ describe("Committed and the status lists start folded", () => {
   test("Committed shows a header with the count, not the list or the add box", () => {
     const html = renderToStaticMarkup(<TodayPanel items={items} onOpen={() => {}} />);
     expect(html).toContain("Committed");
-    expect(html).toContain("1/2");
+    expect(html).toContain(">1<");
+    expect(html).toContain("1 done today");
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain("folded");
     expect(html).not.toContain("Commit one");

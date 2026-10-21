@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CalendarEvent, Coaching, CoachOutcome, Item, ItemStatus, Job, JournalEntry, Question, SyncState } from "../shared/types.ts";
 import { explainKey } from "../shared/detail.ts";
+import { committedView } from "../shared/committed.ts";
 import { type PlanGroup, planView, score, searchPlan } from "../shared/plan.ts";
 import { CalmScene } from "./calm.tsx";
 import { api } from "./store.ts";
@@ -497,13 +498,10 @@ export function Board({ items, selected, onOpen }: { items: Item[]; selected?: s
   );
 }
 
-export function TodayPanel({ items, onOpen, selected }: { items: Item[]; onOpen: (id: string) => void; selected?: string }) {
-  const todayStr = new Date().toDateString();
-  const list = items.filter(
-    (i) => ["today", "doing"].includes(i.status) || (i.status === "done" && new Date(i.updatedAt).toDateString() === todayStr),
-  ).sort((a, b) => Number(a.status === "done") - Number(b.status === "done"));
+export function TodayPanel({ items, jobs = [], onOpen, selected }: { items: Item[]; jobs?: Job[]; onOpen: (id: string) => void; selected?: string }) {
+  // Your open items + the last couple of hours' closures (src/shared/committed.ts); agent-run work is in Agents.
+  const { rows: list, open: openCount, doneToday, withAgents } = committedView(items, jobs);
   const [adding, setAdding] = useState("");
-  const done = list.filter((i) => i.status === "done").length;
   // Folded by default to a one-line header with the count; click it to see the list and the add box.
   // Open/closed is remembered per browser (whq:open:committed).
   const [open, setOpen] = useStoredFlag("whq:open:committed", false);
@@ -512,7 +510,8 @@ export function TodayPanel({ items, onOpen, selected }: { items: Item[]; onOpen:
       <button className="panel-h fold-h" aria-expanded={open} onClick={() => setOpen((x) => !x)} title={open ? "Collapse" : "Show commitments"}>
         <Chev open={open} />
         <h3>Committed</h3>
-        <span className="count">{done}/{list.length}</span>
+        <span className="count" title="Open items">{openCount}</span>
+        {doneToday > 0 && <span className="act">{doneToday} done today</span>}
       </button>
       {open && (
         <>
@@ -520,6 +519,7 @@ export function TodayPanel({ items, onOpen, selected }: { items: Item[]; onOpen:
             {list.map((i) => <ItemRow key={i.id} it={i} compact selected={selected === i.id} onOpen={() => onOpen(i.id)} />)}
             {!list.length && <div className="empty">Nothing committed yet. The morning plan fixes that.</div>}
           </div>
+          {withAgents > 0 && <div className="empty" style={{ fontSize: 12 }}>{withAgents} more with agents: see Agents.</div>}
           <input
             className="note-in"
             style={{ marginTop: 10, width: "100%" }}
