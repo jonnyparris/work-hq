@@ -7,10 +7,8 @@
 // The prompter holds the card until the first answer lands (one tick), and
 // asks as before if glab fails.
 
-import { spawn } from "node:child_process";
-import { homedir } from "node:os";
-import { dirname } from "node:path";
 import type { Item } from "../shared/types.ts";
+import { RefCache, runCli } from "./ref-cache.ts";
 
 export type MrState = "opened" | "merged" | "closed" | "locked" | "unknown";
 export interface MrInfo {
@@ -58,16 +56,18 @@ const OPEN_TTL = 30 * 60_000;
 const FAIL_TTL = 10 * 60_000;
 
 export class MrStates {
-  private cache = new Map<string, MrInfo & { checkedAt: number }>();
-  private inflight = new Map<string, Promise<void>>();
+  private cache: RefCache<MrRef, MrInfo>;
 
-  constructor(private fetch: Fetch = glabFetch) {}
+  constructor(fetch: Fetch = glabFetch) {
+    const ttl = (i: MrInfo) => (i.state === "merged" || i.state === "closed" ? Infinity : i.state === "unknown" ? FAIL_TTL : OPEN_TTL);
+    this.cache = new RefCache(fetch, ttl, { state: "unknown" });
+  }
 
   verdict(it: Pick<Item, "links" | "source">): MrVerdict {
     const now = Date.now();
     const refs = mrRefs(it);
     if (!refs.length) return undefined;
-    const infos = refs.map((r) => this.lookup(r, now));
+    const infos = refs.map((r) => this.cache.get(r, now));
     if (infos.some((i) => i === undefined)) return "pending";
     if (!infos.every((i) => i!.state === "merged")) return undefined;
     const mergedAt = infos.map((i) => i!.mergedAt ?? "").sort().pop() || undefined;
@@ -75,29 +75,15 @@ export class MrStates {
   }
 
   /** Resolves when every lookup started so far has landed. For tests and the CLI. */
-  async settled() {
-    while (this.inflight.size) await Promise.all(this.inflight.values());
-  }
-
-  /** Cached info, starting a refresh if missing or stale. Stale-but-present entries are still returned. */
-  private lookup(ref: MrRef, now: number) {
-    const hit = this.cache.get(ref.url);
-    const ttl = hit?.state === "merged" || hit?.state === "closed" ? Infinity : hit?.state === "unknown" ? FAIL_TTL : OPEN_TTL;
-    if ((!hit || now - hit.checkedAt > ttl) && !this.inflight.has(ref.url)) {
-      const p = this.fetch(ref)
-        .catch((): MrInfo => ({ state: "unknown" }))
-        .then((info) => void this.cache.set(ref.url, { ...info, checkedAt: Date.now() }))
-        .finally(() => this.inflight.delete(ref.url));
-      this.inflight.set(ref.url, p);
-    }
-    return hit;
+  settled() {
+    return this.cache.settled();
   }
 }
 
 /** One `glab api` call. Never throws: a failure is state "unknown". */
 export async function glabFetch(ref: MrRef): Promise<MrInfo> {
   const path = `projects/${encodeURIComponent(ref.project)}/merge_requests/${ref.iid}`;
-  const out = await run("glab", ["api", "--hostname", ref.host, path], 20_000);
+  const out = await runCli("glab", ["api", "--hostname", ref.host, path], 20_000);
   try {
     const j = JSON.parse(out) as { state?: string; merged_at?: string | null };
     const state = (["opened", "merged", "closed", "locked"].includes(j.state ?? "") ? j.state : "unknown") as MrState;
@@ -105,18 +91,4 @@ export async function glabFetch(ref: MrRef): Promise<MrInfo> {
   } catch {
     return { state: "unknown" };
   }
-}
-
-function run(cmd: string, args: string[], timeoutMs: number): Promise<string> {
-  // launchd hands us a bare PATH.
-  const extra = [dirname(process.execPath), `${homedir()}/.local/bin`, "/opt/homebrew/bin", "/usr/local/bin"];
-  const env = { ...process.env, PATH: [...extra, process.env.PATH ?? "/usr/bin:/bin"].join(":") };
-  return new Promise((resolve) => {
-    let stdout = "";
-    const proc = spawn(cmd, args, { env, stdio: ["ignore", "pipe", "ignore"] });
-    proc.stdout.on("data", (d) => (stdout += d));
-    const timer = setTimeout(() => proc.kill("SIGTERM"), timeoutMs);
-    proc.on("close", () => (clearTimeout(timer), resolve(stdout)));
-    proc.on("error", () => (clearTimeout(timer), resolve("")));
-  });
 }

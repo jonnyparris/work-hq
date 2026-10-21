@@ -9,6 +9,7 @@ import { localDate } from "./memory-sync.ts";
 import { type JiraDone, JiraStates } from "./jira-state.ts";
 import { type MrRef, MrStates, mrRefs } from "./mr-state.ts";
 import { plain } from "./parse.ts";
+import { type PrRef, PrStates, prRefs } from "./pr-state.ts";
 import { openUrl } from "./prompts.ts";
 
 const MIN = 60_000;
@@ -105,24 +106,28 @@ export class Prompter {
     readonly mrs = new MrStates(),
     /** JIRA state for items whose ref is a ticket. Tests pass a stubbed fetch. */
     readonly jira = new JiraStates(),
+    /** GitHub PR state for items that link a PR. Tests pass a stubbed fetch. */
+    readonly prs = new PrStates(),
   ) {}
 
   /**
-   * Has everything the item links to landed? Every MR merged and every JIRA ticket done → Landed. "pending" while a
-   * lookup is in flight. undefined when it has neither, or any is open — or unknown: a stale Access token or glab
-   * failure never counts as landed.
+   * Has everything the item links to landed? Every MR and GitHub PR merged and every JIRA ticket done → Landed.
+   * "pending" while a lookup is in flight. undefined when it has none, or any is open — or unknown: a stale Access
+   * token or a glab / gh failure never counts as landed.
    */
   landed(it: Item): "pending" | Landed | undefined {
     const hasMr = mrRefs(it).length > 0;
     const hasJira = this.jira.refs(it).length > 0;
-    if (!hasMr && !hasJira) return undefined;
+    const hasPr = prRefs(it).length > 0;
+    if (!hasMr && !hasJira && !hasPr) return undefined;
     const mr = this.mrs.verdict(it);
     const jr = this.jira.verdict(it);
-    if ((hasMr && mr === undefined) || (hasJira && jr === undefined)) return undefined; // something's open: no need to wait
-    if (mr === "pending" || jr === "pending") return "pending";
+    const pr = this.prs.verdict(it);
+    if ((hasMr && mr === undefined) || (hasJira && jr === undefined) || (hasPr && pr === undefined)) return undefined; // something's open: no need to wait
+    if (mr === "pending" || jr === "pending" || pr === "pending") return "pending";
     const tickets = jr?.done ?? [];
-    const at = [mr?.mergedAt ?? "", ...tickets.map((t) => t.doneAt ?? "")].sort().pop() || undefined;
-    return { mrs: mr?.refs ?? [], mergedAt: mr?.mergedAt, tickets, at };
+    const at = [mr?.mergedAt ?? "", pr?.mergedAt ?? "", ...tickets.map((t) => t.doneAt ?? "")].sort().pop() || undefined;
+    return { mrs: mr?.refs ?? [], mergedAt: mr?.mergedAt, prs: pr?.refs ?? [], prMergedAt: pr?.mergedAt, tickets, at };
   }
 
   tick(now = new Date()) {
@@ -797,10 +802,12 @@ export function dueOptions(act: { action: ActionKind; label: string } | undefine
   ];
 }
 
-/** Everything the item links to has landed: MRs merged, tickets done. `at` is the latest of those dates. */
+/** Everything the item links to has landed: MRs and PRs merged, tickets done. `at` is the latest of those dates. */
 export interface Landed {
   mrs: MrRef[];
   mergedAt?: string;
+  prs?: PrRef[];
+  prMergedAt?: string;
   tickets: JiraDone[];
   at?: string;
 }
@@ -810,29 +817,39 @@ const day = (iso?: string) => (iso ? ` ${localDate(new Date(iso)).slice(5)}` : "
 
 /** "Done (merged 10-14)", "Done (ticket closed 10-14)", "Done (all closed 10-15)". */
 function mergedLabel(l: Landed) {
-  const what = !l.tickets.length ? "merged" : l.mrs.length ? "all closed" : l.tickets.length > 1 ? "tickets closed" : "ticket closed";
+  const what = !l.tickets.length ? "merged" : l.mrs.length || l.prs?.length ? "all closed" : l.tickets.length > 1 ? "tickets closed" : "ticket closed";
   return `Done (${what}${day(l.at)})`;
 }
 
-/** "agent-relay-mcp!1 merged 10-14.", "PAY-12 Done 10-14.", "api-worker!17 merged 10-14; PAY-12 Done 10-15." */
+/** "agent-relay-mcp!1 merged 10-14.", "PAY-12 Done 10-14.", "api-worker!17 merged 10-14; PAY-12 Done 10-15.", "agent-memory-mcp#19 merged 10-19." */
 function mergedLine(l: Landed) {
   const parts: string[] = [];
   if (l.mrs.length) {
     const names = l.mrs.map((r) => `${r.project.split("/").pop()}!${r.iid}`).join(", ");
     parts.push(`${names} ${l.mrs.length > 1 ? "all merged" : "merged"}${day(l.mergedAt)}`);
   }
+  if (l.prs?.length) {
+    const names = l.prs.map((r) => `${r.repo}#${r.number}`).join(", ");
+    parts.push(`${names} ${l.prs.length > 1 ? "all merged" : "merged"}${day(l.prMergedAt)}`);
+  }
   for (const t of l.tickets) parts.push(`${t.ref.key} ${t.status}${day(t.doneAt)}`);
   return `${parts.join("; ")}.`;
 }
 
-/** What the refs on these items are: "mr" only, "jira" only, or "both". */
+/** What the refs on these items are: code (MRs / PRs) only, "jira" only, or "both". */
 function refKinds(ls: Landed[]): "mr" | "jira" | "both" {
-  const mr = ls.some((l) => l.mrs.length), jira = ls.some((l) => l.tickets.length);
+  const mr = ls.some((l) => l.mrs.length || l.prs?.length), jira = ls.some((l) => l.tickets.length);
   return mr && jira ? "both" : jira ? "jira" : "mr";
 }
 
+/** "MR", "PR", or "MR/PR": what to call the code refs on these items. */
+function codeNoun(ls: Landed[]) {
+  const mr = ls.some((l) => l.mrs.length), pr = ls.some((l) => l.prs?.length);
+  return pr && !mr ? "PR" : pr ? "MR/PR" : "MR";
+}
+
 function landedBadge(ls: Landed[]) {
-  return { mr: "MR merged", jira: "Ticket done", both: "Merged / done" }[refKinds(ls)];
+  return { mr: `${codeNoun(ls)} merged`, jira: "Ticket done", both: "Merged / done" }[refKinds(ls)];
 }
 
 const MERGED_KEY = "wait:merged";
@@ -852,8 +869,9 @@ function mergedIds(q: Question | undefined): string[] {
 export function mergedCard(found: Array<{ it: Pick<Item, "id" | "title">; mr: Landed }>) {
   const n = found.length;
   const kinds = refKinds(found.map((f) => f.mr));
-  const one = { mr: "its MRs merged", jira: "its tickets are done", both: "its MRs merged and tickets closed" }[kinds];
-  const many = { mr: "their MRs merged", jira: "their tickets are done", both: "their MRs merged or tickets closed" }[kinds];
+  const code = `${codeNoun(found.map((f) => f.mr))}s`;
+  const one = { mr: `its ${code} merged`, jira: "its tickets are done", both: `its ${code} merged and tickets closed` }[kinds];
+  const many = { mr: `their ${code} merged`, jira: "their tickets are done", both: `their ${code} merged or tickets closed` }[kinds];
   const each = (status: "done" | "waiting", note: (mr: Landed) => string): QuestionOption["effect"] => ({
     type: "multi",
     effects: found.map((f) => ({ type: "status", status, itemId: f.it.id, note: note(f.mr) })),

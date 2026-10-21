@@ -6,10 +6,10 @@
 // (cloudflared hands back nothing, or JIRA answers 401 / an Access login page), so any failure is "unknown",
 // never "done": an unknown ref keeps the item off the card.
 
-import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { Item } from "../shared/types.ts";
 import { config } from "./config.ts";
+import { RefCache, runCli } from "./ref-cache.ts";
 
 /** statusCategory "done" covers Done, Closed, Resolved, Won't Do. */
 export type JiraState = "done" | "open" | "unknown";
@@ -66,13 +66,15 @@ const TTL = 30 * 60_000;
 const FAIL_TTL = 10 * 60_000;
 
 export class JiraStates {
-  private cache = new Map<string, JiraInfo & { checkedAt: number }>();
-  private inflight = new Map<string, Promise<void>>();
+  /** Tickets reopen, so "done" expires like the rest. */
+  private cache: RefCache<JiraRef, JiraInfo>;
 
   constructor(
-    private fetch: Fetch = jiraFetch,
+    fetch: Fetch = jiraFetch,
     readonly hosts: ReadonlySet<string> = JIRA_HOSTS,
-  ) {}
+  ) {
+    this.cache = new RefCache(fetch, (i) => (i.state === "unknown" ? FAIL_TTL : TTL), { state: "unknown" });
+  }
 
   refs(it: Pick<Item, "links" | "source">) {
     return jiraRefs(it, this.hosts);
@@ -82,28 +84,14 @@ export class JiraStates {
     const now = Date.now();
     const refs = this.refs(it);
     if (!refs.length) return undefined;
-    const infos = refs.map((r) => this.lookup(r, now));
+    const infos = refs.map((r) => this.cache.get(r, now));
     if (infos.some((i) => i === undefined)) return "pending";
     if (!infos.every((i) => i!.state === "done")) return undefined;
     return { done: refs.map((ref, n) => ({ ref, status: infos[n]!.status || "Done", doneAt: infos[n]!.doneAt })) };
   }
 
-  async settled() {
-    while (this.inflight.size) await Promise.all(this.inflight.values());
-  }
-
-  /** Cached info, starting a refresh if missing or stale. Tickets reopen, so "done" expires like the rest. */
-  private lookup(ref: JiraRef, now: number) {
-    const hit = this.cache.get(ref.url);
-    const ttl = hit?.state === "unknown" ? FAIL_TTL : TTL;
-    if ((!hit || now - hit.checkedAt > ttl) && !this.inflight.has(ref.url)) {
-      const p = this.fetch(ref)
-        .catch((): JiraInfo => ({ state: "unknown" }))
-        .then((info) => void this.cache.set(ref.url, { ...info, checkedAt: Date.now() }))
-        .finally(() => this.inflight.delete(ref.url));
-      this.inflight.set(ref.url, p);
-    }
-    return hit;
+  settled() {
+    return this.cache.settled();
   }
 }
 
@@ -145,19 +133,8 @@ async function accessToken(host: string): Promise<string | undefined> {
   if (token?.host === host && Date.now() - token.at < TOKEN_TTL) return token.value;
   const bin = existsSync("/opt/homebrew/bin/cloudflared") ? "/opt/homebrew/bin/cloudflared" : "cloudflared";
   // `access token` never opens a browser: a missing or expired token prints an error and exits non-zero.
-  const out = (await run(bin, ["access", "token", `-app=https://${host}`], 10_000)).trim();
+  const out = (await runCli(bin, ["access", "token", `-app=https://${host}`], 10_000, true)).trim();
   if (!/^ey[\w-]+\.[\w-]+\.[\w-]+$/.test(out)) return undefined;
   token = { host, value: out, at: Date.now() };
   return out;
-}
-
-function run(cmd: string, args: string[], timeoutMs: number): Promise<string> {
-  return new Promise((resolve) => {
-    let stdout = "";
-    const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "ignore"] });
-    proc.stdout.on("data", (d) => (stdout += d));
-    const timer = setTimeout(() => proc.kill("SIGTERM"), timeoutMs);
-    proc.on("close", (code) => (clearTimeout(timer), resolve(code === 0 ? stdout : "")));
-    proc.on("error", () => (clearTimeout(timer), resolve("")));
-  });
 }

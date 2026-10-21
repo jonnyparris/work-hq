@@ -6,6 +6,7 @@ import { config } from "../src/server/config.ts";
 import { type MrInfo, MrStates, parseMrRef } from "../src/server/mr-state.ts";
 import { optionFor } from "../src/shared/batch.ts";
 import { type JiraInfo, JiraStates, parseIssue, parseJiraRef } from "../src/server/jira-state.ts";
+import { type PrInfo, PrStates, parsePrRef, parsePull } from "../src/server/pr-state.ts";
 
 let hub: Hub;
 let p: Prompter;
@@ -692,6 +693,82 @@ describe("waiting items whose JIRA tickets are done share the merged card", () =
     expect(q.options[0]).toMatchObject({ label: "Done (ticket closed 10-15)", tone: "primary" });
     expect(q.context).toBe("PAY-2 Closed 10-15. Probably done.");
   });
+});
+
+describe("waiting items whose GitHub PRs merged share the merged card", () => {
+  const PR = (n: number) => `https://github.com/acme/memory-svc/pull/${n}`;
+  const MR = "https://gitlab.example.com/me/api-worker/-/merge_requests/17";
+  const J = (k: string) => `https://jira.example.org/browse/${k}`;
+  const pulls: Record<string, PrInfo> = {
+    [PR(19)]: { state: "merged", mergedAt: "2026-10-19T12:16:49Z" },
+    [PR(21)]: { state: "merged", mergedAt: "2026-10-20T09:00:00Z" },
+    [PR(20)]: { state: "open" },
+    [PR(22)]: { state: "closed" },
+  };
+  const setup = () => {
+    const calls: string[] = [];
+    const mrs = new MrStates(async () => ({ state: "merged", mergedAt: "2026-10-13T10:00:00Z" }));
+    const jira = new JiraStates(async () => ({ state: "done", status: "Done", doneAt: "2026-10-14T10:00:00Z" }), new Set(["jira.example.org"]));
+    const prs = new PrStates(async (r) => (calls.push(r.url), pulls[r.url] ?? { state: "unknown" }));
+    return { calls, prs, p: new Prompter(hub, mrs, jira, prs), settle: () => Promise.all([mrs.settled(), jira.settled(), prs.settled()]) };
+  };
+  const card = () => hub.store.questions("open").find((q) => q.key === "wait:merged");
+
+  test("one PR-only item: held until gh answers, then 'PR merged' with the merge date; one lookup per PR", async () => {
+    const s = setup();
+    hub.createItem({ title: "drop legacy table", status: "waiting", links: [PR(19), `${PR(19)}/files#r3`] });
+    s.p.tick(new Date());
+    expect(card()).toBeUndefined();
+    await s.settle();
+    for (let i = 0; i < 3; i++) s.p.tick(new Date());
+    expect(card()!.prompt).toBe("Waiting on this, but its PRs merged: drop legacy table");
+    expect(card()!.badge).toBe("PR merged");
+    expect(card()!.options[0]!.label).toBe("Done (merged 10-19)");
+    expect(card()!.context).toBe("- drop legacy table — memory-svc#19 merged 10-19.");
+    expect(s.calls).toEqual([PR(19)]);
+  });
+
+  test("an open, closed-unmerged or unknown PR keeps the item off; mixed MR + PR + ticket items join", async () => {
+    const s = setup();
+    hub.createItem({ title: "half merged", status: "waiting", links: [PR(19), PR(20)] });
+    hub.createItem({ title: "closed unmerged", status: "waiting", links: [PR(22)] });
+    hub.createItem({ title: "gh logged out", status: "waiting", links: [PR(99)] });
+    const a = hub.createItem({ title: "both", status: "waiting", links: [PR(19), PR(21)] });
+    const b = hub.createItem({ title: "mixed", status: "waiting", links: [MR, PR(21), J("PAY-1")] });
+    s.p.tick(new Date());
+    await s.settle();
+    s.p.tick(new Date());
+    const q = card()!;
+    expect(q.prompt).toBe("2 waiting items: their MR/PRs merged or tickets closed. Mark all done?");
+    expect(q.badge).toBe("Merged / done");
+    expect(q.context).toBe(
+      "- both — memory-svc#19, memory-svc#21 all merged 10-20.\n- mixed — api-worker!17 merged 10-13; memory-svc#21 merged 10-20; PAY-1 Done 10-14.",
+    );
+    await hub.answer(q.id, "done");
+    expect(hub.store.item(a.id)!.status).toBe("done");
+    expect(hub.store.item(b.id)!.status).toBe("done");
+  });
+});
+
+test("parsePrRef: github.com /o/r/pull/N (files, anchors, trailing slash ignored); issues and other hosts aren't refs", () => {
+  expect(parsePrRef("https://github.com/cloudflare/playwright/pull/12/files#r3")).toEqual({
+    url: "https://github.com/cloudflare/playwright/pull/12",
+    owner: "cloudflare",
+    repo: "playwright",
+    number: 12,
+  });
+  expect(parsePrRef("https://github.com/o/r/pull/12/")?.number).toBe(12);
+  expect(parsePrRef("https://github.com/o/r/issues/12")).toBeUndefined();
+  expect(parsePrRef("https://gitlab.example.com/o/r/pull/12")).toBeUndefined();
+  expect(parsePrRef("not a url")).toBeUndefined();
+});
+
+test("parsePull: merged_at → merged; closed without it → closed; errors and junk → unknown, never merged", () => {
+  expect(parsePull('{"number":19,"state":"closed","merged_at":"2026-10-19T12:16:49Z"}')).toEqual({ state: "merged", mergedAt: "2026-10-19T12:16:49Z" });
+  expect(parsePull('{"number":20,"state":"open","merged_at":null}')).toEqual({ state: "open" });
+  expect(parsePull('{"number":22,"state":"closed","merged_at":null}')).toEqual({ state: "closed" });
+  expect(parsePull('{"message":"Not Found","status":"404"}').state).toBe("unknown");
+  expect(parsePull("").state).toBe("unknown");
 });
 
 test("parseJiraRef: only configured JIRA hosts, /browse/KEY-N, query and trailing slash ignored", () => {
