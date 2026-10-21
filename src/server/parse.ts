@@ -184,6 +184,46 @@ export function parseProposals(md: string, date: string, today = new Date()): Pa
 }
 
 /**
+ * Parse `memory/workload/learn-proposals.md`, written by the `learn` skill after a pi session:
+ *   ## 2026-10-21 · learn 01a16000
+ *   ### 1. Title
+ *   body
+ * Each becomes a proposal labelled "Proposals <date> · Learn (<rest of heading>)", so prompter §8 asks it.
+ */
+export function parseLearnProposals(md: string, today = new Date()): ParsedItem[] {
+  const out: ParsedItem[] = [];
+  let date = "";
+  let tag = "";
+  for (const block of md.split(/\n(?=#{2,3}\s)/)) {
+    const h2 = /^##\s+(\d{4}-\d{2}-\d{2})\s*(?:·|-|—)?\s*(.*)/.exec(block);
+    if (h2) {
+      date = h2[1]!;
+      tag = plain(h2[2]!.split("\n")[0]!).replace(/^learn\s*/i, "").trim();
+      continue;
+    }
+    if (/^##\s/.test(block)) {
+      date = "";
+      continue;
+    }
+    const h3 = /^###\s+(\d+)\.\s+(.+)\n?([\s\S]*)$/.exec(block);
+    if (!h3 || !date) continue;
+    const title = plain(h3[2]!);
+    const body = h3[3]!.trim();
+    out.push({
+      key: `memory:proposals:learn-${slug(title)}`,
+      kind: "idea",
+      title,
+      detail: body.slice(0, 1200),
+      section: `Proposals ${date} · Learn${tag ? ` (session ${tag})` : ""}`,
+      project: undefined,
+      links: links(body),
+      flags: { ...flags(body, today), stateUnknown: false },
+    });
+  }
+  return out;
+}
+
+/**
  * The "## EM Coaching" block the nightly reflection writes into `*-improvement-proposals.md`:
  * the week's signal, the one move to try next, and the bold lead of each win / gap bullet.
  * Undefined when the file has no such block or no "One thing to try".

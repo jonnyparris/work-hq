@@ -409,7 +409,7 @@ export class Prompter {
           key: `proposal:${it.id}`,
           priority: 45,
           prompt: it.title,
-          context: `From the ${propLabel(it).replace(/^Proposals /, "").split(" · ")[0]} reflection. ${excerpt(it.detail) ?? ""}`,
+          context: `${propSource(it)} ${excerpt(it.detail) ?? ""}`,
           options: [
             opt("go", "Do it — send an agent", { type: "dispatch", action: "work" }, "primary"),
             ...whenOptions(now).slice(1, 2),
@@ -914,6 +914,12 @@ type PropLike = { proposalOf?: string; source: { label?: string } };
 /** The proposal's section label: its own source, or the proposal that merged into it. */
 function propLabel(i: PropLike): string {
   return i.proposalOf ?? i.source.label ?? "";
+}
+
+/** "From the 2026-10-19 reflection." or, for learn-skill proposals, "From /learn after a pi session (2026-10-21)." */
+function propSource(i: PropLike): string {
+  const [head, section = ""] = propLabel(i).replace(/^Proposals /, "").split(" · ");
+  return section.startsWith("Learn") ? `From /learn after a pi session (${head}).` : `From the ${head} reflection.`;
 }
 
 function propDate(i: PropLike): string {

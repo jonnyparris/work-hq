@@ -1,5 +1,5 @@
 // Two directions:
-//   import  — memory (R2) → items. active-todos + latest improvement proposals.
+//   import  — memory (R2) → items. active-todos + latest improvement proposals + learn proposals.
 //   flush   — journal → memory/workload/work-hq-journal.md, so the nightly
 //             reflection and daily briefing see the owner's corrections first-hand.
 
@@ -9,7 +9,7 @@ import { nowIso } from "./db.ts";
 import type { Hub } from "./hub.ts";
 import type { MemoryClient } from "./memory.ts";
 import { resolve } from "node:path";
-import { parseActiveTodos, parseCoaching, parseProposals, plain, type ParsedItem } from "./parse.ts";
+import { parseActiveTodos, parseCoaching, parseLearnProposals, parseProposals, plain, type ParsedItem } from "./parse.ts";
 import { ClairicDeadlines } from "./deadlines.ts";
 import { openUrl, template } from "./prompts.ts";
 
@@ -44,6 +44,12 @@ export class MemorySync {
           this.hub.setCoaching({ ...c, file: f.path, url: openUrl(resolve(config.workspace.dir, f.path)) });
           break;
         }
+      }
+      const learn = await this.memory.read(config.memory.learnProposalsPath).catch(() => undefined);
+      if (learn) {
+        const lp = parseLearnProposals(learn);
+        parsed.push(...lp);
+        if (lp.length) proposalsLabel += ` + ${lp.length} learn`;
       }
       const extra = await this.fillDeadlines(parsed);
       const seen = this.upsert(parsed);

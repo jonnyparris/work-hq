@@ -140,7 +140,7 @@ The thresholds are strict on purpose: titles that name different tickets never m
 - After each memory import, `dedupeExisting` merges duplicates that already exist. It only ever drops
   the copy you haven't confirmed.
 
-Paths are config: `memory.todosPath`, `memory.proposalsDir`, `memory.journalPath`. No memory
+Paths are config: `memory.todosPath`, `memory.proposalsDir`, `memory.learnProposalsPath`, `memory.journalPath`. No memory
 server? Work HQ still runs; you just lose import and the flush.
 
 ## Proactive rules (src/server/prompter.ts)

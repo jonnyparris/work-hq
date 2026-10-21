@@ -177,6 +177,17 @@ const server = Bun.serve({
         }),
     },
 
+    "/api/journal": {
+      // A line from an agent outside Work HQ (e.g. the learn skill) — journal only, no triage.
+      POST: (req) =>
+        handle(async () => {
+          const b = await body<{ text: string }>(req);
+          if (!b.text?.trim()) throw new Error("text required");
+          hub.journal(b.text.trim().slice(0, 500), { who: "agent" });
+          return { ok: true };
+        }),
+    },
+
     "/api/agent/report": {
       POST: (req) =>
         handle(async () => {

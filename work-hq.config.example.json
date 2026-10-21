@@ -30,6 +30,7 @@
     "tokenFile": "~/.config/work-hq/memory-token",   // or "token": "…" (keep it out of git), or WORK_HQ_MEMORY_TOKEN
     "todosPath": "memory/workload/active-todos.md",   // markdown checkboxes under ## headings
     "proposalsDir": "memory/workload/plans",          // dated *-improvement-proposals.md; newest is read
+    "learnProposalsPath": "memory/workload/learn-proposals.md", // per-session /learn proposals; missing → none
     "journalPath": "memory/workload/work-hq-journal.md",
     "importEveryMin": 30,
     "flushEveryMin": 5

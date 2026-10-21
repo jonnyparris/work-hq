@@ -128,6 +128,15 @@ a:hover { text-decoration: underline; }
 .panel-h .act { margin-left: auto; font-size: 12px; color: var(--text-3); }
 .panel-h .act:hover { color: var(--text); }
 .empty { color: var(--text-3); font-size: 13px; padding: 6px 2px; }
+/* folded panels: a one-line header that opens on click */
+.panel.folded { padding-top: 10px; padding-bottom: 10px; }
+.panel.folded .panel-h, .panel.folded .lanes-h { margin-bottom: 0; }
+.fold-h { width: 100%; text-align: left; cursor: pointer; background: none; border: 0; padding: 0; color: inherit; font: inherit; }
+.fold-h:hover h3 { color: var(--text-2); }
+.fold-btn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 28px; border-radius: 7px; color: var(--text-3); }
+.fold-btn:hover { background: var(--surface-2); color: var(--text); }
+.chev { flex: none; color: var(--text-2); transition: transform .15s; }
+.chev.on { transform: rotate(90deg); }
 
 /* ── now / timeline ────────────────────────────────────────────────────── */
 .now-big { font: 600 40px/1 var(--display); letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }

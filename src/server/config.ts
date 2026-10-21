@@ -162,6 +162,8 @@ export const config = {
     todosPath: pick<string>(undefined, "memory.todosPath", "memory/workload/active-todos.md"),
     /** Folder with dated `*-improvement-proposals.md` files (only the newest is read). */
     proposalsDir: pick<string>(undefined, "memory.proposalsDir", "memory/workload/plans"),
+    /** Proposals queued by the `learn` skill at the end of pi sessions. Missing file → none. */
+    learnProposalsPath: pick<string>(undefined, "memory.learnProposalsPath", "memory/workload/learn-proposals.md"),
     /** Sandboxes must set this off — test statements are not facts. Defaults off for a non-default DB. */
     write: (env("WORK_HQ_MEMORY_WRITE") ?? (env("WORK_HQ_DB") ? "off" : get(raw, "memory.write") === false ? "off" : "on")) !== "off",
     importEveryMin: pick("WORK_HQ_MEMORY_EVERY", "memory.importEveryMin", 30),

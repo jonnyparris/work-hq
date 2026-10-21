@@ -468,25 +468,30 @@ const LANES: Array<{ id: string; label: string; test: (i: Item) => boolean }> = 
 export function Board({ items, selected, onOpen }: { items: Item[]; selected?: string; onOpen: (id: string) => void }) {
   const [lane, setLane] = useState<string>(() => (items.some((i) => i.status === "inbox") ? "inbox" : "proposed"));
   const [q, setQ] = useState("");
+  // Starts folded: the tabs (with counts) stay as a one-line header; a tab or the chevron opens it.
+  const [open, setOpen] = useState(false);
   const L = LANES.find((l) => l.id === lane)!;
   const list = items
     .filter(L.test)
     .filter((i) => !q || `${i.title} ${i.project ?? ""} ${i.detail ?? ""}`.toLowerCase().includes(q.toLowerCase()))
     .sort((a, b) => (lane === "scheduled" ? (a.scheduledFor ?? "").localeCompare(b.scheduledFor ?? "") : score(b) - score(a) || b.updatedAt.localeCompare(a.updatedAt)));
   return (
-    <div className="panel">
+    <div className={`panel board ${open ? "" : "folded"}`}>
       <div className="lanes-h">
+        <FoldToggle open={open} onToggle={() => setOpen((x) => !x)} label="lists" />
         {LANES.map((l) => (
-          <button key={l.id} className={`lane-tab ${lane === l.id ? "on" : ""}`} onClick={() => setLane(l.id)}>
+          <button key={l.id} className={`lane-tab ${open && lane === l.id ? "on" : ""}`} onClick={() => { setLane(l.id); setOpen(true); }}>
             {l.label} <span className="n">{items.filter(l.test).length}</span>
           </button>
         ))}
-        <input className="filter-in" placeholder="Filter…" value={q} onChange={(e) => setQ(e.target.value)} />
+        {open && <input className="filter-in" placeholder="Filter…" value={q} onChange={(e) => setQ(e.target.value)} />}
       </div>
-      <div className="items">
-        {list.map((i) => <ItemRow key={i.id} it={i} selected={selected === i.id} onOpen={() => onOpen(i.id)} />)}
-        {!list.length && <div className="empty">{lane === "inbox" ? "No fresh captures. Transcripts and 🍍 land here." : "Nothing here."}</div>}
-      </div>
+      {open && (
+        <div className="items">
+          {list.map((i) => <ItemRow key={i.id} it={i} selected={selected === i.id} onOpen={() => onOpen(i.id)} />)}
+          {!list.length && <div className="empty">{lane === "inbox" ? "No fresh captures. Transcripts and 🍍 land here." : "Nothing here."}</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -498,25 +503,49 @@ export function TodayPanel({ items, onOpen, selected }: { items: Item[]; onOpen:
   ).sort((a, b) => Number(a.status === "done") - Number(b.status === "done"));
   const [adding, setAdding] = useState("");
   const done = list.filter((i) => i.status === "done").length;
+  // Starts folded to a one-line header with the count; click it to see the list and the add box.
+  const [open, setOpen] = useState(false);
   return (
-    <div className="panel today">
-      <div className="panel-h">
+    <div className={`panel today ${open ? "" : "folded"}`}>
+      <button className="panel-h fold-h" aria-expanded={open} onClick={() => setOpen((x) => !x)} title={open ? "Collapse" : "Show commitments"}>
+        <Chev open={open} />
         <h3>Committed</h3>
         <span className="count">{done}/{list.length}</span>
-      </div>
-      <div className="items">
-        {list.map((i) => <ItemRow key={i.id} it={i} compact selected={selected === i.id} onOpen={() => onOpen(i.id)} />)}
-        {!list.length && <div className="empty">Nothing committed yet. The morning plan fixes that.</div>}
-      </div>
-      <input
-        className="note-in"
-        style={{ marginTop: 10, width: "100%" }}
-        placeholder="+ Add a commitment"
-        value={adding}
-        onChange={(e) => setAdding(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter" && adding.trim()) { api.add(adding.trim()); setAdding(""); } }}
-      />
+      </button>
+      {open && (
+        <>
+          <div className="items">
+            {list.map((i) => <ItemRow key={i.id} it={i} compact selected={selected === i.id} onOpen={() => onOpen(i.id)} />)}
+            {!list.length && <div className="empty">Nothing committed yet. The morning plan fixes that.</div>}
+          </div>
+          <input
+            className="note-in"
+            style={{ marginTop: 10, width: "100%" }}
+            placeholder="+ Add a commitment"
+            value={adding}
+            onChange={(e) => setAdding(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && adding.trim()) { api.add(adding.trim()); setAdding(""); } }}
+          />
+        </>
+      )}
     </div>
+  );
+}
+
+function Chev({ open }: { open: boolean }) {
+  return (
+    <svg className={`chev ${open ? "on" : ""}`} width="12" height="12" viewBox="0 0 12 12" aria-hidden>
+      <path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** Chevron that opens and closes a folded panel. */
+export function FoldToggle({ open, onToggle, label }: { open: boolean; onToggle: () => void; label: string }) {
+  return (
+    <button className="fold-btn" aria-expanded={open} onClick={onToggle} title={open ? `Collapse ${label}` : `Show ${label}`}>
+      <Chev open={open} />
+    </button>
   );
 }
 
