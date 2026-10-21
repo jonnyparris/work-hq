@@ -18,6 +18,15 @@ function git(cwd: string, ...args: string[]) {
   return r.out;
 }
 const wt = (cwd: string, ...args: string[]) => sh(cwd, "bash", SCRIPT, ...args);
+// Each test spawns 10-30 git processes: 1.3-3.5 s idle, past bun's 5 s default when other suites run
+// in parallel (10-21: the conflict and lock tests failed a land check at 5017 ms / 5016 ms).
+const SLOW = 30_000;
+// `wt(main, "new", x).out` is "" on failure, and join("", "a.txt") then writes into the repo running the tests.
+function newWt(main: string, slug: string) {
+  const r = wt(main, "new", slug);
+  if (!r.ok || !r.out) throw new Error(`worktree.sh new ${slug}: ${r.err}`);
+  return r.out;
+}
 
 function setup() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "wt-test-")));
@@ -47,11 +56,11 @@ describe("worktree.sh", () => {
     expect(git(r.out, "status", "--porcelain")).toBe("");
     expect(wt(main, "new", "fix-x").ok).toBe(false); // slug taken: never reuse another session's dir
     expect(wt(main, "new", "Bad Slug").ok).toBe(false);
-  });
+  }, SLOW);
 
   test("land leaves the main checkout's staged edits out of the landed commit", () => {
     const { main, origin } = setup();
-    const dir = wt(main, "new", "mine").out;
+    const dir = newWt(main, "mine");
     writeFileSync(join(dir, "a.txt"), "a mine\n");
     git(dir, "commit", "-q", "-am", "mine");
     // Another session, working in the main checkout, has a staged hunk in a different file.
@@ -67,12 +76,12 @@ describe("worktree.sh", () => {
     expect(git(origin, "rev-parse", "main")).toBe(git(main, "rev-parse", "HEAD"));
     expect(existsSync(dir)).toBe(false);
     expect(sh(main, "git", "show-ref", "--verify", "refs/heads/wt/mine").ok).toBe(false);
-  });
+  }, SLOW);
 
   test("two worktrees land one after the other: the second rebases onto the first", () => {
     const { main } = setup();
-    const one = wt(main, "new", "one").out;
-    const two = wt(main, "new", "two").out;
+    const one = newWt(main, "one");
+    const two = newWt(main, "two");
     writeFileSync(join(one, "a.txt"), "a one\n");
     git(one, "commit", "-q", "-am", "one");
     writeFileSync(join(two, "b.txt"), "b two\n");
@@ -80,11 +89,11 @@ describe("worktree.sh", () => {
     expect(wt(one, "land").ok).toBe(true);
     expect(wt(two, "land").ok).toBe(true);
     expect(git(main, "log", "--format=%s", "-3").split("\n")).toEqual(["two", "one", "init"]);
-  });
+  }, SLOW);
 
   test("land refuses a dirty worktree, a failing check, and the main checkout", () => {
     const { main } = setup();
-    const dir = wt(main, "new", "guard").out;
+    const dir = newWt(main, "guard");
     writeFileSync(join(dir, "a.txt"), "dirty\n");
     expect(wt(dir, "land").err).toContain("dirty");
     git(dir, "commit", "-q", "-am", "guard");
@@ -95,12 +104,12 @@ describe("worktree.sh", () => {
     expect(git(main, "rev-parse", "HEAD")).toBe(before); // nothing landed
     expect(existsSync(dir)).toBe(true);
     expect(wt(main, "land").err).toContain("inside your worktree");
-  });
+  }, SLOW);
 
   test("land stops on a rebase conflict and lands nothing", () => {
     const { main } = setup();
-    const one = wt(main, "new", "c1").out;
-    const two = wt(main, "new", "c2").out;
+    const one = newWt(main, "c1");
+    const two = newWt(main, "c2");
     writeFileSync(join(one, "a.txt"), "one\n");
     git(one, "commit", "-q", "-am", "one");
     writeFileSync(join(two, "a.txt"), "two\n");
@@ -112,11 +121,11 @@ describe("worktree.sh", () => {
     expect(r.err).toContain("conflicts");
     expect(git(main, "rev-parse", "HEAD")).toBe(head);
     expect(git(two, "status", "--porcelain")).toBe(""); // rebase aborted, worktree intact
-  });
+  }, SLOW);
 
   test("land waits for, then refuses, a lock held by another lander", () => {
     const { main } = setup();
-    const dir = wt(main, "new", "locked").out;
+    const dir = newWt(main, "locked");
     writeFileSync(join(dir, "a.txt"), "x\n");
     git(dir, "commit", "-q", "-am", "x");
     mkdirSync(join(main, ".git", "worktree-land.lock"));
@@ -124,5 +133,5 @@ describe("worktree.sh", () => {
     const r = wt(dir, "land");
     expect(r.ok).toBe(false);
     expect(r.err).toContain("wt/other");
-  });
+  }, SLOW);
 });
