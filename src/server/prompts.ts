@@ -22,7 +22,8 @@ export const SITE_LINK = `${WIKI_DRAFTS}/site`;
 /** "Alex (Engineering Manager, Acme)". */
 export const OWNER_INTRO = `${owner.name}${[owner.role, owner.company].filter(Boolean).length ? ` (${[owner.role, owner.company].filter(Boolean).join(", ")})` : ""}`;
 
-/** A clickable URL that opens a local file for the user: Obsidian if configured, else file://. */
+/** A clickable URL that opens a local file for the user: Obsidian if configured, else file://.
+ *  For dashboard links the user clicks. Agents opening files from a shell use {{openFile}} (`open -g`). */
 export function openUrl(absPath: string) {
   const vault = workspace.obsidianVault;
   if (!vault) return `file://${encodeURI(absPath)}`;
@@ -51,8 +52,10 @@ const baseVars = (): Record<string, string> => ({
   "site.postsDir": writing.site.postsDir ?? "(no site configured — skip site drafts)",
   "site.repoDir": writing.site.repoDir ?? writing.site.postsDir ?? "(no site configured)",
   journalPath: config.memory.journalPath,
+  // `open -g` opens the note without bringing Obsidian to the front, so a background agent
+  // doesn't steal focus mid-typing/dictation (a dictated 1-1 note once landed in a research file).
   openFile: workspace.obsidianVault
-    ? `obsidian://open?vault=${workspace.obsidianVault}&file=<path relative to ${workspace.dir}, no .md>`
+    ? `\`open -g "obsidian://open?vault=${encodeURIComponent(workspace.obsidianVault)}&file=<path relative to ${workspace.dir}, URL-encoded, no .md>"\``
     : "`open <path>`",
   whq: WHQ,
   port: String(config.port),

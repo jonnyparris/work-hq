@@ -15,7 +15,7 @@ Missing files fall back to these defaults, so you only copy the ones you change.
 | `{{workspace.dir}}` `{{workspace.scratchDir}}` | `workspace` |
 | `{{tracker}}` `{{chat}}` | `labels` |
 | `{{wiki.name}}` `{{wiki.draftsDir}}` `{{site.name}}` `{{site.postsDir}}` `{{site.repoDir}}` | `writing` |
-| `{{openFile}}` | how to open a file for the user (Obsidian URL or `open`) |
+| `{{openFile}}` | shell command to open a file for the user (`open -g "obsidian://…"` so Obsidian stays in the background, or `open <path>`) |
 | `{{whq}}` `{{port}}` `{{root}}` | the running app |
 
 Some files get extra ones (`{{since}}`, `{{day}}`, `{{known}}`, …) — see the comment at the top of each.
