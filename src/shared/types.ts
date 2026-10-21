@@ -75,6 +75,12 @@ export interface Item {
   confirmedAt?: string;
   /** What the owner typed about it. Kept apart from `detail` so memory re-imports never wipe it. */
   notes?: ItemNote[];
+  /**
+   * Set when a reflection proposal merged into this item (same title as an active-todos line, or a twin from
+   * another source). Holds the proposal's section label, "Proposals 2026-10-19 · High Priority (…)". The item keeps
+   * its own source, so without this the proposal card (prompter §8) never fires for it.
+   */
+  proposalOf?: string;
   createdAt: string;
   updatedAt: string;
 }

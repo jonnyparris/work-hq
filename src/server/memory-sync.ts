@@ -43,6 +43,7 @@ export class MemorySync {
       const seen = this.upsert(parsed);
       const dropped = this.retire(seen);
       this.hub.dedupeExisting();
+      this.markMergedProposals(parsed);
       this.hub.putSync({ ...s, lastOkAt: nowIso(), error: undefined, cursor: `${parsed.length} items · proposals ${proposalsLabel}` });
       return { imported: parsed.length, dropped };
     } catch (e) {
@@ -82,6 +83,20 @@ export class MemorySync {
       }
     }
     return seen;
+  }
+
+  /**
+   * A proposal whose key now resolves to an item with another source key was merged into that item (upsert's
+   * `continue`, createItem's twin, or dedupeExisting). Tag the item so §8 still asks it as a proposal.
+   * 10-19: #1 (token rotation) and #5 (/noassign) merged this way and were never asked.
+   */
+  private markMergedProposals(parsed: ParsedItem[]) {
+    for (const p of parsed) {
+      if (!p.key.startsWith("memory:proposals:")) continue;
+      const item = this.hub.store.itemBySourceKey(p.key);
+      if (!item || item.source.key === p.key || item.proposalOf === p.section) continue;
+      this.hub.updateItem(item.id, { proposalOf: p.section }, { quiet: true });
+    }
   }
 
   /**
