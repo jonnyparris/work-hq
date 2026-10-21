@@ -212,6 +212,9 @@ scripts/worktree.sh list                      # what's in flight (never remove s
 
 The server runs from the main checkout, so restart it after `land`, not before.
 
+A test that runs git or bash needs its own timeout (`}, SLOW);` with `SLOW = 30_000`): git-heavy tests take 1-4 s and
+pass bun's 5 s default under load. `test/spawn-timeout.test.ts` fails on any that don't.
+
 Dispatched work jobs don't have to remember any of this. List the repo under `repos` in your config and a work job
 on an item of that project gets its own worktree before pi starts; the prompt names it, and
 `bin/whq land <jobId>` lands it, runs `publish`, removes the worktree and runs `restart` (only when non-doc files
