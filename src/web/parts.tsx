@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CalendarEvent, Coaching, CoachOutcome, Item, ItemStatus, Job, JournalEntry, Question, SyncState } from "../shared/types.ts";
 import { explainKey } from "../shared/detail.ts";
+import { type PlanGroup, planView, score, searchPlan } from "../shared/plan.ts";
 import { CalmScene } from "./calm.tsx";
 import { api } from "./store.ts";
 import { ACTIONS, Icon, KIND_LABEL, Md, Q_BADGE, ago, dictateInto, finishDictation, hhmm, people, shortUrl, stopDictation, ticketKeys, ticketUrl, whenLabel } from "./ui.tsx";
@@ -249,7 +250,7 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
       <div className="options">
         {q.options.map((o, i) => (
           <button key={o.id} className={`opt ${o.tone ?? ""}`} disabled={busy} onClick={() => answer(o.id)}>
-            <kbd>{i + 1}</kbd>{q.kind === "plan" && o.id === "plan" ? `Commit to ${picked.length || "these"}` : o.label}
+            <kbd>{i + 1}</kbd>{q.kind === "plan" && o.id === "plan" ? (picked.length ? `Commit to ${picked.length}` : "Clear today") : o.label}
           </button>
         ))}
       </div>
@@ -285,52 +286,104 @@ function relDay(iso: string) {
   return days === 0 ? t : days === 1 ? `yesterday ${t}` : d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
-const DAY = 86400000;
-
-/** Planner/lane priority. Exported for tests. */
-export function score(i: Item, now = Date.now()) {
-  let s = 0;
-  // Kill date near: boost from 3 days past to 3 days ahead. Past that the prompter's
-  // "Kill date passed — keep or kill?" card owns it; the planner shouldn't pin it forever.
-  const kill = i.signals?.killDate ? Date.parse(i.signals.killDate) : NaN;
-  if (kill - now < 3 * DAY && kill - now >= -3 * DAY) s += 3;
-  // Due soon: boost from 3 days overdue to 7 days ahead. Older overdue dates get no boost,
-  // so a missed target doesn't sit on top of the planner forever.
-  const due = i.signals?.dueDate ? Date.parse(i.signals.dueDate) : NaN;
-  if (due - now < 7 * DAY && due - now >= -3 * DAY) s += 2;
-  if (i.signals?.pineapple) s += 2;
-  if (i.source.label?.includes("Immediate")) s += 2;
-  if (i.kind === "decision") s += 1;
-  if (i.status === "inbox") s += 1;
-  if (i.kind === "idea") s -= 1;
-  return s;
-}
-
+/**
+ * Morning plan: at most three suggested and pre-ticked, with a reason each (src/shared/plan.ts). Picks sit on top,
+ * the rest below by group. The list follows the live items. Typing filters every open item; ↵ on no match adds
+ * it as a task. Unticked items on today go back to the backlog when you commit.
+ */
 function Planner({ items, picked, setPicked }: { items: Item[]; picked: string[]; setPicked: (x: string[]) => void }) {
-  const cands = useMemo(() => {
-    const today = items.filter((i) => i.status === "today" || i.status === "doing");
-    const rest = items.filter((i) => ["proposed", "inbox"].includes(i.status)).sort((a, b) => score(b) - score(a)).slice(0, 14 - today.length);
-    return [...today, ...rest];
-  }, [items.length]);
-  useEffect(() => { setPicked(cands.filter((i) => i.status === "today" || i.status === "doing").map((i) => i.id)); }, [cands]);
+  const view = useMemo(() => planView(items), [items]);
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (seeded.current) return;
+    seeded.current = true;
+    setPicked(view.suggested);
+  }, [view]);
+  // A pick that got closed or handed to an agent elsewhere drops out.
+  useEffect(() => {
+    const keep = picked.filter((id) => { const it = items.find((i) => i.id === id); return it && !["done", "dropped", "doing"].includes(it.status); });
+    if (keep.length !== picked.length) setPicked(keep);
+  }, [items]);
+  const [q, setQ] = useState("");
+  const [adding, setAdding] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
   const toggle = (id: string) => setPicked(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id]);
+  const byId = new Map(view.rows.map((r) => [r.item.id, r]));
+  const results = q.trim() ? searchPlan(items, q) : [];
+  const add = async () => {
+    const title = q.trim();
+    if (!title || adding) return;
+    setAdding(true);
+    try {
+      const it = await api.add(title, "proposed") as Item;
+      setPicked([...picked, it.id]);
+      setQ("");
+    } finally { setAdding(false); }
+  };
+  const row = (i: Item, why?: string, suggested?: boolean) => (
+    <button key={i.id} className={`pick-row ${picked.includes(i.id) ? "on" : ""}`} onClick={() => toggle(i.id)}>
+      <span className="tick">✓</span>
+      <span style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 13.5 }}>{i.title}</div>
+        <div className="meta">
+          {suggested && <span className="tag suggest">suggested</span>}
+          {why && <span className="why-tag">{why}</span>}
+          {i.project && <span className="tag proj">{i.project}</span>}
+          {!["today", "proposed", "inbox"].includes(i.status) && <span className="tag">{i.status}</span>}
+        </div>
+      </span>
+      <span className="tag">{KIND_LABEL[i.kind]}</span>
+    </button>
+  );
+  const pickedItems = picked.map((id) => items.find((i) => i.id === id)).filter((i): i is Item => Boolean(i));
+  const groups: Array<[PlanGroup, string]> = [["today", "Already on today"], ["due", "Due or scheduled"], ["backlog", "From the backlog"]];
+  const todayLeft = view.rows.filter((r) => r.group === "today" && !picked.includes(r.item.id)).length;
   return (
-    <div className="pick">
-      {cands.map((i) => (
-        <button key={i.id} className={`pick-row ${picked.includes(i.id) ? "on" : ""}`} onClick={() => toggle(i.id)}>
-          <span className="tick">✓</span>
-          <span>
-            <div style={{ fontSize: 13.5 }}>{i.title}</div>
-            <div className="meta">
-              {i.project && <span className="tag proj">{i.project}</span>}
-              {i.signals?.killDate && <span className="tag warn">kill {i.signals.killDate.slice(5)}</span>}
-              {i.signals?.pineapple && <span className="tag src-pineapple">🍍</span>}
-              <span className="tag">{i.source.label?.replace("active-todos · ", "") ?? i.source.type}</span>
-            </div>
-          </span>
-          <span className="tag">{KIND_LABEL[i.kind]}</span>
-        </button>
-      ))}
+    <div className="planner">
+      <div className="plan-search">
+        <input
+          ref={inputRef}
+          className="note-in"
+          value={q}
+          placeholder="Find anything open, or type a new task and press ↵"
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") { setQ(""); (e.target as HTMLInputElement).blur(); }
+            if (e.key === "Enter" && q.trim()) { e.preventDefault(); if (results.length === 1 && !picked.includes(results[0]!.id)) { toggle(results[0]!.id); setQ(""); } else if (!results.length) add(); }
+          }}
+        />
+      </div>
+      <div className="pick">
+        {q.trim() ? (
+          <>
+            {results.map((i) => row(i, byId.get(i.id)?.why))}
+            <button className="pick-row add-row" disabled={adding} onClick={add}>
+              <span className="tick">+</span>
+              <span>Add “{q.trim()}” as a task for today{!results.length && <kbd style={{ marginLeft: 8 }}>↵</kbd>}</span>
+              <span />
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="pick-h">Today's picks <span>{pickedItems.length}{pickedItems.length > 3 ? " · three's the point" : ""}</span></div>
+            {pickedItems.length ? pickedItems.map((i) => row(i, byId.get(i.id)?.why, view.suggested.includes(i.id))) : <div className="pick-empty">Nothing picked. Tick something below, or type a task above.</div>}
+            {groups.map(([g, label]) => {
+              const rs = view.rows.filter((r) => r.group === g && !picked.includes(r.item.id));
+              return rs.length ? (
+                <div key={g}>
+                  <div className="pick-h">{label}</div>
+                  {rs.map((r) => row(r.item, r.why))}
+                </div>
+              ) : null;
+            })}
+          </>
+        )}
+      </div>
+      <div className="pick-foot">
+        {todayLeft > 0 && <span>{todayLeft} unticked on today go back to the backlog.</span>}
+        {view.withAgents > 0 && <span>{view.withAgents} with agents, not shown.</span>}
+        {view.hiddenIdeas > 0 && <span>{view.hiddenIdeas} agent ideas hidden. Search finds them.</span>}
+      </div>
     </div>
   );
 }

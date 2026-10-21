@@ -235,7 +235,7 @@ export class Prompter {
         once: true,
         priority: 95,
         prompt: "Morning. What are today's three?",
-        context: "Pick from what memory thinks is live. Everything else stays proposed.",
+        context: "Up to three suggested, with why. Search or type to add anything else. Unticked items on today go back to the backlog.",
         options: [
           opt("plan", "Commit to these", { type: "commitPlan" }, "primary"),
           opt("later", "Ask me in 30 min", { type: "snooze", minutes: 30 }, "quiet"),

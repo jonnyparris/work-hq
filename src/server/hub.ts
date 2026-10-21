@@ -397,10 +397,22 @@ export class Hub {
         // A note typed with the tap is part of the answer ("Yes — but only the Q3 numbers").
         void this.dispatcher?.triage?.(note?.trim() ? `${effect.text}\nThey added: ${note.trim()}` : effect.text, effect.mode)?.catch((e) => this.toast(`Triage failed again: ${errText(e)}`, "warn"));
         break;
-      case "commitPlan":
-        for (const id of ctx.itemIds ?? []) this.setStatus(id, "today", "picked in morning plan");
+      case "commitPlan": {
+        // The card shows every today item; what's left unticked leaves today (10-21: unticking did nothing,
+        // so today only grew: 16 items, some carried since 10-15). Agent-run (doing) items aren't on the card.
+        const picked = new Set(ctx.itemIds ?? []);
+        for (const id of picked) {
+          const it = this.store.item(id);
+          if (!it || ["done", "dropped"].includes(it.status)) continue;
+          if (it.status === "today") this.updateItem(id, { confirmedAt: nowIso() });
+          else this.setStatus(id, "today", "picked in morning plan");
+        }
+        for (const it of this.store.items()) {
+          if (it.status === "today" && !picked.has(it.id)) this.setStatus(it.id, "proposed", "not picked in morning plan");
+        }
         if (q && !itemId) answerLine();
         break;
+      }
       case "flushJournal":
         void this.journalFlusher?.().catch((e) => this.toast(`Couldn't save the journal: ${errText(e)}`, "warn"));
         if (q && !itemId) answerLine();

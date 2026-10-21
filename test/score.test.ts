@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Item } from "../src/shared/types.ts";
-import { score } from "../src/web/parts.tsx";
+import { score } from "../src/shared/plan.ts";
 
 const NOW = Date.parse("2026-10-20T12:00:00Z");
 const item = (dueDate?: string): Item =>
