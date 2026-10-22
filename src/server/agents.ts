@@ -7,6 +7,7 @@ import { type BulkRequest, deferHorizon } from "../shared/batch.ts";
 import { explainKey, sentences } from "../shared/detail.ts";
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { loadavg } from "node:os";
 import { resolve } from "node:path";
 import type { ActionKind, AgentReport, Item, Job, JobKind, NoteDecision } from "../shared/types.ts";
 import * as cmux from "./cmux.ts";
@@ -16,6 +17,7 @@ import { type DemoScript, demoActionScript, demoSweepScript, feedLine } from "./
 import { type Dispatcher, type Hub, isCrash, queuedNote } from "./hub.ts";
 import { GatewayToken } from "./gateway-token.ts";
 import { backoffMs, isRateLimited, LaunchGate, RunCap } from "./launch-gate.ts";
+import { overloaded } from "./load.ts";
 import { assertShortArgs, PiPool, PiRpc, piStamp, type RunOutcome } from "./pi-rpc.ts";
 import {
   actionPrompt, calendarPrompt, calendarSweepPrompt, explainPrompt, notePrompt, openUrl, postSweepPrompt, schedulePrompt, SITE_LINK, SITE_POSTS,
@@ -114,12 +116,19 @@ export class Agents implements Dispatcher {
   private running = new Map<string, Running>();
   /** Every pi launch goes through here, so bursts can't trip per-minute provider limits. */
   readonly gate = new LaunchGate(() => config.pi.launchSpacingSec * 1000);
-  /** At most `pi.maxRunningJobs` action jobs working at once; the rest wait as "queued". */
+  /** At most `pi.maxRunningJobs` action jobs working at once, none while load > `pi.maxLoad`; the rest wait as "queued". */
   readonly cap = new RunCap(
     () => config.pi.maxRunningJobs,
-    // A headless run waiting out a rate limit sits at "queued" with a startedAt: it keeps its slot for the retry.
-    () => this.hub.store.liveJobs().filter((j) => j.kind === "action" && (j.status === "running" || (j.status === "queued" && j.startedAt))).length,
+    () => this.runningActions(),
+    () => overloaded(config.pi.maxLoad, this.readLoad),
   );
+  /** os.loadavg, swappable in tests. */
+  readLoad: () => number[] = loadavg;
+
+  /** Action jobs holding a slot. A headless run waiting out a rate limit sits at "queued" with a startedAt: it keeps its slot for the retry. */
+  runningActions() {
+    return this.hub.store.liveJobs().filter((j) => j.kind === "action" && (j.status === "running" || (j.status === "queued" && j.startedAt))).length;
+  }
 
   constructor(private hub: Hub, private cmuxDeps: CmuxDeps = realCmux) {
     hub.dispatcher = this;
@@ -235,9 +244,16 @@ export class Agents implements Dispatcher {
   private async launchAction(jobId: string, title: string, prompt: string, useCmux: boolean) {
     const queued = () => this.hub.store.job(jobId)?.status === "queued";
     if (this.cap.full()) {
-      const max = config.pi.maxRunningJobs;
-      this.line(jobId, `⏳ waiting for a slot: ${max} agents running (cap ${max}), ${this.cap.waiting} ahead`);
-      this.hub.toast(`Queued: ${title} — ${max} agents already running`, "info");
+      const ahead = this.cap.waiting;
+      if (this.cap.blocker() === "load") {
+        const l1 = (this.readLoad()[0] ?? 0).toFixed(1);
+        this.line(jobId, `⏳ holding: load ${l1} is above ${config.pi.maxLoad} (pi.maxLoad), ${ahead} ahead`);
+        this.hub.toast(`Queued: ${title} — load ${l1}, holding launches above ${config.pi.maxLoad}`, "info");
+      } else {
+        const max = config.pi.maxRunningJobs;
+        this.line(jobId, `⏳ waiting for a slot: ${max} agents running (cap ${max}), ${ahead} ahead`);
+        this.hub.toast(`Queued: ${title} — ${max} agents already running`, "info");
+      }
     }
     const release = await this.cap.acquire(queued);
     if (!release) return; // cancelled while waiting for a slot

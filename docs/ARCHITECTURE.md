@@ -101,6 +101,14 @@
   running one finishes, fails, is stopped or blocks on you. Blocked and finished-but-open sessions
   don't count; sweeps and triage aren't capped. A blocked session you resume counts again at once,
   so the count can go over the cap until a session finishes; a job stuck on "running" holds its slot until you Stop it.
+- **Load is logged, and can gate launches.** The job count is a proxy; load is what hurts. The
+  scheduler samples `os.loadavg()` once a minute into the `load` table (8 days kept) with the number
+  of action jobs running (`src/server/load.ts`). The Agents header shows the latest 1-min load (gold
+  above the core count). `GET /api/load?hours=24` returns the samples plus a summary (peak, minutes
+  over the core count, Pearson r between running jobs and load, mean load per job count), and
+  `bin/work-hq usage` prints the same as "Machine load". `pi.maxLoad` (default 0 = off) makes
+  `RunCap` also hold launches while the 1-min load is above it, but only while one of ours is
+  running, so outside load can't stall an empty queue. A 15 s timer re-checks held launches.
 - **Human decisions are the source of truth.** `confirmedAt` is set whenever the owner decides
   something. Memory re-imports refresh text but never undo a confirmed status.
 

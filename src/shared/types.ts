@@ -337,7 +337,22 @@ export interface Snapshot {
   journal: JournalEntry[];
   sync: SyncState[];
   coaching?: Coaching;
+  /** Latest load-average sample (src/server/load.ts). */
+  load?: LoadNow;
   config: PublicConfig;
+}
+
+/** One load-average sample, as the Agents panel shows it. */
+export interface LoadNow {
+  at: string;
+  l1: number;
+  l5: number;
+  l15: number;
+  cores: number;
+  /** Action jobs running at the sample. */
+  jobs: number;
+  /** pi.maxLoad: launches hold while l1 is above it. 0 = off. */
+  max: number;
 }
 
 export interface PublicConfig {
@@ -367,6 +382,7 @@ export type ServerEvent =
   | { type: "journal"; data: JournalEntry }
   | { type: "sync"; data: SyncState }
   | { type: "coaching"; data: Coaching }
+  | { type: "load"; data: LoadNow }
   | { type: "toast"; data: { text: string; tone?: "good" | "warn" | "info" } }
   | { type: "notify"; data: { title: string; body: string; questionId?: string } };
 

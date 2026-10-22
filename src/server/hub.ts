@@ -12,6 +12,7 @@ import { asksForIdeas, IDEA_CAP } from "../shared/ideas.ts";
 import { config, memoryOn } from "./config.ts";
 import { newId, nowIso, type Store } from "./db.ts";
 import { findTwin, isOpen } from "./dedupe.ts";
+import { LoadLog, loadNow } from "./load.ts";
 
 type Listener = (e: ServerEvent) => void;
 
@@ -39,7 +40,19 @@ export class Hub {
   /** Writes the journal to memory (MemorySync; wired in index.ts). */
   journalFlusher?: () => Promise<unknown>;
 
-  constructor(readonly store: Store) {}
+  /** Load average once a minute (src/server/load.ts), in the store so a restart keeps the history. */
+  readonly load: LoadLog;
+
+  constructor(readonly store: Store) {
+    this.load = new LoadLog(store);
+  }
+
+  /** Take a load sample (scheduler, every minute) and push it to the Agents panel. */
+  sampleLoad(jobs: number) {
+    const data = loadNow(this.load.record(jobs), config.pi.maxLoad);
+    this.emit({ type: "load", data });
+    return data;
+  }
 
   // ── pub/sub ────────────────────────────────────────────────────────────
   subscribe(fn: Listener) {
@@ -68,6 +81,7 @@ export class Hub {
       journal: this.store.journal(120),
       sync: this.store.syncStates(),
       coaching: this.coaching(),
+      load: ((s) => (s ? loadNow(s, config.pi.maxLoad) : undefined))(this.load.latest()),
       config: {
         port: config.port,
         demo: config.demo,

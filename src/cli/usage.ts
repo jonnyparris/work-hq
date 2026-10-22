@@ -9,6 +9,7 @@ import { Database } from "bun:sqlite";
 import type { Item, Job, JournalEntry, Question } from "../shared/types.ts";
 import { config } from "../server/config.ts";
 import { AFFIRMATIVE } from "../shared/dead-button.ts";
+import { type LoadSample, summarise } from "../server/load.ts";
 
 const arg = (name: string) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -197,6 +198,25 @@ else {
     p("\nJobs that offered more than one idea:");
     for (const j of top.slice(0, 8)) p(`- ${md(cut(j.title, 80))}: ${j.ideasFiled ?? 0} filed, ${j.ideasFolded?.length ?? 0} folded`);
   }
+}
+p();
+
+// ── machine load ───────────────────────────────────────────────────────────
+// Sampled once a minute by the scheduler (src/server/load.ts). The question it answers: does load
+// still follow how many agents are running, and is pi.maxRunningJobs / pi.maxLoad set right?
+p("## Machine load");
+const hasLoad = Boolean(db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'load'").get());
+const loadRows = hasLoad
+  ? (db.query("SELECT t, l1, l5, l15, jobs FROM load WHERE t >= ? AND t < ? ORDER BY t").values(Date.parse(since), Date.parse(until)) as LoadSample[])
+  : [];
+if (!loadRows.length) p("No samples.");
+else {
+  const ls = summarise(loadRows);
+  p(`${ls.samples} samples, ${ls.cores} cores. Mean 1-min load ${ls.meanL1}; peak ${ls.peak!.l1} at ${hm(ls.peak!.at)} with ${ls.peak!.jobs} agents running; above ${ls.cores} for ${ls.overCores} min.`);
+  p(ls.r === undefined ? "Correlation with running agents: not enough spread to say." : `Correlation (Pearson r) between running agents and 1-min load: ${ls.r}.`);
+  p("\n| agents running | minutes | mean 1-min load |");
+  p("|---|---|---|");
+  for (const b of ls.byJobs) p(`| ${b.jobs} | ${b.n} | ${b.meanL1} |`);
 }
 p();
 

@@ -45,6 +45,10 @@ export class Scheduler {
     this.timers.push(setInterval(safe("cmux", () => this.agents.pollCmux()), 3_000));
     this.timers.push(setInterval(safe("prompter", () => this.prompter.tick()), 30_000));
     this.timers.push(setInterval(safe("cadence", () => this.cadence()), 60_000));
+    // Load average once a minute, for "does load follow job counts?" after the fact (src/server/load.ts).
+    this.timers.push(setInterval(safe("load", () => this.hub.sampleLoad(this.agents.runningActions())), 60_000));
+    // Load falls without any job stopping, so launches held by pi.maxLoad need a nudge.
+    this.timers.push(setInterval(safe("load-gate", () => config.pi.maxLoad > 0 && this.agents.cap.pump()), 15_000));
     // First pass shortly after boot.
     setTimeout(safe("boot", () => this.boot()), 500);
   }
@@ -54,6 +58,11 @@ export class Scheduler {
   }
 
   private async boot() {
+    try {
+      this.hub.sampleLoad(this.agents.runningActions()); // a load chip before the first minute
+    } catch (e) {
+      console.error("[load]", (e as Error).message);
+    }
     if (memoryOn()) await this.memory.importAll().catch((e) => console.error("[memory]", e.message));
     this.prompter.tick();
     this.last.memory = Date.now();

@@ -48,6 +48,9 @@
     "launchSpacingSec": 20,
     // Most action agents working at once; more wait as "queued". Blocked sessions don't count. 0 = off.
     "maxRunningJobs": 8,
+    // Also hold launches while the 1-minute load average is above this (e.g. 40 on 12 cores). 0 = off.
+    // Load is logged every minute regardless: GET /api/load, `bin/work-hq usage`.
+    "maxLoad": 0,
     // On a rate-limit / 429 / 503 / overloaded error: retry this many times, waiting a random time in this range (seconds).
     "rateLimitRetries": 2,
     "rateLimitBackoffSec": [60, 90],

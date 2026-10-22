@@ -74,21 +74,34 @@ export class LaunchGate {
  * Call `pump()` whenever a job stops running; waiters whose job is gone (`wanted()` false) are dropped.
  * Admission only: a blocked session that the owner resumes counts again at once, so the count can sit
  * above the cap; new launches then wait until it drops below.
+ *
+ * `overloaded()` (pi.maxLoad) also holds launches while the machine's load is high, whatever the job
+ * count: load is what actually hurts, the count is a proxy. It only holds while at least one job is
+ * running or reserved, so load from outside Work HQ can't stall the queue with nothing of ours to finish.
+ * Load falls without any job stopping, so the owner must also call `pump()` on a timer.
  */
 export class RunCap {
   private queue: Array<{ wanted: () => boolean; go: (release: () => void) => void; drop: () => void }> = [];
   private reserved = 0;
-  constructor(private max: () => number, private running: () => number) {}
+  constructor(private max: () => number, private running: () => number, private overloaded: () => boolean = () => false) {}
+
+  /** Why a launch now would wait: the job cap, high load, or neither. */
+  blocker(): "cap" | "load" | undefined {
+    const max = this.max();
+    const busy = this.running() + this.reserved;
+    if (max > 0 && busy >= max) return "cap";
+    if (busy > 0 && this.overloaded()) return "load";
+    return undefined;
+  }
 
   /** Jobs waiting for a slot, cancelled ones included until the next pump. */
   get waiting() {
     return this.queue.length;
   }
 
-  /** True when a launch now would have to wait. A max of 0 or less turns the cap off. */
+  /** True when a launch now would have to wait. A max of 0 or less turns the job cap off; the load gate is separate. */
   full() {
-    const max = this.max();
-    return max > 0 && (this.queue.some((w) => w.wanted()) || this.running() + this.reserved >= max);
+    return this.queue.some((w) => w.wanted()) || this.blocker() !== undefined;
   }
 
   /**
@@ -103,7 +116,6 @@ export class RunCap {
   }
 
   pump() {
-    const max = this.max();
     while (this.queue.length) {
       const head = this.queue[0]!;
       if (!head.wanted()) {
@@ -111,7 +123,7 @@ export class RunCap {
         head.drop();
         continue;
       }
-      if (max > 0 && this.running() + this.reserved >= max) return;
+      if (this.blocker()) return;
       this.queue.shift();
       this.reserved++;
       let done = false;

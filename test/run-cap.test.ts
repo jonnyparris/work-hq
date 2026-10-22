@@ -129,6 +129,29 @@ describe("Agents with a cap of 2", () => {
     expect(launched).toHaveLength(3);
   });
 
+  test("with load above pi.maxLoad, the second dispatch holds on load, then goes once load falls", async () => {
+    const { hub, items, agents, launched } = setup();
+    const prevLoad = config.pi.maxLoad;
+    config.pi.maxLoad = 40;
+    agents.readLoad = () => [55.2, 30, 20];
+    try {
+      const a = (await agents.dispatch(items[0]!.id, "work"))!;
+      await settle(() => launched.length >= 1);
+      expect(launched).toEqual([a.id]); // nothing of ours was running: outside load doesn't hold the first
+      const b = (await agents.dispatch(items[1]!.id, "work"))!;
+      await Bun.sleep(20);
+      expect(launched).toHaveLength(1);
+      expect(hub.store.job(b.id)!.status).toBe("queued");
+      expect(hub.store.job(b.id)!.tail.join("\n")).toContain("holding: load 55.2 is above 40 (pi.maxLoad)");
+      agents.readLoad = () => [12, 30, 20]; // load fell; nothing stopped
+      agents.cap.pump(); // the scheduler's 15 s timer
+      await settle(() => launched.length >= 2);
+      expect(launched).toEqual([a.id, b.id]);
+    } finally {
+      config.pi.maxLoad = prevLoad;
+    }
+  });
+
   test("a headless run waiting out a rate limit (queued, already started) keeps its slot", async () => {
     const { hub, items, agents, launched } = setup();
     const base = { kind: "action" as const, name: "work", title: "t", surface: "headless" as const, tail: [], createdAt: "2026-01-01T00:00:00Z" };

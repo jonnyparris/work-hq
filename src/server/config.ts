@@ -187,6 +187,12 @@ export const config = {
      * (waiting for you) and finished-but-open sessions don't count. 10-21: 20-25 at once drove load to 255. 0 = off.
      */
     maxRunningJobs: Number(pick("WORK_HQ_MAX_RUNNING_JOBS", "pi.maxRunningJobs", 8)),
+    /**
+     * Also hold new action launches while the 1-minute load average is above this (at least one job of
+     * ours must be running, so outside load can't stall the queue). 0 = off. Load is sampled every minute
+     * either way (GET /api/load, `bin/work-hq usage`); pick a value from a week of samples.
+     */
+    maxLoad: Number(pick("WORK_HQ_MAX_LOAD", "pi.maxLoad", 0)),
     /** On a provider rate-limit / 503 error, retry this many times. 0 = off. */
     rateLimitRetries: Number(pick("WORK_HQ_RATE_LIMIT_RETRIES", "pi.rateLimitRetries", 2)),
     /** Wait a random time in this range (seconds) before each rate-limit retry. */

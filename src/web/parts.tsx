@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CalendarEvent, Coaching, CoachOutcome, Item, ItemStatus, Job, JournalEntry, Question, SyncState } from "../shared/types.ts";
+import type { CalendarEvent, Coaching, CoachOutcome, Item, ItemStatus, Job, JournalEntry, LoadNow, Question, SyncState } from "../shared/types.ts";
 import { explainKey } from "../shared/detail.ts";
 import { committedView } from "../shared/committed.ts";
 import { type PlanGroup, planView, score, searchPlan } from "../shared/plan.ts";
@@ -635,7 +635,7 @@ export function CoachTrack({ history }: { history: CoachOutcome[] }) {
 }
 
 // ── Agents ────────────────────────────────────────────────────────────────
-export function AgentsPanel({ jobs, cmux }: { jobs: Job[]; cmux: boolean }) {
+export function AgentsPanel({ jobs, cmux, load }: { jobs: Job[]; cmux: boolean; load?: LoadNow }) {
   const live = jobs.filter((j) => ["running", "blocked", "queued"].includes(j.status));
   const recent = jobs.filter((j) => !live.includes(j)).slice(0, 6);
   return (
@@ -643,11 +643,27 @@ export function AgentsPanel({ jobs, cmux }: { jobs: Job[]; cmux: boolean }) {
       <div className="panel-h">
         <h3>Agents</h3>
         {live.length > 0 && <span className="count" style={{ color: "var(--sky)" }}>{live.length} live</span>}
+        {load && <LoadChip load={load} />}
         <span className="act" title="Dispatched actions open as pi sessions in the cmux 'Work HQ' group">{cmux ? "cmux ✓" : "headless"}</span>
       </div>
       {!jobs.length && <div className="empty">No agents yet. Dispatch from any item or question.</div>}
       {[...live, ...recent].map((j) => <JobCard key={j.id} j={j} />)}
     </div>
+  );
+}
+
+/** Latest 1-min load average. Gold above the core count, coral above pi.maxLoad (launches are held). */
+export function LoadChip({ load }: { load: LoadNow }) {
+  const held = load.max > 0 && load.l1 > load.max;
+  const color = held ? "var(--coral)" : load.l1 > load.cores ? "var(--gold)" : "var(--text-3)";
+  const title =
+    `Load average ${load.l1} / ${load.l5} / ${load.l15} (1 / 5 / 15 min) on ${load.cores} cores, ${load.jobs} agents running, at ${new Date(load.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.` +
+    (load.max > 0 ? ` New launches hold while the 1-min load is above ${load.max}.` : "") +
+    " History: /api/load";
+  return (
+    <span className="count" data-testid="load" title={title} style={{ color }}>
+      load {load.l1.toFixed(1)}{held ? " · holding" : ""}
+    </span>
   );
 }
 

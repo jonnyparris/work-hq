@@ -1,6 +1,7 @@
 // SQLite store. Each entity is a JSON document with a few indexed columns —
 // the shapes are still moving, and a document store keeps migrations cheap.
 
+import type { LoadSample } from "./load.ts";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -33,6 +34,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS journal (id TEXT PRIMARY KEY, status TEXT, updated TEXT, doc TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sync (id TEXT PRIMARY KEY, status TEXT, updated TEXT, doc TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
+      CREATE TABLE IF NOT EXISTS load (t INTEGER PRIMARY KEY, l1 REAL, l5 REAL, l15 REAL, jobs INTEGER);
       -- Extra source keys that point at an existing item (a duplicate from another source was merged into it).
       CREATE TABLE IF NOT EXISTS item_keys (key TEXT PRIMARY KEY, item_id TEXT NOT NULL);
     `);
@@ -218,6 +220,15 @@ export class Store {
   putSync(s: SyncState) {
     this.put("sync", s.name, s.error ? "error" : "ok", s.lastRunAt ?? "", s);
     return s;
+  }
+
+  /** Load-average samples (src/server/load.ts), oldest first. */
+  loadSamples(sinceMs = 0): LoadSample[] {
+    return this.db.query("SELECT t, l1, l5, l15, jobs FROM load WHERE t >= ? ORDER BY t").values(sinceMs) as LoadSample[];
+  }
+  putLoad(s: LoadSample, keepSinceMs: number) {
+    this.db.query("INSERT OR REPLACE INTO load (t, l1, l5, l15, jobs) VALUES (?, ?, ?, ?, ?)").run(...s);
+    this.db.query("DELETE FROM load WHERE t < ?").run(keepSinceMs);
   }
 
   kv(k: string): string | undefined {

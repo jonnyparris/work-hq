@@ -12,6 +12,7 @@ import { resetDemo } from "./demo.ts";
 import { DemoSandbox } from "./demo-sandbox.ts";
 import { Store, nowIso } from "./db.ts";
 import { Hub } from "./hub.ts";
+import { summarise } from "./load.ts";
 import { MemoryClient } from "./memory.ts";
 import { MemorySync } from "./memory-sync.ts";
 import { Prompter, reviewUtterance } from "./prompter.ts";
@@ -57,6 +58,15 @@ const server = Bun.serve({
     "/talk": talk,
 
     "/api/snapshot": { GET: () => json(hub.snapshot()) },
+    // Load-average samples ([epoch ms, l1, l5, l15, action jobs running]) and a summary. ?hours=24 (max 192).
+    "/api/load": {
+      GET: (req) => {
+        const h = Number(new URL(req.url).searchParams.get("hours") ?? 24);
+        const hours = Math.min(192, Math.max(0, Number.isFinite(h) && h > 0 ? h : 24));
+        const samples = hub.load.samples(Date.now() - hours * 3600_000);
+        return json({ hours, maxLoad: config.pi.maxLoad, summary: summarise(samples), samples });
+      },
+    },
 
     "/api/voice": { GET: () => handle(async () => ({ engine: await dictationEngine(), silenceMs: config.voice.silenceMs })) },
     "/api/transcribe": {

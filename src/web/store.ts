@@ -31,7 +31,8 @@ function reducer(s: State, e: ServerEvent | { type: "conn"; up: boolean } | { ty
     case "snapshot":
       if (e.data.config?.owner) setProfile(e.data.config.owner);
       setTracker(e.data.config?.labels?.trackerUrl);
-      return { ...s, ...e.data };
+      // No load in a fresh snapshot means no recent sample: drop the old chip.
+      return { ...s, load: undefined, ...e.data };
     case "item": return { ...s, items: upsert(s.items, e.data) };
     case "item:remove": return { ...s, items: s.items.filter((i) => i.id !== e.id) };
     case "question":
@@ -44,6 +45,7 @@ function reducer(s: State, e: ServerEvent | { type: "conn"; up: boolean } | { ty
     case "upcoming": return { ...s, upcoming: e.data };
     case "journal": return { ...s, journal: upsert(s.journal, e.data).slice(0, 300) };
     case "coaching": return { ...s, coaching: e.data };
+    case "load": return { ...s, load: e.data };
     case "sync": return { ...s, sync: upsert(s.sync.map((x) => ({ ...x, id: x.name })), { ...e.data, id: e.data.name }) };
     case "toast": return { ...s, toasts: [...s.toasts, { id: ++toastId, ...e.data }].slice(-4) };
     case "toast:drop": return { ...s, toasts: s.toasts.filter((t) => t.id !== e.id) };
