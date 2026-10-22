@@ -123,6 +123,18 @@ describe("worktree.sh", () => {
     expect(git(two, "status", "--porcelain")).toBe(""); // rebase aborted, worktree intact
   }, SLOW);
 
+  test("a land with --check releases the land lock", () => {
+    // 10-22: the check step reused $lock for the test-lock wrapper, so the EXIT trap removed the wrong
+    // path and every `land --check` left .git/worktree-land.lock behind for the next lander.
+    const { main } = setup();
+    const dir = newWt(main, "checked");
+    writeFileSync(join(dir, "a.txt"), "c\n");
+    git(dir, "commit", "-q", "-am", "c");
+    const r = wt(dir, "land", "--keep", "--check", "true");
+    expect(r.ok).toBe(true);
+    expect(existsSync(join(main, ".git", "worktree-land.lock"))).toBe(false);
+  }, SLOW);
+
   test("land waits for, then refuses, a lock held by another lander", () => {
     const { main } = setup();
     const dir = newWt(main, "locked");
