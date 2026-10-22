@@ -4,6 +4,7 @@
 //   action  — interactive pi in a cmux workspace. Anything the owner dispatches. Highly visible.
 
 import { type BulkRequest, deferHorizon } from "../shared/batch.ts";
+import { claimsDispatch } from "../shared/dead-button.ts";
 import { explainKey, sentences } from "../shared/detail.ts";
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
@@ -1221,18 +1222,6 @@ const ACTION_LABEL: Record<ActionKind, string> = {
 };
 
 /** Why a pi run failed, in words that point at the real cause. A timeout is ours, not pi's last stderr line. */
-// Words that say an agent is already on it. Past/present tense only: "dispatch" alone is mostly
-// "Want me to dispatch…?" or "you can dispatch it" (3 of 35 naive hits in 182 triage replies, 10-20).
-const DISPATCH_CLAIM = /\b(dispatched|dispatching|sent an agent|sending an agent|handed (?:it )?off|asking|chasing)\b/i;
-const DISPATCH_HEDGE = /\b(not|no|never|want me|shall i|should i|i can|you can|could|would|asking (?:you|whether|if))\b|n't\b|\?/i;
-
-/** True when some sentence of a triage reply says an agent was started ("Dispatched an agent", "Asking Maryna"),
- *  skipping negated or offered ones ("Not dispatched", "Want me to dispatch?"). A heuristic: hits go to the journal. */
-export function claimsDispatch(reply: string | undefined): boolean {
-  if (!reply) return false;
-  return reply.split(/(?<=[.!?;])\s+/).some((s) => DISPATCH_CLAIM.test(s) && !DISPATCH_HEDGE.test(s));
-}
-
 export function runError(r: { code: number | null; signal?: string | null; timedOut: boolean; timeoutMin: number; lastError?: string; stderr: string }): string {
   if (r.timedOut) return `timed out after ${r.timeoutMin} min`;
   if (r.code === null && r.signal === "SIGKILL") return "pi killed by SIGKILL (not us; endpoint security? check `log stream` for sentineld)";

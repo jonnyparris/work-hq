@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { Agents, claimsDispatch, type CmuxDeps } from "../src/server/agents.ts";
+import { Agents, type CmuxDeps } from "../src/server/agents.ts";
+import { claimsDispatch } from "../src/shared/dead-button.ts";
 import { Store } from "../src/server/db.ts";
 import { Hub, queuedNote } from "../src/server/hub.ts";
 import type { Question } from "../src/shared/types.ts";

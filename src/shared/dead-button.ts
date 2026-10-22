@@ -28,3 +28,16 @@ export function doesNothing(e: Effect): boolean {
 export function deadOptions(q: Pick<Question, "options">): QuestionOption[] {
   return q.options.filter((o) => promisesAction(o.label) && doesNothing(o.effect));
 }
+
+// Words that say an agent is already on it. Past/present tense only: "dispatch" alone is mostly
+// "Want me to dispatch…?" or "you can dispatch it" (3 of 35 naive hits in 182 triage replies, 10-20).
+const DISPATCH_CLAIM = /\b(dispatched|dispatching|sent an agent|sending an agent|handed (?:it )?off|asking|chasing)\b/i;
+const DISPATCH_HEDGE = /\b(not|no|never|want me|shall i|should i|i can|you can|could|would|asking (?:you|whether|if))\b|n't\b|\?/i;
+
+/** True when some sentence of a triage reply says an agent was started ("Dispatched an agent", "Asking Maryna"),
+ *  skipping negated or offered ones ("Not dispatched", "Want me to dispatch?"). A heuristic: hits go to the journal.
+ *  Used by triage (agents.ts) and the note reader's context-only branch (hub.applyNote). */
+export function claimsDispatch(reply: string | undefined): boolean {
+  if (!reply) return false;
+  return reply.split(/(?<=[.!?;])\s+/).some((s) => DISPATCH_CLAIM.test(s) && !DISPATCH_HEDGE.test(s));
+}

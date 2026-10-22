@@ -542,7 +542,8 @@ export class Prompter {
     const prev = store.openQuestionByKey(MERGED_KEY);
     if (!prev) {
       const last = store.lastAnswered(MERGED_KEY);
-      if (last?.answeredAt && now.getTime() - Date.parse(last.answeredAt) < MERGED_COOLDOWN_MIN * MIN) return { asked: false, ids: new Set() };
+      // Answered only: a card that expired because its items moved on (closed elsewhere, left waiting) wasn't seen.
+      if (last?.status === "answered" && last.answeredAt && now.getTime() - Date.parse(last.answeredAt) < MERGED_COOLDOWN_MIN * MIN) return { asked: false, ids: new Set() };
     }
     const found: Array<{ it: Item; mr: Landed }> = [];
     let pending = false;
@@ -558,7 +559,8 @@ export class Prompter {
     const ids = new Set(found.map((f) => f.it.id));
     if (prev) {
       if (!found.length) this.hub.expireQuestion(prev.id, "nothing left");
-      else if (mergedIds(prev).join() !== [...ids].join()) {
+      // itemId too: a card drawn before mergedCard() set it (10-22 "chase Omar") heals on the next tick.
+      else if (mergedIds(prev).join() !== [...ids].join() || prev.itemId !== mergedCard(found).itemId) {
         Object.assign(prev, mergedCard(found));
         store.putQuestion(prev);
         this.hub.emit({ type: "question", data: prev });
@@ -659,6 +661,8 @@ export class Prompter {
       else if (q.key.startsWith("due:") && it && (it.status !== "scheduled" || q.key !== `due:${it.id}:${it.scheduledFor}`)) this.hub.expireQuestion(q.id, "rescheduled");
       // "Still on it?" once it's off `doing` (answered elsewhere, re-dispatched) or an agent picked it up again.
       else if (q.key.startsWith("doing:") && it && (it.status !== "doing" || this.hub.store.liveJobs().some((j) => j.itemId === it.id))) this.hub.expireQuestion(q.id, "moved on");
+      // The one-item merged card is that item's card now (it blocks its other prompts): gone once it's off `waiting`.
+      else if (q.key === MERGED_KEY && it && it.status !== "waiting") this.hub.expireQuestion(q.id, "moved on");
       else if (q.kind === "confirm" && it && it.status !== "inbox") this.hub.expireQuestion(q.id, "triaged");
       else if (q.kind === "post" && it && q.key.endsWith(":idea") && hasDraft(it)) this.hub.expireQuestion(q.id, "drafted");
       else if (q.kind === "prep" && q.eventId && this.startedAgo(q.eventId, now) > 10 * MIN) this.hub.expireQuestion(q.id, "meeting started");
@@ -877,6 +881,10 @@ export function mergedCard(found: Array<{ it: Pick<Item, "id" | "title">; mr: La
     effects: found.map((f) => ({ type: "status", status, itemId: f.it.id, note: note(f.mr) })),
   });
   return {
+    // One item: the card is that item's card, so a typed note ("chase Omar") acts on it. Several: no item, and
+    // applyNote says so instead of filing the note as context (10-22: "Sending an agent", nothing started, twice).
+    // Explicit undefined so Object.assign clears it when a one-item card grows.
+    itemId: n === 1 ? found[0]!.it.id : undefined,
     badge: landedBadge(found.map((f) => f.mr)),
     priority: 55,
     prompt: n === 1 ? `Waiting on this, but ${one}: ${found[0]!.it.title}` : `${n} waiting items: ${many}. Mark all done?`,

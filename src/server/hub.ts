@@ -7,7 +7,7 @@ import type {
   QuestionOption, ServerEvent, Snapshot, SyncState, Coaching, CoachOutcome,
 } from "../shared/types.ts";
 import { type BulkRequest, deckGroup, deferHorizon, localDay, optionFor, setsStatus } from "../shared/batch.ts";
-import { deadOptions, promisesAction } from "../shared/dead-button.ts";
+import { claimsDispatch, deadOptions, promisesAction } from "../shared/dead-button.ts";
 import { asksForIdeas, IDEA_CAP } from "../shared/ideas.ts";
 import { config, memoryOn } from "./config.ts";
 import { newId, nowIso, type Store } from "./db.ts";
@@ -652,9 +652,15 @@ export class Hub {
     }
     // Context only. Keep it, ask again next working morning.
     const back = nextMorning(now);
+    // The reader wanted an agent but the card has no single item to send one on (a batched card).
+    const stranded = !item && Boolean(d.dispatch?.action);
+    // The reply was written before anything ran. Nothing ran here, so a reply that says an agent is on it is
+    // false (10-22 "chase Omar" → "Sending an agent to chase Omar.", no job). Say so wherever it's kept.
+    const unbacked = Boolean(d.reply?.trim()) && (stranded || claimsDispatch(d.reply));
+    if (unbacked) this.journal(`Note reply claimed a dispatch but none started (${stranded ? "card has no single item" : "heuristic, check it"}): "${d.reply!.trim()}"`, { itemId: item?.id, questionId: q.id, who: "hq" });
     // A question in the note ("eli5") gets its answer in d.reply. A toast alone loses it (10-15): keep it
     // on the item, in the journal and on the card, so the card that comes back still explains itself.
-    const reply = d.reply?.trim();
+    const reply = unbacked ? `${d.reply!.trim()} (No agent started.)` : d.reply?.trim();
     if (reply) {
       if (item) this.updateItem(item.id, { notes: [...(item.notes ?? []), { at: nowIso(), text: reply, who: "hq" as const }].slice(-20) });
       this.journal(item ? `Reply on ${item.title}: ${reply}` : `Reply re "${q.prompt}": ${reply}`, { itemId: item?.id, questionId: q.id, who: "hq" });
@@ -664,16 +670,21 @@ export class Hub {
         this.store.putQuestion(cur);
       }
     }
+    if (stranded) {
+      this.park(q, back.toISOString());
+      this.toast(batchedItems(q) > 1 ? "That card covers several items. Open one to act on it." : "That card isn't tied to an item, so no agent started.", "warn");
+      return;
+    }
     // A drawer note read as background: nobody asked a question, so there's no card to bring back.
     if (q.key.startsWith("drawer:")) {
       this.expireQuestion(q.id, `Note: ${text}`);
       // reply-safe: context only, nothing runs; the reply is an answer.
-      this.toast(d.reply ? `${d.reply} Kept as context.` : "Kept as context.", "info");
+      this.toast(reply ? `${reply} Kept as context.` : "Kept as context.", "info");
       return;
     }
     this.park(q, back.toISOString());
     // reply-safe: context only, nothing runs; the reply is an answer.
-    this.toast(d.reply ? `${d.reply} Back ${fmtDay(back)}.` : `Noted. Back ${fmtDay(back)}.`, "info");
+    this.toast(reply ? `${reply} Back ${fmtDay(back)}.` : `Noted. Back ${fmtDay(back)}.`, "info");
   }
 
   /** Hide an open question until `until`. */
@@ -1017,6 +1028,11 @@ export function sentAgent(action: ActionKind, title: string) {
 export function runsLater(e: Effect): boolean {
   if (e.type === "multi") return e.effects.some(runsLater);
   return e.type === "dispatch" || e.type === "when" || e.type === "triage" || e.type === "gatewayLogin" || e.type === "sweep" || e.type === "flushJournal";
+}
+
+/** How many items a batched card's options act on (its widest multi of per-item status effects). 0 for a normal card. */
+export function batchedItems(q: Pick<Question, "options">): number {
+  return Math.max(0, ...q.options.map((o) => (o.effect.type === "multi" ? o.effect.effects.filter((e) => e.type === "status" && e.itemId).length : 0)));
 }
 
 /**
