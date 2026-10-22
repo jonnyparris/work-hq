@@ -141,9 +141,25 @@ describe("worktree.sh", () => {
     writeFileSync(join(dir, "a.txt"), "x\n");
     git(dir, "commit", "-q", "-am", "x");
     mkdirSync(join(main, ".git", "worktree-land.lock"));
-    writeFileSync(join(main, ".git", "worktree-land.lock", "owner"), "wt/other pid 1\n");
+    writeFileSync(join(main, ".git", "worktree-land.lock", "owner"), `wt/other pid ${process.pid}\n`); // alive: this test runner
     const r = wt(dir, "land");
     expect(r.ok).toBe(false);
     expect(r.err).toContain("wt/other");
+  }, SLOW);
+
+  test("land takes over a lock whose owner process is gone", () => {
+    // 10-22: wt/test-lock-gate (pid 17677) died holding the lock; every later land waited 120 s and died.
+    const { main, origin } = setup();
+    const dir = newWt(main, "stale");
+    writeFileSync(join(dir, "a.txt"), "s\n");
+    git(dir, "commit", "-q", "-am", "s");
+    const dead = Bun.spawnSync(["true"]).pid; // exited and reaped, so nothing runs under this pid
+    mkdirSync(join(main, ".git", "worktree-land.lock"));
+    writeFileSync(join(main, ".git", "worktree-land.lock", "owner"), `wt/gone pid ${dead}\n`);
+    const r = wt(dir, "land", "--keep");
+    expect(r.ok).toBe(true);
+    expect(r.err).toContain("took over a stale land lock (wt/gone");
+    expect(git(origin, "rev-parse", "main")).toBe(git(main, "rev-parse", "HEAD"));
+    expect(existsSync(join(main, ".git", "worktree-land.lock"))).toBe(false);
   }, SLOW);
 });

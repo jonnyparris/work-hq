@@ -61,8 +61,24 @@ case "$cmd" in
     lock="$(git rev-parse --git-common-dir)/worktree-land.lock"
     [[ "$lock" = /* ]] || lock="$here/$lock"
     got=0
-    for _ in $(seq 1 "${WORKTREE_LOCK_WAIT:-120}"); do mkdir "$lock" 2>/dev/null && { got=1; break; }; sleep 1; done
-    (( got )) || die "another land holds $lock ($(cat "$lock/owner" 2>/dev/null)) — wait, or rm -r it if that session is gone"
+    for _ in $(seq 1 "${WORKTREE_LOCK_WAIT:-120}"); do
+      mkdir "$lock" 2>/dev/null && { got=1; break; }
+      # A lander that crashed or was killed leaves its lock behind (10-22: pid 17677 blocked lands for
+      # hours). If the owner's pid is gone, take the lock over. `ps -p`, not `kill -0`: kill fails with
+      # EPERM on live processes of other users. Rename first so only one waiter wins the takeover, then
+      # re-read owner in case a live lander replaced the stale lock between our read and the rename.
+      owner="$(cat "$lock/owner" 2>/dev/null || true)"; pid="${owner##* pid }"
+      if [[ "$pid" =~ ^[0-9]+$ ]] && ! ps -p "$pid" >/dev/null 2>&1 && mv "$lock" "$lock.stale.$$" 2>/dev/null; then
+        if [[ "$(cat "$lock.stale.$$/owner" 2>/dev/null || true)" == "$owner" ]]; then
+          rm -rf "$lock.stale.$$"
+          echo "took over a stale land lock ($owner; that process is gone)" >&2
+          continue
+        fi
+        [[ -e "$lock" ]] || mv "$lock.stale.$$" "$lock"
+      fi
+      sleep 1
+    done
+    (( got )) || die "another land holds $lock ($(cat "$lock/owner" 2>/dev/null)) — still running; wait for it, or rm -r the lock if that session is stuck"
     echo "$branch pid $$" > "$lock/owner"
     trap 'rm -rf "$lock"' EXIT
 
