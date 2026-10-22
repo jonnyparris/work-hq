@@ -175,6 +175,31 @@ if (errors.size) {
 }
 p();
 
+// ── idea items ─────────────────────────────────────────────────────────────
+// Agents filed an idea item for nearly every follow-up thought (81 on 10-21). The report contract and a
+// per-job cap now hold them back; this shows, per day, whether it worked.
+p("## Idea items filed");
+const ideaDays = new Map<string, { agent: number; other: number; folded: number }>();
+const day = (iso: string) => {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
+const ideaDay = (iso: string) => ideaDays.get(day(iso)) ?? ideaDays.set(day(iso), { agent: 0, other: 0, folded: 0 }).get(day(iso))!;
+for (const i of items.values()) if (i.kind === "idea" && inWin(i.createdAt)) ideaDay(i.createdAt)[i.source.type === "agent" ? "agent" : "other"]++;
+for (const j of jobs) if (j.ideasFolded?.length) ideaDay(j.createdAt).folded += j.ideasFolded.length;
+if (!ideaDays.size) p("None.");
+else {
+  p("| day | by agents | other sources | folded by the per-job cap |");
+  p("|---|---|---|---|");
+  for (const [d, n] of [...ideaDays].sort()) p(`| ${d} | ${n.agent} | ${n.other} | ${n.folded} |`);
+  const top = jobs.filter((j) => (j.ideasFiled ?? 0) + (j.ideasFolded?.length ?? 0) > 1).sort((a, b) => (b.ideasFolded?.length ?? 0) - (a.ideasFolded?.length ?? 0));
+  if (top.length) {
+    p("\nJobs that offered more than one idea:");
+    for (const j of top.slice(0, 8)) p(`- ${md(cut(j.title, 80))}: ${j.ideasFiled ?? 0} filed, ${j.ideasFolded?.length ?? 0} folded`);
+  }
+}
+p();
+
 // ── taps that should have started something ────────────────────────────
 // A command-bar follow-up ("Want an agent to…?") answered yes with no agent or triage run after it:
 // the button looked like it worked and did nothing. "Any job within 15 min" is too loose: taps come

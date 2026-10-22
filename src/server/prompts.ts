@@ -8,6 +8,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { type DeckGroup, deckGroup, deferTargets, GROUP_ORDER, GROUPS } from "../shared/batch.ts";
+import { IDEA_CAP } from "../shared/ideas.ts";
 import type { ActionKind, CalendarEvent, Item, Question } from "../shared/types.ts";
 import { config, ROOT } from "./config.ts";
 import { WORKTREE_SCRIPT, type WorktreeResult } from "./worktrees.ts";
@@ -91,6 +92,10 @@ Fields (all optional):
 - items: new items [{ "title", "kind": "task|ticket|message|email|followup|decision|review|meeting|idea",
   "detail", "project", "people": [], "links": [], "status": "inbox",
   "source": { "type": "agent", "label", "url", "quote": "verbatim words", "key": "stable-dedupe-key" } }]
+  Items for unfinished parts of this job are fine. A new "idea" item, or a follow-up for work nobody asked for, only if
+  (a) ${owner.name} asked for one, (b) you found a defect in code you touched and didn't fix it, or (c) the dispatch note
+  says "file ideas". Anything else goes in summary as one "Could also: ..." line. Work HQ files at most ${IDEA_CAP} new idea
+  items per job and folds the rest into the summary.
 - questions: things only ${owner.name} can answer [{ "prompt", "context", "itemId",
   "options": [{ "label": "Mark done", "status": "done" }, { "label": "File the ticket", "action": "ticket" }, { "label": "Keep open", "status": "proposed" }] }]
   (status: any item status; action: ticket|reply|email|prep|work|verify — an action dispatches another agent)

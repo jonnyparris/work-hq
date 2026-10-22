@@ -32,6 +32,10 @@
   MCPs live inside pi; rather than scrape their tokens, Work HQ asks pi sessions to do the
   work and report back over HTTP (`bin/whq`). The memory MCP has a static token, so memory
   I/O is direct.
+- **Agents don't file ideas unasked.** The report contract allows a new idea item only when you asked,
+  the agent found a defect it didn't fix, or the dispatch note says "file ideas"; anything else is one
+  "Could also:" line in the summary. As a backstop, an action job files at most 2 new ideas
+  (`src/shared/ideas.ts`); hub folds the rest into its summary. `bin/work-hq usage` shows ideas filed per day.
 - **The model login is pi's too.** pi reaches the model through whatever provider `pi.model` names
   (a gateway behind Cloudflare Access, say). When that login lapses, headless pi can't open a browser,
   so every sweep would fail. Work HQ spots the "API key auth failed for provider …" error, asks once

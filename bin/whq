@@ -24,7 +24,10 @@ except Exception: qs=[]
 for q in qs:
   print(("Asked: " if q["asked"] else "Not asked (same question already open, or answered with once): ")+q["prompt"])
   for o in q["options"]: print("  "+o)
-if any(" noop " in o for q in qs for o in q["options"]): print("A noop button does nothing when tapped. If that is wrong, re-report with an explicit status/action.")' ;;
+if any(" noop " in o for q in qs for o in q["options"]): print("A noop button does nothing when tapped. If that is wrong, re-report with an explicit status/action.")
+try: fo=json.loads(raw).get("folded") or []
+except Exception: fo=[]
+if fo: print("Not filed (idea cap per job; added to the summary as \"Could also:\"): "+"; ".join(fo))' ;;
   say)       echo "{\"text\": $(jstr "$*")}" | post /api/say ;;
   pineapple) echo "{\"text\": $(jstr "$*"), \"mode\": \"pineapple\"}" | post /api/say ;;
   journal)   echo "{\"text\": $(jstr "$*")}" | post /api/journal ;;

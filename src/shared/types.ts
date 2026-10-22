@@ -248,6 +248,10 @@ export interface Job {
   error?: string;
   /** The agent called `whq report` at least once. */
   reported?: boolean;
+  /** Action jobs: new idea items this job has filed (capped at IDEA_CAP across all its reports). */
+  ideasFiled?: number;
+  /** Action jobs: titles of idea items over the cap, folded into the summary instead of filed. */
+  ideasFolded?: string[];
   /** Headless pi session file, for audit. */
   session?: string;
   createdAt: string;
