@@ -7,7 +7,7 @@ import type {
   QuestionOption, ServerEvent, Snapshot, SyncState, Coaching, CoachOutcome,
 } from "../shared/types.ts";
 import { type BulkRequest, deckGroup, deferHorizon, localDay, optionFor, setsStatus } from "../shared/batch.ts";
-import { claimsDispatch, deadOptions, promisesAction } from "../shared/dead-button.ts";
+import { affirms, claimsDispatch, deadOptions, promisesAction, stallsOptions } from "../shared/dead-button.ts";
 import { asksForIdeas, IDEA_CAP } from "../shared/ideas.ts";
 import { config, memoryOn } from "./config.ts";
 import { newId, nowIso, type Store } from "./db.ts";
@@ -904,8 +904,10 @@ export class Hub {
         }),
       });
       // Echo what each button will do, so the agent sees a dead or wrong mapping in the same run.
-      if (made) asked.push({ prompt: q.prompt, asked: true, options: made.options.map((o) => `${o.label} → ${effectText(o.effect)}`) });
-      else asked.push({ prompt: q.prompt, asked: false, options: [] });
+      if (made) {
+        const stalled = new Set(stallsOptions(made).map((o) => o.id));
+        asked.push({ prompt: q.prompt, asked: true, options: made.options.map((o) => `${o.label} → ${effectText(o.effect)}${stalled.has(o.id) ? STALLS : ""}`) });
+      } else asked.push({ prompt: q.prompt, asked: false, options: [] });
     }
     for (const line of r.journal ?? []) this.journal(line, { who: "agent" });
     if (r.events) this.setEvents(r.events, r.eventsThrough);
@@ -925,6 +927,9 @@ export class Hub {
     return { created: created.map((i) => i.id), ...(asked.length ? { questions: asked } : {}), ...(folded.length ? { folded } : {}) };
   }
 }
+
+/** Appended to an echoed option that approves work but only moves the status (stallsOptions). */
+export const STALLS = " (no agent starts)";
 
 /** One line for what tapping a button does: "dispatch work", "status done", "noop (does nothing)". */
 export function effectText(e: Effect): string {
@@ -1010,13 +1015,13 @@ const SENT: Record<ActionKind, string> = {
 const IMPERATIVE = /^(please\s+|can you\s+|could you\s+|pls\s+)?(do|go|ask|check|chase|ping|nudge|send|email|message|dm|tell|remind|draft|write|file|raise|open|close|follow[- ]?up|find|look|research|verify|confirm|schedule|book|move|assign|reply|respond|post|share|update|fix|review|dispatch|drop|kill|mark|escalate|investigate|summari[sz]e|prep|set up|sort|handle|get|make|add|create|cancel|loop in|cc)\b/i;
 
 /**
- * Is a drawer note an instruction? The shared AFFIRMATIVE words ("do it", "send", "verify"…) not opened by a no,
+ * Is a drawer note an instruction? The shared AFFIRMATIVE words ("do it", "send", "verify"…) not opened by a no (affirms),
  * or an imperative first word. "context:", "fyi", "note:" and "bg:" prefixes are background whatever follows.
  */
 export function isInstruction(text: string): boolean {
   const t = text.trim();
   if (/^(context|fyi|note|bg|background|for context|nb)\b\s*[:\-—,]?/i.test(t)) return false;
-  return promisesAction(t) || IMPERATIVE.test(t) || quickNote(t, { options: [] }) !== undefined || /^(done|drop)\b/i.test(t);
+  return affirms(t) || IMPERATIVE.test(t) || quickNote(t, { options: [] }) !== undefined || /^(done|drop)\b/i.test(t);
 }
 
 /** "Sent an agent to send the message: <title>". True as soon as dispatch() returns: the job exists, nothing has run. */

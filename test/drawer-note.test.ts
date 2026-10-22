@@ -102,7 +102,7 @@ describe("drawer notes", () => {
   test("isInstruction", () => {
     for (const t of ["do it", "Do it.", "ask Bernardo", "check the logs first", "please chase Joan", "yes, send it", "drop", "done", "verify the MR merged", "follow up with Kevin"])
       expect([t, isInstruction(t)]).toEqual([t, true]);
-    for (const t of ["context: Bernardo owns this", "fyi: do it later maybe", "Bernardo owns this now", "The MR merged on Tuesday", "not sure this matters", "no, don't send it"])
+    for (const t of ["context: Bernardo owns this", "fyi: do it later maybe", "Bernardo owns this now", "The MR merged on Tuesday", "not sure this matters", "no, don't send it", "Deploy is blocked by legal", "Merge conflicts were ugly on the MR"])
       expect([t, isInstruction(t)]).toEqual([t, false]);
   });
 });

@@ -6,7 +6,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../src/server/db.ts";
 import { Hub } from "../src/server/hub.ts";
-import { AFFIRMATIVE, deadOptions, doesNothing } from "../src/shared/dead-button.ts";
+import { deadOptions, doesNothing, promisesAction, stallsOptions } from "../src/shared/dead-button.ts";
 
 const SERVER = join(import.meta.dir, "../src/server");
 
@@ -49,7 +49,7 @@ describe("dead buttons", () => {
     expect(unparsed).toEqual([]);
     // Not vacuous: prompter + agents still have a handful of noop options ("Nothing new", "Not now").
     expect(found.length).toBeGreaterThanOrEqual(5);
-    const dead = found.filter((o) => AFFIRMATIVE.test(o.label)).map((o) => `${o.file}:${o.line} "${o.label}"`);
+    const dead = found.filter((o) => promisesAction(o.label)).map((o) => `${o.file}:${o.line} "${o.label}"`);
     expect(dead).toEqual([]);
   });
 
@@ -168,6 +168,45 @@ describe("dead buttons", () => {
     ]);
     expect(hub.store.journal(50).filter((j) => j.text.startsWith("Dead button"))).toEqual([]);
     warn.mockRestore();
+  });
+
+  // 10-21 q_mvhxwvgc0309p: "Approve all 11, regenerate colo map" set status today; no agent started.
+  test("stallsOptions: a work-approving label with a status-only effect stalls; plain status moves and real dispatches don't", () => {
+    const o = (id: string, label: string, effect: any) => ({ id, label, effect });
+    const card = {
+      options: [
+        o("o0", "Approve all 11, regenerate colo map", { type: "status", status: "today" }),
+        o("o1", "Approve the 6 dead only; ask Pipefitter about 5", { type: "status", status: "waiting" }),
+        o("o2", "Keep open", { type: "status", status: "inbox" }),
+        o("o3", "Drop", { type: "status", status: "dropped" }),
+      ],
+    };
+    expect(stallsOptions(card).map((x) => x.id)).toEqual(["o0", "o1"]);
+    expect(stallsOptions({ options: [o("a", "Merge it", { type: "multi", effects: [{ type: "status", status: "today" }, { type: "noop" }] })] })).toHaveLength(1);
+    expect(stallsOptions({ options: [o("a", "Approve, regenerate", { type: "dispatch", action: "work", note: "regenerate" })] })).toEqual([]);
+    expect(stallsOptions({ options: [o("a", "Land it", { type: "multi", effects: [{ type: "status", status: "today" }, { type: "dispatch", action: "work" }] })] })).toEqual([]);
+    expect(stallsOptions({ options: [o("a", "Don't merge", { type: "status", status: "dropped" })] })).toEqual([]);
+    expect(stallsOptions({ options: [o("a", "Approve all — not just the dead ones", { type: "status", status: "today" })] })).toHaveLength(1);
+    expect(promisesAction("Send it later")).toBe(false);
+    expect(promisesAction("Yes, but not yet")).toBe(false);
+    expect(promisesAction("Approve all — not just the dead ones")).toBe(true);
+    expect(stallsOptions({ options: [o("a", "Mark done — no need to merge", { type: "status", status: "done" }), o("b", "Dispatch later", { type: "status", status: "waiting" })] })).toEqual([]);
+    expect(stallsOptions({ options: [o("a", "Mark done", { type: "status", status: "done" }), o("b", "Merged — mark done", { type: "status", status: "done" })] })).toEqual([]);
+    // A noop is dead, not stalled: deadOptions owns it.
+    expect(stallsOptions({ options: [o("a", "Send it", { type: "noop" })] })).toEqual([]);
+  });
+
+  test("ingestReport echoes (no agent starts) for an approve label with an explicit status; a plain-string approve dispatches work", () => {
+    const hub = new Hub(new Store(":memory:"));
+    const it = hub.createItem({ title: "colo map", status: "proposed" });
+    const r = { questions: [{ prompt: "Approve removing failing geo-scan countries?", itemId: it.id, options: [{ label: "Approve all 11, regenerate colo map", status: "today" }, { label: "Keep open", status: "inbox" }, { label: "Approve, regenerate", action: "work", note: "regenerate" }] as any }] };
+    expect(hub.ingestReport(r).questions).toEqual([
+      { prompt: "Approve removing failing geo-scan countries?", asked: true, options: ["Approve all 11, regenerate colo map → status today (no agent starts)", "Keep open → status inbox", "Approve, regenerate → dispatch work"] },
+    ]);
+    const s = hub.ingestReport({ questions: [{ prompt: "Merge the MR?", itemId: it.id, options: ["Approve and merge", "Keep open"] }] });
+    expect(s.questions![0]!.options).toEqual(["Approve and merge → dispatch work", "Keep open → status proposed"]);
+    const d = hub.ingestReport({ questions: [{ prompt: "Merge it now?", itemId: it.id, options: ["Merge later", "Keep open, don't merge"] }] });
+    expect(d.questions![0]!.options).toEqual(["Merge later → noop (does nothing)", "Keep open, don't merge → status proposed"]);
   });
 
   // whq report prints these, so an agent sees a dead or remapped button in the same run, not when the owner taps it.

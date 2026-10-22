@@ -99,6 +99,8 @@ Fields (all optional):
 - questions: things only ${owner.name} can answer [{ "prompt", "context", "itemId",
   "options": [{ "label": "Mark done", "status": "done" }, { "label": "File the ticket", "action": "ticket" }, { "label": "Keep open", "status": "proposed" }] }]
   (status: any item status; action: ticket|reply|email|prep|work|verify — an action dispatches another agent)
+  A button that approves work you or another agent should do next ("Approve…", "Merge", "Regenerate", "Land") needs
+  \`action: "work"\` and a \`note\` saying what to do. \`status\` only moves the item; no agent starts.
   whq report prints what each button will do ("Not now → noop (does nothing)"). A wrong one? Re-report that question with an explicit status/action and a new key.
 - journal: facts worth remembering, one line each ("PAY-123 closed by ${owner.name} 09-25").
 
