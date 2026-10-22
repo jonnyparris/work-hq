@@ -81,7 +81,11 @@ case "$cmd" in
 
     if [[ -n "$check" ]]; then
       echo "check: $check" >&2
-      bash -c "$check" || die "check failed — fix, commit, land again"
+      # Many agents land at once on one machine; overlapping suites time out under load
+      # (10-21: load avg 255 on 12 cores). If a `test-lock` wrapper is on PATH, it caps how
+      # many suites run at once machine-wide (TEST_SLOTS, default 3; TEST_LOCK=0 disables).
+      lock=""; command -v test-lock >/dev/null && lock=test-lock
+      $lock bash -c "$check" || die "check failed — fix, commit, land again"
     fi
 
     # The main checkout's own uncommitted edits stay put; git refuses only if they touch the same files.

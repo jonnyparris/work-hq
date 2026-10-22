@@ -213,6 +213,8 @@ scripts/worktree.sh list                      # what's in flight (never remove s
 
 The server runs from the main checkout, so restart it after `land`, not before.
 
+If a `test-lock` command is on `PATH`, `land` runs the check through it. It caps how many test suites run at once across all worktrees (`TEST_SLOTS`, default 3; `TEST_LOCK=0` turns it off), so suites don't time out when many agents land together.
+
 A test that runs git or bash needs its own timeout (`}, SLOW);` with `SLOW = 30_000`): git-heavy tests take 1-4 s and
 pass bun's 5 s default under load. `test/spawn-timeout.test.ts` fails on any that don't.
 
