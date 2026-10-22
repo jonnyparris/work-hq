@@ -46,6 +46,8 @@
     "headlessEnv": {},
     // Space out pi launches (seconds) so bursts stay under per-minute provider limits. 0 = off.
     "launchSpacingSec": 20,
+    // Most action agents working at once; more wait as "queued". Blocked sessions don't count. 0 = off.
+    "maxRunningJobs": 8,
     // On a rate-limit / 429 / 503 / overloaded error: retry this many times, waiting a random time in this range (seconds).
     "rateLimitRetries": 2,
     "rateLimitBackoffSec": [60, 90],

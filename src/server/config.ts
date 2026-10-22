@@ -182,6 +182,11 @@ export const config = {
     headlessDenyTools: pick<string>(undefined, "pi.headlessDenyTools", "edit,write,ask_user_question,cmux_open_terminal"),
     /** Minimum gap between pi launches (headless and cmux). Keeps bursts under per-minute provider limits. 0 = off. */
     launchSpacingSec: Number(pick("WORK_HQ_LAUNCH_SPACING", "pi.launchSpacingSec", 20)),
+    /**
+     * Most action jobs (cmux or headless) working at once; more wait in the queue, oldest first. "Blocked"
+     * (waiting for you) and finished-but-open sessions don't count. 10-21: 20-25 at once drove load to 255. 0 = off.
+     */
+    maxRunningJobs: Number(pick("WORK_HQ_MAX_RUNNING_JOBS", "pi.maxRunningJobs", 8)),
     /** On a provider rate-limit / 503 error, retry this many times. 0 = off. */
     rateLimitRetries: Number(pick("WORK_HQ_RATE_LIMIT_RETRIES", "pi.rateLimitRetries", 2)),
     /** Wait a random time in this range (seconds) before each rate-limit retry. */

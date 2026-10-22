@@ -90,6 +90,13 @@
   (default 2) times. A cmux session is nudged in place ("carry on"); a headless tool run resumes
   its own session so finished tool calls aren't repeated. pi's own retries (2/4/8 s) sit inside
   this and don't outlast a per-minute limit on their own.
+- **At most 8 action agents work at once.** The launch gate spaces starts but doesn't cap them: on
+  10-21 a burst had 20-25 pi sessions working together, load hit 255 on 12 cores and test suites
+  everywhere timed out. `RunCap` (`src/server/launch-gate.ts`) holds launches past
+  `pi.maxRunningJobs` (default 8, 0 = off) as "queued" in the Agents panel, oldest first, until a
+  running one finishes, fails, is stopped or blocks on you. Blocked and finished-but-open sessions
+  don't count; sweeps and triage aren't capped. A blocked session you resume counts again at once,
+  so the count can go over the cap until a session finishes; a job stuck on "running" holds its slot until you Stop it.
 - **Human decisions are the source of truth.** `confirmedAt` is set whenever the owner decides
   something. Memory re-imports refresh text but never undo a confirmed status.
 

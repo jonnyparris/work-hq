@@ -62,3 +62,65 @@ export class LaunchGate {
     return delay;
   }
 }
+
+/**
+ * Caps how many action jobs run at once. LaunchGate only spaces launches out; on 10-21 a burst of
+ * 35-57 dispatches an hour had 20-25 pi sessions working together (load average 255 on 12 cores),
+ * and every test suite on the machine timed out. Launches past the cap wait here, first come first served.
+ *
+ * `running()` counts jobs already running (read from the store, so a restart keeps the count). A waiter
+ * that is let through holds a reservation until it calls the release function `acquire` resolved with
+ * (once its job is marked running, or failed to launch), so two waiters can't take the same free slot.
+ * Call `pump()` whenever a job stops running; waiters whose job is gone (`wanted()` false) are dropped.
+ * Admission only: a blocked session that the owner resumes counts again at once, so the count can sit
+ * above the cap; new launches then wait until it drops below.
+ */
+export class RunCap {
+  private queue: Array<{ wanted: () => boolean; go: (release: () => void) => void; drop: () => void }> = [];
+  private reserved = 0;
+  constructor(private max: () => number, private running: () => number) {}
+
+  /** Jobs waiting for a slot, cancelled ones included until the next pump. */
+  get waiting() {
+    return this.queue.length;
+  }
+
+  /** True when a launch now would have to wait. A max of 0 or less turns the cap off. */
+  full() {
+    const max = this.max();
+    return max > 0 && (this.queue.some((w) => w.wanted()) || this.running() + this.reserved >= max);
+  }
+
+  /**
+   * Resolves with a release function once a slot is free, or with `undefined` if the job stopped
+   * being wanted while it waited. Call the release function exactly once (extra calls are ignored).
+   */
+  acquire(wanted: () => boolean = () => true): Promise<(() => void) | undefined> {
+    return new Promise((resolve) => {
+      this.queue.push({ wanted, go: resolve, drop: () => resolve(undefined) });
+      this.pump();
+    });
+  }
+
+  pump() {
+    const max = this.max();
+    while (this.queue.length) {
+      const head = this.queue[0]!;
+      if (!head.wanted()) {
+        this.queue.shift();
+        head.drop();
+        continue;
+      }
+      if (max > 0 && this.running() + this.reserved >= max) return;
+      this.queue.shift();
+      this.reserved++;
+      let done = false;
+      head.go(() => {
+        if (done) return;
+        done = true;
+        this.reserved--;
+        this.pump();
+      });
+    }
+  }
+}

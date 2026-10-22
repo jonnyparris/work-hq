@@ -15,7 +15,7 @@ import { newId, nowIso } from "./db.ts";
 import { type DemoScript, demoActionScript, demoSweepScript, feedLine } from "./demo.ts";
 import { type Dispatcher, type Hub, isCrash, queuedNote } from "./hub.ts";
 import { GatewayToken } from "./gateway-token.ts";
-import { backoffMs, isRateLimited, LaunchGate } from "./launch-gate.ts";
+import { backoffMs, isRateLimited, LaunchGate, RunCap } from "./launch-gate.ts";
 import { assertShortArgs, PiPool, PiRpc, piStamp, type RunOutcome } from "./pi-rpc.ts";
 import {
   actionPrompt, calendarPrompt, calendarSweepPrompt, explainPrompt, notePrompt, openUrl, postSweepPrompt, schedulePrompt, SITE_LINK, SITE_POSTS,
@@ -114,12 +114,19 @@ export class Agents implements Dispatcher {
   private running = new Map<string, Running>();
   /** Every pi launch goes through here, so bursts can't trip per-minute provider limits. */
   readonly gate = new LaunchGate(() => config.pi.launchSpacingSec * 1000);
+  /** At most `pi.maxRunningJobs` action jobs working at once; the rest wait as "queued". */
+  readonly cap = new RunCap(
+    () => config.pi.maxRunningJobs,
+    // A headless run waiting out a rate limit sits at "queued" with a startedAt: it keeps its slot for the retry.
+    () => this.hub.store.liveJobs().filter((j) => j.kind === "action" && (j.status === "running" || (j.status === "queued" && j.startedAt))).length,
+  );
 
   constructor(private hub: Hub, private cmuxDeps: CmuxDeps = realCmux) {
     hub.dispatcher = this;
     ensureSiteLink();
-    // Pick up cmux jobs that were running when the server restarted.
-    for (const job of hub.store.jobs(100)) {
+    // Pick up jobs that were live when the server restarted. Every live job, oldest first, so queued cmux
+    // launches rejoin the cap queue in their old order (a recent-100 window could strand an old one).
+    for (const job of hub.store.liveJobs().sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
       if (job.surface === "cmux" && job.status === "queued" && !job.workspace) {
         // Was waiting on the launch gate; never started, so it's safe to launch again.
         this.relaunchUnstarted(job);
@@ -173,7 +180,11 @@ export class Agents implements Dispatcher {
 
   private patch(id: string, p: Partial<Job>) {
     const cur = this.hub.store.job(id);
-    if (cur) return this.hub.putJob({ ...cur, ...p });
+    if (!cur) return;
+    const out = this.hub.putJob({ ...cur, ...p });
+    // A job left "running" (finished, failed, blocked, cancelled) or a waiter was cancelled: a queued launch may go now.
+    if (p.status && p.status !== cur.status && (cur.status === "running" || cur.status === "queued")) this.cap.pump();
+    return out;
   }
 
   private line(id: string, text: string) {
@@ -222,6 +233,25 @@ export class Agents implements Dispatcher {
   }
 
   private async launchAction(jobId: string, title: string, prompt: string, useCmux: boolean) {
+    const queued = () => this.hub.store.job(jobId)?.status === "queued";
+    if (this.cap.full()) {
+      const max = config.pi.maxRunningJobs;
+      this.line(jobId, `⏳ waiting for a slot: ${max} agents running (cap ${max}), ${this.cap.waiting} ahead`);
+      this.hub.toast(`Queued: ${title} — ${max} agents already running`, "info");
+    }
+    const release = await this.cap.acquire(queued);
+    if (!release) return; // cancelled while waiting for a slot
+    try {
+      await this.startAction(jobId, title, prompt, useCmux);
+    } catch (e) {
+      this.finishAction(jobId, { ok: false, text: "", error: `launch failed: ${(e as Error).message}` });
+    } finally {
+      release();
+    }
+  }
+
+  /** Resolves once the job is running (or has failed to launch); a headless run carries on in the background. */
+  private async startAction(jobId: string, title: string, prompt: string, useCmux: boolean) {
     if (useCmux) {
       const wait = this.gate.wait();
       if (wait > 0) {
@@ -248,8 +278,13 @@ export class Agents implements Dispatcher {
       this.line(jobId, "cmux launch failed — falling back to headless");
     }
     // No cmux: run headless with full tools. Still visible in the dashboard feed.
-    const r = await this.runHeadless(jobId, prompt, { tools: true, thinking: "medium", perms: false, timeoutMin: 45 });
-    this.finishAction(jobId, r);
+    // Don't hold the reservation for the whole run: once runHeadless marks the job running, the store counts it.
+    let settled = false;
+    void this.runHeadless(jobId, prompt, { tools: true, thinking: "medium", perms: false, timeoutMin: 45 })
+      .then((r) => this.finishAction(jobId, r))
+      .catch((e) => this.finishAction(jobId, { ok: false, text: "", error: (e as Error).message }))
+      .finally(() => (settled = true));
+    while (!settled && this.hub.store.job(jobId)?.status === "queued") await sleep(100);
   }
 
   // ── demo mode: scripted runs that look real and reach nothing ───────────
@@ -304,6 +339,7 @@ export class Agents implements Dispatcher {
 
   /** Poll cmux beacons. Called every few seconds by the scheduler. */
   pollCmux() {
+    this.cap.pump(); // catches status changes that bypassed patch() (direct putJob, restarts)
     if (![...this.running.values()].some((r) => r.statusPath)) return;
     const live = cmux.liveWorkspaces();
     for (const [id, r] of this.running) {
