@@ -167,8 +167,8 @@ export class Agents implements Dispatcher {
     });
   }
 
-  private newJob(kind: JobKind, name: string, title: string, surface: Job["surface"], itemId?: string): Job {
-    return this.hub.putJob({ id: newId("job"), kind, name, title, surface, status: "queued", itemId, tail: [], createdAt: nowIso() });
+  private newJob(kind: JobKind, name: string, title: string, surface: Job["surface"], itemId?: string, extra: Partial<Job> = {}): Job {
+    return this.hub.putJob({ id: newId("job"), kind, name, title, surface, status: "queued", itemId, tail: [], createdAt: nowIso(), ...extra });
   }
 
   private patch(id: string, p: Partial<Job>) {
@@ -182,19 +182,30 @@ export class Agents implements Dispatcher {
   }
 
   // ── actions (cmux) ─────────────────────────────────────────────────────
-  async dispatch(itemId: string, action: ActionKind, note?: string) {
+  async dispatch(itemId: string, action: ActionKind, note?: string, decision?: string) {
     const item = this.hub.store.item(itemId);
     if (!item) return undefined;
     const title = `${ACTION_LABEL[action]} · ${item.title}`.slice(0, 80);
+    // Other agents already on this item. The same action for the same answer is a double dispatch
+    // (a double tap, a note read twice): hand back the job that's already going instead of a second one.
+    const siblings = this.hub.store.liveJobs().filter((j) => j.kind === "action" && j.itemId === itemId);
+    const same = siblings.find((j) => j.name === action && (j.decision ?? "") === (decision ?? "") && (j.note ?? "") === (note ?? ""));
+    if (same) {
+      this.hub.toast(`Already running: ${same.title}`, "info");
+      return same;
+    }
     const useCmux = this.cmuxDeps.available();
-    const job = this.newJob("action", action, title, useCmux ? "cmux" : "headless", itemId);
+    const job = this.newJob("action", action, title, useCmux ? "cmux" : "headless", itemId, { decision, note });
     // Verifying doesn't change what the item *is*; everything else means someone's on it.
     if (action !== "verify") this.hub.updateItem(itemId, { status: "doing" });
     if (config.demo) {
       void this.launchDemoAction(job.id, title, demoActionScript(item, action, note), useCmux);
       return this.hub.store.job(job.id);
     }
-    const prompt = actionPrompt(job.id, item, action, note, await this.worktreeFor(job.id, item, action));
+    const prompt = actionPrompt(job.id, item, action, note, await this.worktreeFor(job.id, item, action), {
+      decision,
+      siblings: siblings.map((j) => ({ id: j.id, action: j.name, decision: j.decision ?? j.note })),
+    });
     if (useCmux) writeFileSync(promptFile(job.id), prompt);
     // Launch in the background: the gate may hold it for a while and callers shouldn't wait.
     void this.launchAction(job.id, title, prompt, useCmux);

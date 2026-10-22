@@ -135,13 +135,44 @@ and run it again. Never stash, reset or commit someone else's edits in ${wt.repo
 Work HQ removes an empty one when the job ends.`;
 }
 
-export function actionPrompt(jobId: string, it: Item, action: ActionKind, note?: string, worktree?: WorktreeResult) {
+export interface ActionScope {
+  /** The one answer that sent this job ("<question> → <option>"). */
+  decision?: string;
+  /** Action jobs already queued or running on the same item. */
+  siblings?: { id: string; action: string; decision?: string }[];
+}
+
+/**
+ * Who does what when several answers on one item each send an agent. Every job sees all the item's notes,
+ * so without this each one acted on all of them: 10-22, it_mvj713axaje2b got three TICKET jobs in 17 s and
+ * they filed KITE-166/169 and KITE-167/168 as duplicate pairs.
+ */
+export function scopeBlock(scope: ActionScope = {}) {
+  const parts: string[] = [];
+  if (scope.decision) {
+    parts.push(`THIS JOB'S DECISION (do this one, nothing else):
+- ${scope.decision}
+The other decisions in the notes below are context. Each one that sent an agent has its own job, earlier or in
+parallel. Don't act on them: no tickets, messages or closures for them. If one looks undone and nobody has it,
+add it as a question in your report.`);
+  }
+  if (scope.siblings?.length) {
+    parts.push(`ALSO RUNNING ON THIS ITEM (started before you; leave their work to them):
+${scope.siblings.map((s) => `- ${s.id} · ${s.action.toUpperCase()}${s.decision ? `: ${s.decision.replace(/\s+/g, " ").slice(0, 300)}` : ""}`).join("\n")}
+Before you file, send or close anything, search for what they may have just done (new tickets, sent messages)
+and link to it rather than repeat it.`);
+  }
+  return parts.join("\n\n");
+}
+
+export function actionPrompt(jobId: string, it: Item, action: ActionKind, note?: string, worktree?: WorktreeResult, scope?: ActionScope) {
+  const scoped = scopeBlock(scope);
   return `You are a Work HQ action agent for ${OWNER_INTRO}. They just confirmed this in their dashboard.
 They can see this session and may answer questions here.
 
 TASK: ${action.toUpperCase()}
 ${template(`actions/${action}`)}
-${worktree ? `\n${worktreeBlock(jobId, worktree)}\n` : ""}${note ? `\n${owner.name}'s note: ${note}\n` : ""}
+${worktree ? `\n${worktreeBlock(jobId, worktree)}\n` : ""}${scoped ? `\n${scoped}\n` : ""}${note ? `\n${owner.name}'s note: ${note}\n` : ""}
 ${itemBlock(it)}
 
 ${toolRoutes()}

@@ -235,6 +235,11 @@ export interface Job {
   surface: JobSurface;
   status: JobStatus;
   itemId?: string;
+  /** Action jobs: the one answer that sent this job ("<question> → <option>"). Its prompt scopes the job to it,
+   *  so parallel jobs on one item don't each act on every note (10-22: four jobs filed KITE-166/167/168/169). */
+  decision?: string;
+  /** Action jobs: the instruction passed with the dispatch, kept to spot a double dispatch of the same thing. */
+  note?: string;
   /** cmux workspace id when surface = cmux. */
   workspace?: string;
   /** Last few tool/progress lines, for the live feed. */

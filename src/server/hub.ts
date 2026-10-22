@@ -15,7 +15,8 @@ import { findTwin, isOpen } from "./dedupe.ts";
 type Listener = (e: ServerEvent) => void;
 
 export interface Dispatcher {
-  dispatch(itemId: string, action: import("../shared/types.ts").ActionKind, note?: string): Promise<Job | undefined>;
+  /** `decision`: the one answer that sent this job ("<question> → <option>"); the prompt scopes the job to it. */
+  dispatch(itemId: string, action: import("../shared/types.ts").ActionKind, note?: string, decision?: string): Promise<Job | undefined>;
   scheduleFromWords(itemId: string, words: string): Promise<void>;
   /** Read a typed note against the question it was typed on. Throws if the read failed; undefined = question gone. */
   readNote?(questionId: string, text: string): Promise<NoteDecision | undefined>;
@@ -369,7 +370,12 @@ export class Hub {
           this.journal(`Dispatched ${effect.action}: ${this.store.item(itemId)?.title}`, { itemId });
           // A typed note adds to the option's note (which question, which choice), it doesn't replace it.
           const typed = note?.trim();
-          await this.dispatcher.dispatch(itemId, effect.action, typed && effect.note ? `${effect.note}\nThey added: ${typed}` : typed || effect.note);
+          await this.dispatcher.dispatch(
+            itemId,
+            effect.action,
+            typed && effect.note ? `${effect.note}\nThey added: ${typed}` : typed || effect.note,
+            q && opt ? `${q.prompt} → ${opt.label}${typed ? ` — ${typed}` : ""}` : undefined,
+          );
         }
         break;
       case "when":
@@ -613,7 +619,7 @@ export class Hub {
       this.journal(`Dispatched ${d.dispatch.action}: ${item.title} — ${agentNote}`, { itemId: item.id });
       // Never the model's reply here: it reads as done ("Asking Maryna in chat…", 10-16) while the agent hasn't started.
       this.toast(queuedNote(q, d, item.title)!, "good");
-      await this.dispatcher.dispatch(item.id, d.dispatch.action, agentNote);
+      await this.dispatcher.dispatch(item.id, d.dispatch.action, agentNote, `${q.prompt} → (typed) ${text}`);
       return;
     }
     if (item && d.when?.trim() && this.dispatcher) {
