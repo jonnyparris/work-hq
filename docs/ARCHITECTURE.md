@@ -186,7 +186,9 @@ server? Work HQ still runs; you just lose import and the flush.
 **Meeting ended** is skipped once a transcript sweep has read that meeting's notes. The sweep reports every
 meeting it read (`meetings` in its JSON) plus the meeting named on each item it made. Those are matched to the
 calendar by title and start time, and an open card closes with "transcript scanned". So the sweep runs 10–25 min
-after a meeting with others ends (when the notes have usually arrived), not only on its 30-min cadence.
+after a meeting with others ends, and again at 45–60 min if that meeting is still unscanned (`NOTES_WINDOWS_MIN`),
+not only on its 30-min cadence. Gemini notes often land after 25 min: of 10 cards a scan closed in October, 3 closed
+by 25 min and 9 by 60. The card is held until 60 min (`REVIEW_HOLD_MIN`); the meeting row takes dictation meanwhile.
 
 **Typed notes are answers.** ⌘↵ in a question's note field posts to `/api/questions/:id/note`. "drop", "done"
 and "do it" map straight to an option. Anything else goes to a tool-less pi call (`notePrompt`). It returns one

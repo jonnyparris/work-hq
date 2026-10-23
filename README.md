@@ -147,7 +147,8 @@ question that arrives queues behind it and shows as **+N new**. The note is only
 or go back. If the card closes somewhere else, your note stays in the box, flagged, so the words aren't lost.
 
 It also tries not to ask twice. A *meeting ended* card closes itself once the transcript sweep has read that
-meeting's notes. The sweep runs 10–25 min after the meeting, so most cards close before you get to them. The same
+meeting's notes. The sweep runs 10–25 min after the meeting, and again at 45–60 min if the notes were still missing. The
+card waits until then, so most cards close before you see them. The same
 work arriving from two places (memory rewords a todo, a transcript finds what an agent already filed) becomes
 one item. Something you dropped isn't brought back under a new title. Details: [architecture](docs/ARCHITECTURE.md#duplicates-across-sources-srcserverdedupets).
 

@@ -14,8 +14,11 @@ import { openUrl } from "./prompts.ts";
 
 const MIN = 60_000;
 const DAY = 86_400_000;
-/** "X just ended" waits this long after the meeting: the end of the scheduler's notes-sweep window. */
-export const REVIEW_HOLD_MIN = 25;
+/** "X just ended" waits this long after the meeting: the end of the scheduler's last notes-sweep window
+ * (NOTES_WINDOWS_MIN). 10-23: of 10 cards a scan closed in October, 3 closed by 25 min and 9 by 60. */
+export const REVIEW_HOLD_MIN = 60;
+/** Minutes after a meeting ends when the scheduler scans for its notes, once per window, if it's still unscanned. */
+export const NOTES_WINDOWS_MIN: ReadonlyArray<readonly [number, number]> = [[10, 25], [45, REVIEW_HOLD_MIN]];
 
 /** Caps so the app asks, rather than nags. */
 const CAP = { state: 3, doing: 3, kill: 3, proposal: 2, post: 2, inbox: 6, waiting: 2, total: 14 };
@@ -199,8 +202,8 @@ export class Prompter {
           once: true,
           priority: 70,
           prompt: `${ev.title} just ended. Anything you committed to?`,
-          // Hold it until the notes-sweep window (scheduler.meetingNotesDue: 10–25 min after the end) has closed, so a
-          // scan that finds the notes expires it unseen. 22 of 32 cards got "Nothing new" (10-22). The meeting row
+          // Hold it until the last notes-sweep window (NOTES_WINDOWS_MIN: 10–25 and 45–60 min after the end) has closed,
+          // so a scan that finds the notes expires it unseen. Gemini notes often land after 25 min. 22 of 32 cards got "Nothing new" (10-22). The meeting row
           // takes dictation meanwhile. No transcript sweep, nothing to wait for.
           ...(sweepOn("transcripts") ? { notBefore: new Date(end + REVIEW_HOLD_MIN * MIN).toISOString() } : {}),
           context: `Type or say it below — it goes straight to triage.${sweepOn("transcripts") ? " Meeting notes get scanned on the next sweep either way." : ""}`,

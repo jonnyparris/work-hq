@@ -7,7 +7,7 @@ import type { Checks } from "./checks.ts";
 import { config, memoryOn, sweepOn } from "./config.ts";
 import type { Hub } from "./hub.ts";
 import type { MemorySync } from "./memory-sync.ts";
-import type { Prompter } from "./prompter.ts";
+import { NOTES_WINDOWS_MIN, type Prompter } from "./prompter.ts";
 
 /** A cadence tick (every 60 s) this late means the laptop slept. */
 export const WOKE_GAP_MS = 2 * 60_000;
@@ -142,8 +142,8 @@ export class Scheduler {
       this.last.calendar = Date.now();
       this.startSweep("calendar");
     }
-    // A meeting with others ended 10–25 min ago (notes usually land by then) and nothing has scanned since:
-    // scan now, so its "anything you committed to?" card closes itself instead of waiting for the next cadence.
+    // A meeting with others ended 10–25 or 45–60 min ago (NOTES_WINDOWS_MIN) and nothing has scanned in that window
+    // yet: scan now, so its "anything you committed to?" card closes itself instead of waiting for the next cadence.
     if (sweepOn("transcripts") && this.meetingNotesDue()) {
       this.last.transcripts = Date.now();
       this.startSweep("transcripts");
@@ -163,8 +163,9 @@ export class Scheduler {
     return this.hub.todayEvents(new Date(now)).some((ev) => {
       const end = Date.parse(ev.end);
       const meeting = ev.oneOnOne || (ev.attendees?.length ?? 0) > 1;
-      if (!meeting || ev.response === "declined" || now - end < 10 * 60_000 || now - end > 25 * 60_000) return false;
-      return (this.last.transcripts ?? 0) < end + 10 * 60_000 && !this.hub.wasScanned(ev);
+      if (!meeting || ev.response === "declined") return false;
+      const win = NOTES_WINDOWS_MIN.find(([from, to]) => now - end >= from * 60_000 && now - end <= to * 60_000);
+      return !!win && (this.last.transcripts ?? 0) < end + win[0] * 60_000 && !this.hub.wasScanned(ev);
     });
   }
 
