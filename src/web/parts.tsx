@@ -198,6 +198,11 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
   const [busy, setBusy] = useState(false);
   const noteRef = useRef<HTMLInputElement>(null);
   const [picked, setPicked] = useState<string[]>([]);
+  // The card's own tick-boxes (q.picks: the morning prep card's meetings). Nothing pre-ticked: each tick costs an agent.
+  const [ticks, setTicks] = useState<string[]>([]);
+  useEffect(() => setTicks([]), [q?.id]);
+  // A meeting that dropped off the card (it started) drops out of the ticks.
+  useEffect(() => { if (q?.picks && ticks.some((id) => !q.picks!.some((p) => p.id === id))) setTicks(ticks.filter((id) => q.picks!.some((p) => p.id === id))); }, [q?.picks]);
   // "Scheduled for…": the option id waiting for the owner to say when.
   const [whenFor, setWhenFor] = useState<string | undefined>();
   const [heard, setHeard] = useState(false);
@@ -234,11 +239,13 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
     const o = q.options.find((x) => x.id === optionId);
     const text = (words ?? note).trim();
     if (o?.effect.type === "when" && !text) return startWhen(optionId);
+    // "Prep the ticked ones" with nothing ticked and no note would do nothing.
+    if (o?.effect.type === "prepMeetings" && !ticks.length && !text) return;
     // Typed or ⌘↵ submit while still dictating: release the mic now, drop the late final result.
     if (whenFor) { stopDictation(); setHeard(false); }
     setBusy(true);
     leaving.current = true;
-    try { await api.answer(q.id, optionId, text || undefined, itemIds ?? (q.kind === "plan" ? picked : undefined)); }
+    try { await api.answer(q.id, optionId, text || undefined, itemIds ?? (q.kind === "plan" ? picked : undefined), q.picks ? ticks.filter((id) => q.picks!.some((p) => p.id === id)) : undefined); }
     catch { leaving.current = false; setBusy(false); }
   };
 
@@ -320,7 +327,8 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
         <span className="focus-count">1 of {total}</span>
       </div>
       <h1><Md inline className="" text={q.prompt} /></h1>
-      {q.context && <Md className="ctx md" text={q.context} />}
+      {/* A card with tick-boxes repeats its list in the context for typed notes; show only the lead line. */}
+      {q.context && <Md className="ctx md" text={q.picks?.length ? q.context.split("\n")[0]! : q.context} />}
       {item?.notes?.some((n) => !(n.who === "hq" && q.context?.includes(n.text))) ? (
         <div className="ctx prior-notes" title="What you said about this before">
           {item.notes.filter((n) => !(n.who === "hq" && q.context?.includes(n.text))).slice(-2).map((n, i) => <div key={`${n.at}-${i}`}>{n.who === "hq" ? "↳ HQ" : "✎"} <span className="when">{relDay(n.at)}</span> {n.text}</div>)}
@@ -328,6 +336,20 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
       ) : null}
       {q.kind === "plan" && <Planner items={items} picked={picked} setPicked={setPicked} />}
       {q.kind === "wrap" && <Wrap items={items} />}
+      {q.picks?.length ? (
+        <div className="pick">
+          {q.picks.map((p) => (
+            <button key={p.id} className={`pick-row ${ticks.includes(p.id) ? "on" : ""}`} onClick={() => setTicks(ticks.includes(p.id) ? ticks.filter((x) => x !== p.id) : [...ticks, p.id])}>
+              <span className="tick">✓</span>
+              <span style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13.5 }}>{p.label}</div>
+                {p.hint && <div className="meta"><span className="why-tag">{p.hint}</span></div>}
+              </span>
+              <span />
+            </button>
+          ))}
+        </div>
+      ) : null}
       {whenFor ? (
         <div className="when-say">
           <div className="when-prompt">{heard && phase === "transcribing" ? <><span className="thinking"><i /><i /><i /></span> Transcribing…</> : heard ? <><span className="rec-dot" /> Listening — say when. <kbd>↵</kbd> when done</> : "When?"} <span>“booked it Thu 2pm” · “put it in Friday morning” · “remind me Monday”</span></div>
@@ -352,8 +374,8 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
       ) : (
       <div className="options">
         {q.options.map((o, i) => (
-          <button key={o.id} className={`opt ${o.tone ?? ""}`} disabled={busy} onClick={() => answer(o.id)}>
-            <kbd>{i + 1}</kbd>{q.kind === "plan" && o.id === "plan" ? (picked.length ? `Commit to ${picked.length}` : "Clear today") : o.label}
+          <button key={o.id} className={`opt ${o.tone ?? ""}`} disabled={busy || (o.effect.type === "prepMeetings" && !ticks.length && !note.trim())} onClick={() => answer(o.id)}>
+            <kbd>{i + 1}</kbd>{q.kind === "plan" && o.id === "plan" ? (picked.length ? `Commit to ${picked.length}` : "Clear today") : o.effect.type === "prepMeetings" ? (ticks.length ? `Prep ${ticks.length}` : "Tick a meeting to prep") : o.label}
           </button>
         ))}
       </div>

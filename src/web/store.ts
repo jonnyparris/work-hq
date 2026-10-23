@@ -96,8 +96,8 @@ async function call<T = any>(method: string, path: string, body?: unknown): Prom
 }
 
 export const api = {
-  answer: (id: string, optionId: string, note?: string, itemIds?: string[]) =>
-    call("POST", `/api/questions/${id}/answer`, { optionId, note, itemIds }),
+  answer: (id: string, optionId: string, note?: string, itemIds?: string[], picks?: string[]) =>
+    call("POST", `/api/questions/${id}/answer`, { optionId, note, itemIds, picks }),
   /** A typed note on a question. The server acts on it (answer / status / schedule / agent) or parks it till tomorrow. */
   note: (id: string, text: string) => call<{ pending: boolean }>("POST", `/api/questions/${id}/note`, { text }),
   item: (id: string) => call<Item>("GET", `/api/items/${id}`),

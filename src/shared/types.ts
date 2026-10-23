@@ -178,6 +178,8 @@ export type Effect =
   | { type: "triage"; text: string; mode: "chat" | "pineapple" | "review" }
   /** Morning plan: the items picked on the card (sent with the answer as `itemIds`) go to today. */
   | { type: "commitPlan" }
+  /** Morning prep card: send a prep agent for each meeting ticked in the card's `picks` (sent with the answer as `picks`). */
+  | { type: "prepMeetings" }
   /** Write the journal to memory now (wrap-up). */
   | { type: "flushJournal" }
   /** Run a sweep now ("Scan the transcript now"). */
@@ -197,6 +199,8 @@ export interface Question {
   badge?: string;
   /** Calendar event this question is about (prep / review). */
   eventId?: string;
+  /** Tick-boxes shown on the card (the morning prep card's meetings). The tapped option gets the ticked ids. */
+  picks?: QuestionPick[];
   prompt: string;
   /** Extra context shown under the prompt (markdown-lite). */
   context?: string;
@@ -213,6 +217,12 @@ export interface Question {
   answeredAt?: string;
   /** Put back by hub.reopen (keep/snooze): the id of the card it copies. Not a new ask (usage digest skips it). */
   reopenedFrom?: string;
+}
+
+export interface QuestionPick {
+  id: string;
+  label: string;
+  hint?: string;
 }
 
 export type ActionKind =

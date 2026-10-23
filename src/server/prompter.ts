@@ -2,7 +2,7 @@
 // what to ask. Rules are deliberately boring and deterministic — the AI does
 // extraction and verification; *when to interrupt* stays predictable.
 
-import type { ActionKind, CalendarEvent, Coaching, Item, Job, Question, QuestionOption } from "../shared/types.ts";
+import type { ActionKind, CalendarEvent, Coaching, Item, Job, Question, QuestionOption, QuestionPick } from "../shared/types.ts";
 import { config, sweepOn } from "./config.ts";
 import type { Hub } from "./hub.ts";
 import { localDate } from "./memory-sync.ts";
@@ -180,33 +180,12 @@ export class Prompter {
       );
     }
 
-    // 2. Meetings: prep before, capture after.
+    // 2. Meetings: prep is one morning card (askPrep, below); capture after.
     for (const ev of this.hub.todayEvents(now)) {
       if (ev.response === "declined") continue;
       // Only you on the invite (e.g. a personal block mirrored from a personal address): not a meeting.
       if (ev.attendees?.length && ev.attendees.every((a) => isOwner(a))) continue;
-      const start = Date.parse(ev.start);
       const end = Date.parse(ev.end);
-      const n = ev.attendees?.length ?? 0;
-      const small = ev.oneOnOne || (n >= 2 && n <= 4); // 0–1 attendees = a hold, not a meeting
-      if (small && start - now.getTime() <= 20 * MIN && start - now.getTime() > 2 * MIN) {
-        this.ask(
-          {
-            kind: "prep",
-            eventId: ev.id,
-            key: `prep:${ev.id}`,
-            once: true,
-            // Card only, no desktop ping: 41 pings to 09-25..10-16, 37 expired untouched (10-17 reflection).
-            priority: 75,
-            prompt: `${ev.title} in ${Math.round((start - now.getTime()) / MIN)} min. Want a brief?`,
-            context: ev.attendees?.length ? `With ${ev.attendees.slice(0, 5).join(", ")}` : undefined,
-            options: [
-              opt("prep", "Prep a brief", { type: "dispatch", action: "prep" }, "primary"),
-              opt("no", "I'm good", { type: "noop" }, "quiet"),
-            ],
-          },
-        );
-      }
       // Never RSVP'd = probably didn't go. 1-1s are the exception: plenty of real ones never get accepted.
       const attended = ev.response !== "needsAction" || ev.oneOnOne;
       // The calendar sweep usually leaves you off the attendee list, so a real 1-1 has one attendee.
@@ -248,6 +227,10 @@ export class Prompter {
         ],
       });
     }
+
+    // 3b. Prep: one card for the day's 1-1s and small meetings, after the plan.
+    // Asked before noon only, but an open card keeps following the calendar all day (drops started meetings, expires).
+    if (workday && hour >= dayStart && (hour < 12 || this.hub.store.openQuestionByKey(`prep:${today}`))) this.askPrep(now, today);
 
     // 4. Wrap-up, once per workday, 90 min before the end of the day.
     if (workday && hour >= dayEnd - 1.5 && hour < dayEnd + 3) {
@@ -615,6 +598,28 @@ export class Prompter {
     return this.hub.store.answeredByPrefix(`due:${itemId}:`, since).filter((q) => q.answer?.startsWith(PUSH_1H)).length;
   }
 
+  /**
+   * One prep card a day, in the morning plan window: tick the 1-1s and small meetings worth a brief, each tick
+   * sends a prep agent. It replaced a card 20 min before each meeting: 17 of 19 expired untouched (10-22
+   * proposal; 8 of 8 on 10-20). While open, the list follows the calendar: started meetings drop off, new ones
+   * join, and the card goes once nothing's left to prep.
+   */
+  private askPrep(now: Date, today: string) {
+    const key = `prep:${today}`;
+    const picks = prepPicks(this.hub.todayEvents(now), now);
+    const prev = this.hub.store.openQuestionByKey(key);
+    if (prev) {
+      if (!picks.length) return this.hub.expireQuestion(prev.id, "meetings started");
+      const card = prepCard(picks);
+      if (JSON.stringify(prev.picks) === JSON.stringify(card.picks)) return;
+      Object.assign(prev, card);
+      this.hub.store.putQuestion(prev);
+      this.hub.emit({ type: "question", data: prev });
+      return;
+    }
+    if (picks.length) this.ask({ ...prepCard(picks), key, once: true });
+  }
+
   private ask(q: Omit<Question, "id" | "status" | "createdAt"> & { cooldownMin?: number; once?: boolean }, notify = false) {
     const created = this.hub.ask(q);
     if (created) this.open.push(created);
@@ -672,6 +677,8 @@ export class Prompter {
       else if (q.kind === "confirm" && it && it.status !== "inbox") this.hub.expireQuestion(q.id, "triaged");
       else if (q.kind === "post" && it && q.key.endsWith(":idea") && hasDraft(it)) this.hub.expireQuestion(q.id, "drafted");
       else if (q.kind === "prep" && q.eventId && this.startedAgo(q.eventId, now) > 10 * MIN) this.hub.expireQuestion(q.id, "meeting started");
+      // Yesterday's morning prep card (and any per-meeting card left from before it, which has an eventId).
+      else if (q.kind === "prep" && !q.eventId && q.key !== `prep:${today}`) this.hub.expireQuestion(q.id, "day moved on");
       else if (q.kind === "plan" && now.getHours() >= 14) this.hub.expireQuestion(q.id, "day moved on");
       // A snoozed wrap/plan keeps its old key; once the date rolls over it's a stale duplicate.
       else if ((q.kind === "wrap" || q.kind === "plan") && q.key !== `${q.kind}:${localDate(now)}`) this.hub.expireQuestion(q.id, "day moved on");
@@ -754,6 +761,43 @@ export function coachQuestion(c: Pick<Coaching, "date" | "when" | "move">) {
       opt("done", "Done", { type: "noop" }, "good"),
       opt("agent", "Hand to an agent", { type: "dispatch", action: "work", note: `The M5 "one thing to try" from the ${c.date} reflection. Do what an agent can (drafts, lookups, booking), and hand back what only the owner can send:\n${c.move}` }, "primary"),
       opt("not", "Not today", { type: "noop" }, "quiet"),
+    ],
+  };
+}
+
+/**
+ * Today's meetings worth a prep brief, still to start: 1-1s and 2–4 person meetings you haven't declined, not
+ * holds (0–1 attendees) or personal blocks (only you). Chronological.
+ */
+export function prepPicks(events: CalendarEvent[], now: Date): QuestionPick[] {
+  return events
+    .filter((ev) => {
+      if (ev.response === "declined") return false;
+      if (ev.attendees?.length && ev.attendees.every((a) => isOwner(a))) return false;
+      const n = ev.attendees?.length ?? 0;
+      return (ev.oneOnOne || (n >= 2 && n <= 4)) && Date.parse(ev.start) - now.getTime() > 2 * MIN;
+    })
+    .sort((a, b) => a.start.localeCompare(b.start))
+    .map((ev) => {
+      const who = (ev.attendees ?? []).filter((a) => !isOwner(a)).map((a) => a.split("@")[0]!);
+      return { id: ev.id, label: `${fmt(new Date(ev.start))} · ${ev.title}`, ...(who.length ? { hint: who.slice(0, 4).join(", ") } : {}) };
+    });
+}
+
+/** The morning prep card. Card only, no desktop ping (priority < 80): 41 pings to 09-25..10-16, 37 expired. */
+export function prepCard(picks: QuestionPick[]) {
+  const n = picks.length;
+  return {
+    kind: "prep" as const,
+    badge: "Today's prep",
+    priority: 75,
+    prompt: `${n} ${n === 1 ? "meeting" : "1-1s and small meetings"} today. Any worth a brief?`,
+    // The list is in the context too, so a typed note ("prep Kevin and Kuba") reads against it.
+    context: `Tick the ones to prep. Each sends an agent for a brief.\n${picks.map((p) => `- ${p.label}${p.hint ? ` (${p.hint})` : ""}`).join("\n")}`,
+    picks,
+    options: [
+      opt("prep", "Prep the ticked ones", { type: "prepMeetings" }, "primary"),
+      opt("no", "None today", { type: "noop" }, "quiet"),
     ],
   };
 }

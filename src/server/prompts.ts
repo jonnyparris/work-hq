@@ -333,6 +333,7 @@ export function notePrompt(q: Question, it: Item | undefined, note: string, ctx:
     : e.type === "snooze" ? `ask again in ${e.minutes} min`
     : e.type === "open" ? "open a link (not an answer)"
     : e.type === "multi" ? e.effects.map(effect).join(" + ")
+    : e.type === "prepMeetings" ? "send a prep agent for each meeting the note names (or all, if it says all)"
     : "acknowledge, nothing else";
   const options = q.options.map((o) => `- ${o.id}: "${o.label}" \u2192 ${effect(o.effect)}`).join("\n");
   return `You are Work HQ's note reader. ${me} was shown a question in their dashboard and, instead of pressing a button,

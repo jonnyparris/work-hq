@@ -155,11 +155,11 @@ const server = Bun.serve({
     "/api/questions/:id/answer": {
       POST: (req) =>
         handle(async () => {
-          const b = await body<{ optionId: string; note?: string; itemIds?: string[] }>(req);
+          const b = await body<{ optionId: string; note?: string; itemIds?: string[]; picks?: string[] }>(req);
           const q = hub.store.question(req.params.id);
           if (!q) throw new Error("no such question");
           // Option side effects (plan, flush, scan, look) are Effect types run by hub.applyEffect.
-          const answered = await hub.answer(q.id, b.optionId, b.note, { journalOpen: true, itemIds: b.itemIds });
+          const answered = await hub.answer(q.id, b.optionId, b.note, { journalOpen: true, itemIds: b.itemIds, picks: b.picks });
           if (q.kind === "review" && b.note) void agents.triage(reviewUtterance(q, b.note), "review");
           return answered;
         }),

@@ -134,13 +134,109 @@ describe("prompter", () => {
     expect(hub.store.questions("open").filter((q) => q.itemId === it.id)).toHaveLength(0);
   });
 
-  test("meeting prep 15 minutes before a small meeting: card only, no desktop ping", () => {
+  test("a day with six 1-1s: exactly one prep card in the morning, none before each meeting, no desktop ping", () => {
     const seen: string[] = [];
     hub.subscribe((e) => e.type === "notify" && seen.push(e.data.body));
-    hub.setEvents([{ id: "e1", title: "1-1 Sam", start: at(10, 15).toISOString(), end: at(10, 45).toISOString(), attendees: ["Sam", "Alex"], oneOnOne: true }]);
+    const names = ["Sam", "Kevin", "Kuba", "Jo", "Omar", "Lee"];
+    hub.setEvents(names.map((n, i) => ({ id: `o${i}`, title: `1-1 ${n}`, start: at(10 + i, 30).toISOString(), end: at(11 + i).toISOString(), attendees: [n], oneOnOne: true })));
+    for (let m = 0; m <= 8 * 60; m += 5) p.tick(new Date(at(9, 30).getTime() + m * 60_000));
+    const all = hub.store.questions().filter((q) => q.kind === "prep");
+    expect(all).toHaveLength(1);
+    expect(all[0]!.key).toBe("prep:2026-09-23");
+    expect(all[0]!.eventId).toBeUndefined();
+    expect(seen.some((b) => /1-1s and small meetings|Want a brief/.test(b))).toBe(false);
+  });
+
+  test("the prep card lists today's meetings still to start, follows the calendar, and goes when they've all started", () => {
+    hub.setEvents([
+      { id: "a", title: "1-1 Kevin", start: at(10, 30).toISOString(), end: at(11).toISOString(), attendees: ["kevin@x.com"], oneOnOne: true },
+      { id: "b", title: "Design sync", start: at(11, 30).toISOString(), end: at(12).toISOString(), attendees: ["Sam", "Jo", "Lee"] },
+      { id: "big", title: "All hands", start: at(11).toISOString(), end: at(12).toISOString(), attendees: ["a", "b", "c", "d", "e", "f"] },
+      { id: "past", title: "1-1 Jo", start: at(9).toISOString(), end: at(9, 30).toISOString(), attendees: ["Jo"], oneOnOne: true },
+      { id: "no", title: "1-1 Omar", start: at(11).toISOString(), end: at(11, 30).toISOString(), attendees: ["Omar"], oneOnOne: true, response: "declined" },
+    ]);
+    p.tick(at(10));
+    const q = () => hub.store.questions("open").find((x) => x.kind === "prep");
+    expect(q()!.picks!.map((x) => x.id)).toEqual(["a", "b"]);
+    expect(q()!.picks![0]).toMatchObject({ label: "10:30 · 1-1 Kevin", hint: "kevin" });
+    expect(q()!.prompt).toBe("2 1-1s and small meetings today. Any worth a brief?");
+    expect(q()!.context).toContain("- 11:30 · Design sync (Sam, Jo, Lee)");
+    p.tick(at(10, 40)); // Kevin's started
+    expect(q()!.picks!.map((x) => x.id)).toEqual(["b"]);
+    p.tick(at(11, 40)); // nothing left
+    expect(q()).toBeUndefined();
+    expect(hub.store.questions().filter((x) => x.kind === "prep")).toHaveLength(1);
+  });
+
+  test("no prep card in the afternoon, at the weekend, or on a day with no small meetings", () => {
+    const ev = { id: "a", title: "1-1 Kevin", start: at(16).toISOString(), end: at(16, 30).toISOString(), attendees: ["Kevin"], oneOnOne: true };
+    hub.setEvents([ev]);
+    p.tick(at(13));
+    expect(hub.store.questions("open").some((q) => q.kind === "prep")).toBe(false);
+    const h2 = new Hub(new Store(":memory:"));
+    h2.setEvents([{ ...ev, start: new Date(2026, 8, 26, 16).toISOString(), end: new Date(2026, 8, 26, 16, 30).toISOString() }]);
+    new Prompter(h2).tick(new Date(2026, 8, 26, 10)); // Saturday
+    expect(h2.store.questions("open").some((q) => q.kind === "prep")).toBe(false);
+  });
+
+  test("ticking meetings on the prep card sends one prep agent each; a typed note picks by name", async () => {
+    const sent: Array<{ id: string; action: string }> = [];
+    hub.dispatcher = { dispatch: async (id: string, action: string) => { sent.push({ id, action }); } } as any;
+    hub.setEvents([
+      { id: "a", title: "1-1 Kevin", start: at(10, 30).toISOString(), end: at(11).toISOString(), attendees: ["Kevin"], oneOnOne: true },
+      { id: "b", title: "1-1 Kuba", start: at(11, 30).toISOString(), end: at(12).toISOString(), attendees: ["Kuba"], oneOnOne: true },
+      { id: "c", title: "1-1 Sam", start: at(11, 45).toISOString(), end: at(12).toISOString(), attendees: ["Sam"], oneOnOne: true },
+    ]);
+    p.tick(at(10));
+    const q = hub.store.questions("open").find((x) => x.kind === "prep")!;
+    await hub.answer(q.id, "prep", undefined, { picks: ["a", "c"] });
+    expect(sent.map((s) => s.action)).toEqual(["prep", "prep"]);
+    expect(sent.map((s) => hub.store.item(s.id)!.title)).toEqual(["Prep: 1-1 Kevin", "Prep: 1-1 Sam"]);
+    expect(hub.store.item(sent[0]!.id)!.source.key).toBe("cal:prep:a");
+
+    const { picksFromNote } = await import("../src/server/hub.ts");
+    expect(picksFromNote(q.picks!, "prep kuba and kevin please")).toEqual(["a", "b"]);
+    expect(picksFromNote(q.picks!, "all of them")).toEqual(["a", "b", "c"]);
+    expect(picksFromNote(q.picks!, "just the sync")).toEqual([]);
+    expect(picksFromNote(q.picks!, "not all, just Kuba")).toEqual(["b"]);
+    expect(picksFromNote([{ id: "x", label: "10:30 · 1-1", hint: "kevin" }], "prep Kevin")).toEqual(["x"]);
+  });
+
+  test("prep card: a stray or stale id dispatches nothing; nothing matched keeps the card open", async () => {
+    const sent: string[] = [];
+    hub.dispatcher = { dispatch: async (id: string) => { sent.push(id); } } as any;
+    hub.setEvents([
+      { id: "a", title: "1-1 Kevin", start: at(10, 30).toISOString(), end: at(11).toISOString(), attendees: ["Kevin"], oneOnOne: true },
+      { id: "z", title: "Big thing", start: at(11).toISOString(), end: at(12).toISOString(), attendees: ["a", "b", "c", "d", "e", "f"] },
+    ]);
+    p.tick(at(10));
+    // reopen() puts the same card back under a new id.
+    const card = () => hub.store.openQuestionByKey("prep:2026-09-23");
+    await hub.answer(card()!.id, "prep", undefined, { picks: ["z"] });
+    expect(sent).toEqual([]);
+    expect(card()).toBeTruthy();
+    await hub.answer(card()!.id, "prep", "the design review");
+    expect(sent).toEqual([]);
+    expect(card()).toBeTruthy();
+    await hub.answer(card()!.id, "prep", "kevin");
+    expect(sent).toHaveLength(1);
+    expect(card()).toBeUndefined();
+  });
+
+  test("an open prep card keeps following the calendar after noon and expires once its meetings start", () => {
+    hub.setEvents([{ id: "a", title: "1-1 Kevin", start: at(14).toISOString(), end: at(14, 30).toISOString(), attendees: ["Kevin"], oneOnOne: true }]);
     p.tick(at(10));
     expect(hub.store.questions("open").some((q) => q.kind === "prep")).toBe(true);
-    expect(seen.some((b) => b.startsWith("1-1 Sam"))).toBe(false);
+    p.tick(at(13));
+    expect(hub.store.questions("open").some((q) => q.kind === "prep")).toBe(true);
+    p.tick(at(14, 5));
+    expect(hub.store.questions("open").some((q) => q.kind === "prep")).toBe(false);
+  });
+
+  test("yesterday's prep card expires", () => {
+    hub.store.putQuestion({ id: "old", kind: "prep", key: "prep:2026-09-22", prompt: "x", options: [], priority: 75, status: "open", createdAt: at(9).toISOString() });
+    p.tick(at(15));
+    expect(hub.store.question("old")!.status).toBe("expired");
   });
 
   test("no prep for solo holds", () => {

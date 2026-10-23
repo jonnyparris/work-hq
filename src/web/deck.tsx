@@ -149,7 +149,8 @@ function DeckRow({ q, item, targets, loads, onFocus }: { q: Question; item?: Ite
     setBusy(true);
     try { await fn(); } catch { setBusy(false); }
   };
-  const special = q.kind === "plan" || q.kind === "wrap";
+  // Tick-box cards (plan, the prep card) need the focus card to pick on.
+  const special = q.kind === "plan" || q.kind === "wrap" || Boolean(q.picks?.length);
   // "Scheduled for…" needs words — that's the focus card's job.
   const opts = special ? [] : q.options.filter((o) => o.effect.type !== "when");
   return (

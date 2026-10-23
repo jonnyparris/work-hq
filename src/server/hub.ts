@@ -29,9 +29,10 @@ export interface Dispatcher {
   focus?(jobId: string): unknown;
 }
 
-/** Context an effect needs from the tap beyond the note: the plan card's picked items. */
+/** Context an effect needs from the tap beyond the note: the plan card's picked items, the prep card's ticked meetings. */
 export interface AnswerContext {
   itemIds?: string[];
+  picks?: string[];
 }
 
 export class Hub {
@@ -304,7 +305,7 @@ export class Hub {
     this.emit({ type: "question", data: q });
     this.coachClosed(q);
     this.rememberAnswer(q, opt.label, note);
-    const journaled = await this.applyEffect(opt.effect, q, opt, note, { itemIds: opts.itemIds });
+    const journaled = await this.applyEffect(opt.effect, q, opt, note, { itemIds: opts.itemIds, picks: opts.picks });
     if (opts.journalOpen && q.kind === "open" && !journaled) this.journal(`${q.prompt} → ${q.answer}`);
     return q;
   }
@@ -337,16 +338,7 @@ export class Hub {
     // Meeting questions have no item until the owner wants something done about them.
     if (!itemId && q?.eventId && effect.type === "dispatch") {
       const ev = this.store.events().find((e) => e.id === q.eventId);
-      if (ev) {
-        itemId = this.createItem({
-          title: `Prep: ${ev.title}`,
-          kind: "meeting",
-          status: "doing",
-          people: ev.attendees,
-          detail: `${new Date(ev.start).toTimeString().slice(0, 5)}–${new Date(ev.end).toTimeString().slice(0, 5)}${ev.url ? ` · ${ev.url}` : ""}`,
-          source: { type: "calendar", label: ev.title, key: `cal:prep:${ev.id}`, url: ev.url },
-        }).id;
-      }
+      if (ev) itemId = this.prepItem(ev);
     }
     // The coaching move (prompter askCoachMove) has no item until it's handed to an agent. Journal the answer
     // first, so "M5 move: \u2026 \u2192 Hand to an agent" reads like Done / Not today do.
@@ -434,6 +426,30 @@ export class Hub {
         if (q && !itemId) answerLine();
         break;
       }
+      case "prepMeetings": {
+        // The morning prep card: one prep agent per ticked meeting. A typed note with nothing ticked
+        // ("prep Kevin and Kuba", "all of them") picks by name.
+        // Only the card's own (current) meetings: a stale tick on one that dropped off, or a stray id, does nothing.
+        const listed = q?.picks ?? [];
+        const ticked = Array.isArray(ctx.picks) ? ctx.picks.filter((id) => listed.some((p) => p.id === id)) : [];
+        const ids = ticked.length ? ticked : note?.trim() ? picksFromNote(listed, note) : [];
+        if (!ids.length) {
+          // Don't eat the note: keep the card and say why.
+          if (q) this.reopen(q, 0);
+          this.toast(note?.trim() ? "No meeting on the card matched that. Tick one, or name it." : "Nothing ticked. Tick a meeting first.", "warn");
+          break;
+        }
+        if (q && !itemId) answerLine();
+        for (const id of ids) {
+          const ev = this.store.events().find((e) => e.id === id);
+          if (!ev || !this.dispatcher) continue;
+          const prepId = this.prepItem(ev);
+          if (this.store.liveJobs().some((j) => j.itemId === prepId)) continue;
+          this.journal(`Dispatched prep: ${this.store.item(prepId)?.title}`, { itemId: prepId });
+          await this.dispatcher.dispatch(prepId, "prep", note?.trim() || undefined, q ? `${q.prompt} → ${ev.title}` : undefined);
+        }
+        break;
+      }
       case "flushJournal":
         void this.journalFlusher?.().catch((e) => this.toast(`Couldn't save the journal: ${errText(e)}`, "warn"));
         if (q && !itemId) answerLine();
@@ -455,6 +471,24 @@ export class Hub {
         break;
     }
     return journaled;
+  }
+
+  /**
+   * The prep item for a meeting: reused while open (same event). Otherwise createItem makes it, or reopens a closed
+   * one for the same event (it dedupes on the source key) — a second brief for the same meeting, on `doing`.
+   */
+  private prepItem(ev: CalendarEvent): string {
+    const key = `cal:prep:${ev.id}`;
+    const existing = this.store.itemBySourceKey(key);
+    if (existing && !["done", "dropped"].includes(existing.status)) return existing.id;
+    return this.createItem({
+      title: `Prep: ${ev.title}`,
+      kind: "meeting",
+      status: "doing",
+      people: ev.attendees,
+      detail: `${new Date(ev.start).toTimeString().slice(0, 5)}–${new Date(ev.end).toTimeString().slice(0, 5)}${ev.url ? ` · ${ev.url}` : ""}`,
+      source: { type: "calendar", label: ev.title, key, url: ev.url },
+    }).id;
   }
 
   /**
@@ -945,12 +979,26 @@ export function effectText(e: Effect): string {
     case "noop": return "noop (does nothing)";
     case "gatewayLogin": return "gateway login";
     case "commitPlan": return "commit the picked items to today";
+    case "prepMeetings": return "dispatch prep for each ticked meeting";
     case "flushJournal": return "save the journal to memory";
     case "sweep": return `run the ${e.name} sweep`;
     case "focusSession": return "focus the agent session";
     case "multi": return e.effects.map(effectText).join(" + ");
   }
 }
+
+/**
+ * The meetings a typed note names on the prep card: "all"/"every" → all of them; otherwise any whose label has a
+ * word of 3+ letters from the note ("Kevin", "kuba"). Generic words (prep, sync, meeting) don't count.
+ */
+export function picksFromNote(picks: Array<{ id: string; label: string; hint?: string }>, note: string): string[] {
+  const split = (t: string) => t.toLowerCase().split(/[^\p{L}\p{N}]+/u);
+  const words = new Set(split(note).filter((w) => w.length >= 3 && !PICK_STOP.has(w)));
+  if (/\b(all|every|each|both)\b/i.test(note) && !/\bnot\s+(all|every|each|both)\b/i.test(note)) return picks.map((p) => p.id);
+  // The hint carries attendee names ("10:30 · 1-1" with hint "kevin"), so "prep Kevin" matches either.
+  return picks.filter((p) => split(`${p.label} ${p.hint ?? ""}`).some((w) => words.has(w))).map((p) => p.id);
+}
+const PICK_STOP = new Set(["prep", "brief", "the", "and", "not", "all", "for", "with", "meeting", "meetings", "sync", "please", "just", "one", "only", "today", "call", "chat", "weekly"]);
 
 /** Only local app schemes, web links and markdown/text files; never arbitrary files or commands. */
 export function openLocal(url: string) {
