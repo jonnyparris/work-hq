@@ -160,6 +160,10 @@ a:hover { text-decoration: underline; }
 .ev.live time { color: var(--sky); }
 .ev.declined .t { text-decoration: line-through; color: var(--text-3); }
 .ev.slot { border: 1px dashed var(--line-2); }
+.held-review { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 4px; }
+.held-review input { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--surface); color: var(--text); }
+.held-review .mini svg { width: 12px; height: 12px; }
+.held-review .mini.on { background: var(--coral); color: #fff; }
 .ev.slot .t { color: var(--violet); }
 .nowline { height: 1px; background: var(--coral); position: relative; margin: 3px 0 3px 46px; }
 .nowline::before { content: ""; position: absolute; left: -4px; top: -3px; width: 7px; height: 7px; border-radius: 50%; background: var(--coral); }

@@ -98,7 +98,7 @@ function App() {
           <>
             <div className="col left">
               <NowPanel now={now} events={s.events} workHours={s.config.workHours} />
-              <Timeline now={now} events={s.events} items={s.items} onRefresh={() => api.sync("calendar")} sync={s.sync.find((x) => x.name === "calendar")} />
+              <Timeline now={now} events={s.events} items={s.items} questions={s.questions} onRefresh={() => api.sync("calendar")} sync={s.sync.find((x) => x.name === "calendar")} />
             </div>
             <div className="col center">
               {deck ? (
@@ -326,6 +326,8 @@ function CommandBar() {
   };
   const toggleDictate = () => {
     const v = voice.current!;
+    // The command bar takes the mic back: a borrower (a meeting row's box) lets go instead of waiting for a final.
+    window.dispatchEvent(new CustomEvent("whq:dictate-take"));
     target.current = undefined;
     if (dictating) v.finishDictation();
     else v.startDictation();

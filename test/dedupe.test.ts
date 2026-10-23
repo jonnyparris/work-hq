@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { gatewayAuthError, scannedFrom } from "../src/server/agents.ts";
 import { Store } from "../src/server/db.ts";
 import { sameWork } from "../src/server/dedupe.ts";
@@ -76,6 +76,10 @@ describe("cross-source duplicates", () => {
 });
 
 describe("meeting cards vs transcript scans", () => {
+  // Mid-afternoon, always: "an hour ago" just after midnight is yesterday, and these tests read today's
+  // calendar (bun test runs in UTC, so they failed 00:00–01:00 UTC, 10-23).
+  beforeEach(() => { const d = new Date(); d.setHours(16, 0, 0, 0); setSystemTime(d); });
+  afterEach(() => setSystemTime());
   const today = (h: number, m = 0) => { const d = new Date(); d.setHours(h, m, 0, 0); return d; };
 
   test("matching: same title near the start, or read after it began", () => {
@@ -98,6 +102,32 @@ describe("meeting cards vs transcript scans", () => {
     expect(hub.store.question(q!.id)!.status).toBe("expired");
     p.tick();
     expect(hub.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(0);
+  });
+
+  test("the 'just ended' card is held until the notes sweep window closes, so a scan expires it unseen", async () => {
+    const { REVIEW_HOLD_MIN } = await import("../src/server/prompter.ts");
+    const { config } = await import("../src/server/config.ts");
+    const prev = { ...config.sweeps };
+    try {
+      const start = today(14), end = today(14, 30), now = today(14, 32);
+      hub.setEvents([{ id: "e2", title: "Echo Weekly", start: start.toISOString(), end: end.toISOString(), attendees: ["a@x", "b@x", "c@x"], response: "accepted" }]);
+      config.sweeps.enabled = true;
+      config.sweeps.disabled = [];
+      new Prompter(hub).tick(now);
+      const q = hub.store.questions("open").find((q) => q.kind === "review" && q.eventId === "e2")!;
+      expect(Date.parse(q.notBefore!)).toBe(end.getTime() + REVIEW_HOLD_MIN * 60_000);
+      expect(hub.markScanned([{ title: "Echo Weekly", start: start.toISOString() }], today(14, 45))).toBe(1);
+      expect(hub.store.question(q.id)!.status).toBe("expired");
+      // No transcript sweep: nothing to wait for, so no hold.
+      hub.setEvents([{ id: "e3", title: "Foxtrot sync", start: today(15).toISOString(), end: today(15, 30).toISOString(), attendees: ["a@x", "b@x", "c@x"], response: "accepted" }]);
+      config.sweeps.disabled = ["transcripts"];
+      new Prompter(hub).tick(today(15, 32));
+      const e3 = hub.store.questions("open").find((q) => q.eventId === "e3")!;
+      expect(e3.notBefore).toBeUndefined();
+      expect(e3.context).not.toContain("next sweep");
+    } finally {
+      Object.assign(config.sweeps, prev);
+    }
   });
 
   test("items' meeting labels count as scanned", () => {

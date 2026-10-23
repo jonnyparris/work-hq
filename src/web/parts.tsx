@@ -39,7 +39,17 @@ export function NowPanel({ now, events, workHours }: { now: Date; events: Calend
   );
 }
 
-export function Timeline({ now, events, items, onRefresh, sync }: { now: Date; events: CalendarEvent[]; items: Item[]; onRefresh: () => void; sync?: SyncState }) {
+export function Timeline({ now, events, items, questions = [], onRefresh, sync }: { now: Date; events: CalendarEvent[]; items: Item[]; questions?: Question[]; onRefresh: () => void; sync?: SyncState }) {
+  // An open "X just ended" card gets a dictation box on its meeting row. The card itself is held until the notes-sweep
+  // window closes (prompter REVIEW_HOLD_MIN). Drafts live here, not in the box: the box outlives its card (answered,
+  // or expired by a scan) while it still holds words, so nothing half-typed vanishes.
+  const [drafts, setDrafts] = useState<Record<string, ReviewDraft>>({});
+  const reviews = useRef(new Map<string, Question>());
+  for (const q of questions) if (q.kind === "review" && q.status === "open" && q.eventId) reviews.current.set(q.eventId, q);
+  const openReview = new Set(questions.filter((q) => q.kind === "review" && q.status === "open" && q.eventId).map((q) => q.eventId!));
+  // Any draft keeps the box, even emptied mid-edit; an empty one is dropped on blur once the card is gone.
+  const hasDraft = (d?: ReviewDraft) => Boolean(d);
+  const draftFor = (id: string) => (d: ReviewDraft | undefined) => setDrafts((x) => { const n = { ...x }; if (d) n[id] = d; else delete n[id]; return n; });
   const slots = items.filter((i) => i.status === "scheduled" && i.scheduledFor && new Date(i.scheduledFor).toDateString() === now.toDateString());
   const rows = [
     ...events.map((e) => ({ t: e.start, e })),
@@ -69,6 +79,9 @@ export function Timeline({ now, events, items, onRefresh, sync }: { now: Date; e
                 <div>
                   <div className="t">{e.url ? <a href={e.url} target="_blank" rel="noreferrer" style={{ color: "inherit" }}>{e.title}</a> : e.title}</div>
                   {people(e.attendees).length ? <div className="a">{people(e.attendees).slice(0, 4).join(", ")}{people(e.attendees).length > 4 ? ` +${people(e.attendees).length - 4}` : ""}</div> : null}
+                  {(openReview.has(e.id) || hasDraft(drafts[e.id])) && reviews.current.get(e.id) && (
+                    <HeldReview q={reviews.current.get(e.id)!} open={openReview.has(e.id)} draft={drafts[e.id]} setDraft={draftFor(e.id)} />
+                  )}
                 </div>
               </div>];
           }
@@ -81,6 +94,95 @@ export function Timeline({ now, events, items, onRefresh, sync }: { now: Date; e
         })}
         {!nowPlaced && rows.length > 0 && <div className="nowline" />}
       </div>
+    </div>
+  );
+}
+
+type ReviewDraft = { text: string; state: "idle" | "busy" | "sent" | "listening"; err?: string };
+
+/**
+ * Dictation box on a meeting row with an open "just ended" card: what you committed to goes to triage like the
+ * card's note. Once the card has closed (a scan expired it), the words still go to triage, as a review utterance.
+ */
+function HeldReview({ q, open, draft, setDraft }: { q: Question; open: boolean; draft?: ReviewDraft; setDraft: (d: ReviewDraft | undefined) => void }) {
+  const d = draft ?? { text: "", state: "idle" as const };
+  const latest = useRef(d);
+  latest.current = d;
+  const mine = useRef<((t: string, final: boolean) => void) | undefined>(undefined);
+  // Interim dictation results arrive faster than renders: build on the last draft we set, not the last render's.
+  const put = (p: Partial<ReviewDraft>) => { latest.current = { ...latest.current, ...p }; setDraft(latest.current); };
+  // Mic hand-off: another borrower (the Focus card's "when?"), a cancel, or the command-bar mic (whq:dictate-take)
+  // ends ours. Backstop: a dictation that goes idle without our final result also releases it.
+  useEffect(() => {
+    const release = () => { mine.current = undefined; if (latest.current.state === "listening") put({ state: "idle" }); };
+    const taken = (e: Event) => { clearTimeout(t); if (mine.current && (e as CustomEvent).detail !== mine.current) release(); };
+    const stopped = () => { if (mine.current) release(); };
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const phase = (e: Event) => {
+      clearTimeout(t);
+      if ((e as CustomEvent).detail === "idle" && mine.current) { const fn = mine.current; t = setTimeout(() => { if (mine.current === fn) release(); }, 1500); }
+    };
+    window.addEventListener("whq:dictate", taken);
+    window.addEventListener("whq:dictate-stop", stopped);
+    window.addEventListener("whq:dictate-take", stopped);
+    window.addEventListener("whq:dictate-phase", phase);
+    return () => {
+      window.removeEventListener("whq:dictate-take", stopped);
+      clearTimeout(t);
+      window.removeEventListener("whq:dictate", taken);
+      window.removeEventListener("whq:dictate-stop", stopped);
+      window.removeEventListener("whq:dictate-phase", phase);
+    };
+  }, []);
+  // Card closed with nothing written and the box not in use: drop the empty box.
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!open && !d.text.trim() && d.state === "idle" && document.activeElement !== input.current) setDraft(undefined);
+  }, [open, d.text, d.state]);
+  // Row gone mid-dictation: mic off.
+  useEffect(() => () => { if (mine.current) stopDictation(); }, []);
+  // "Sent" shows briefly, then the box goes (or stays empty while the card is still open).
+  useEffect(() => {
+    if (d.state !== "sent") return;
+    const t = setTimeout(() => setDraft(undefined), 3000);
+    return () => clearTimeout(t);
+  }, [d.state]);
+  const send = async () => {
+    const t = d.text.trim();
+    if (!t || d.state === "busy") return;
+    if (mine.current) { mine.current = undefined; stopDictation(); }
+    put({ state: "busy", err: undefined });
+    try {
+      if (open) await api.note(q.id, t);
+      else await api.say(`${q.prompt}\n${t}`, "review"); // same text reviewUtterance gives a per-meeting card
+      setDraft({ text: "", state: "sent" });
+    } catch (e) { put({ state: "idle", err: (e as Error).message }); }
+  };
+  const mic = () => {
+    if (d.state === "listening") { finishDictation(); return; }
+    const fn = (t: string, final: boolean) => {
+      if (mine.current !== fn) return;
+      if (final) mine.current = undefined;
+      put({ text: t, ...(final ? { state: "idle" as const } : {}) });
+    };
+    mine.current = fn;
+    put({ state: "listening" });
+    dictateInto(fn);
+  };
+  if (d.state === "sent") return <div className="a held-review">Sent to triage.</div>;
+  return (
+    <div className="held-review" title="The card waits until the notes are scanned. Anything you committed to can go in now.">
+      <input
+        ref={input}
+        value={d.text}
+        onChange={(e) => put({ text: e.target.value })}
+        onBlur={() => { if (!open && !latest.current.text.trim() && latest.current.state === "idle") setDraft(undefined); }}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); send(); } if (e.key === "Escape") (e.target as HTMLInputElement).blur(); }}
+        placeholder={d.state === "listening" ? "Listening…" : "Committed to anything? ↵ to triage"}
+      />
+      <button className={`mini ${d.state === "listening" ? "on" : ""}`} onMouseDown={(e) => e.preventDefault()} onClick={mic} title="Dictate"><Icon name="mic" /></button>
+      {d.text.trim() && <button className="mini" disabled={d.state === "busy"} onClick={send}>Send</button>}
+      {d.err && <div className="a" style={{ color: "var(--coral)" }}>Couldn't send: {d.err}</div>}
     </div>
   );
 }
