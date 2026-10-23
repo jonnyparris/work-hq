@@ -717,6 +717,7 @@ export class Hub {
       answeredAt: undefined,
       notBefore: minutes ? new Date(Date.now() + minutes * 60_000).toISOString() : q.notBefore,
       createdAt: minutes ? nowIso() : q.createdAt,
+      reopenedFrom: q.reopenedFrom ?? q.id,
     };
     this.store.putQuestion(again);
     this.emit({ type: "question", data: again });

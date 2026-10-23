@@ -109,3 +109,49 @@ test("usage digest: a yes on a command-bar follow-up with no job after it is fla
   expect(section).not.toContain("usage report");
   expect(section).not.toContain("Couldn't triage");
 });
+
+test("usage digest: a card answered hours after a note isn't credited to it", async () => {
+  const path = `${tmpdir()}/whq-usage-late-${Date.now()}.db`;
+  const hub = new Hub(new Store(path));
+  const t0 = Date.now() - 50 * 60_000;
+  const iso = (min: number) => new Date(t0 + min * 60_000).toISOString();
+  const q = (id: string, answeredMin: number) =>
+    hub.store.putQuestion({ id, kind: "confirm", key: `k:${id}`, priority: 1, prompt: `Card ${id}?`, options: [], status: "answered", answer: "Done", createdAt: iso(0), answeredAt: iso(answeredMin) });
+  q("q_soon", 1);
+  q("q_late", 40);
+  hub.store.putQuestion({ ...hub.store.question("q_late")!, id: "q_exp", key: "k:q_exp", prompt: "Card q_exp?", status: "expired", answer: "pushed" });
+  hub.store.putJournal({ id: "j1", at: iso(0), questionId: "q_soon", who: "you", text: 'Re "Card q_soon?": quick', synced: false });
+  hub.store.putJournal({ id: "j2", at: iso(0), questionId: "q_late", who: "you", text: 'Re "Card q_late?": slow', synced: false });
+  hub.store.putJournal({ id: "j3", at: iso(0), questionId: "q_exp", who: "you", text: 'Re "Card q_exp?": gone', synced: false });
+  hub.store.db.close();
+  const out = await digest(path);
+  rmSync(path, { force: true });
+  expect(out).toMatch(/quick → card closed: Done/);
+  expect(out).toMatch(/gone → not acted on; card expired at \d\d:\d\d/);
+  expect(out).toMatch(/slow → not acted on; card answered separately at \d\d:\d\d/);
+});
+
+test("usage digest: a kept card (Open draft) put back isn't a new ask with a huge wait", async () => {
+  const path = `${tmpdir()}/whq-usage-keep-${Date.now()}.db`;
+  const hub = new Hub(new Store(path));
+  const t0 = new Date(Date.now() - 50 * 60_000).toISOString();
+  const base = { kind: "confirm" as const, key: "k:draft", priority: 1, prompt: "Read the draft?", options: [], createdAt: t0 };
+  hub.store.putQuestion({ ...base, id: "q_orig", status: "answered", answer: "Open draft", answeredAt: new Date(Date.now() - 49 * 60_000).toISOString() });
+  // Stamped copy (new code) and an unstamped legacy copy sharing key + createdAt.
+  hub.store.putQuestion({ ...base, id: "q_new", status: "answered", answer: "Done", answeredAt: new Date().toISOString(), reopenedFrom: "q_orig" });
+  hub.store.putQuestion({ ...base, id: "q_old", status: "open" });
+  hub.store.db.close();
+  const out = await digest(path);
+  rmSync(path, { force: true });
+  expect(out).toMatch(/\| confirm \| 1 \| 1 \| 0 \| 0 \| 1 min \|/);
+  expect(out).not.toContain("Read the draft?** (");
+});
+
+test("hub.reopen stamps reopenedFrom on the copy", async () => {
+  const hub = new Hub(new Store(":memory:"));
+  const q = hub.ask({ kind: "confirm", key: "k:keep", priority: 1, prompt: "Open it?", options: [{ id: "o", label: "Open draft", effect: { type: "open", url: "https://example.com", keep: true } }] })!;
+  await hub.answer(q.id, "o");
+  const copy = hub.store.questions().find((x) => x.id !== q.id && x.key === "k:keep");
+  expect(copy?.reopenedFrom).toBe(q.id);
+  expect(copy?.createdAt).toBe(q.createdAt);
+});

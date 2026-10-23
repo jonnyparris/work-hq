@@ -223,9 +223,18 @@ export class Agents implements Dispatcher {
       void this.launchDemoAction(job.id, title, demoActionScript(item, action, note), useCmux);
       return this.hub.store.job(job.id);
     }
+    // Jobs on other items from the same source (a parent and its child item, one meeting doc): 10-22 a parent and
+    // child item with the same source.url ran the same Dodo createAI work twice, because neither saw the other.
+    const url = item.source.url;
+    const related = url
+      ? this.hub.store.liveJobs().filter((j) => j.kind === "action" && j.id !== job.id && j.itemId && j.itemId !== itemId && this.hub.store.item(j.itemId)?.source.url === url)
+      : [];
     const prompt = actionPrompt(job.id, item, action, note, await this.worktreeFor(job.id, item, action), {
       decision,
-      siblings: siblings.map((j) => ({ id: j.id, action: j.name, decision: j.decision ?? j.note })),
+      siblings: [
+        ...siblings.map((j) => ({ id: j.id, action: j.name, decision: j.decision ?? j.note })),
+        ...related.map((j) => ({ id: j.id, action: j.name, decision: j.decision ?? j.note, item: this.hub.store.item(j.itemId!)?.title ?? "" })),
+      ],
     });
     if (useCmux) writeFileSync(promptFile(job.id), prompt);
     // Launch in the background: the gate may hold it for a while and callers shouldn't wait.

@@ -211,6 +211,8 @@ export interface Question {
   key: string;
   createdAt: string;
   answeredAt?: string;
+  /** Put back by hub.reopen (keep/snooze): the id of the card it copies. Not a new ask (usage digest skips it). */
+  reopenedFrom?: string;
 }
 
 export type ActionKind =

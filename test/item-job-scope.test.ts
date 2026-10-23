@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { Agents, type CmuxDeps } from "../src/server/agents.ts";
 import { Store } from "../src/server/db.ts";
 import { Hub } from "../src/server/hub.ts";
+import { scopeBlock } from "../src/server/prompts.ts";
 import type { Question } from "../src/shared/types.ts";
 
 // 10-22, it_mvj713axaje2b: three answers on one item sent three TICKET jobs in 17 s. Each prompt carried every
@@ -85,4 +86,32 @@ test("a dispatch with no decision (drawer button) gets no scope block but still 
   const p = prompts.get(b!.id)!;
   expect(p).not.toContain("THIS JOB'S DECISION");
   expect(p).toContain(`- ${a!.id} · TICKET: Q? → File the ticket`);
+});
+
+test("live jobs on another item with the same source.url show up as siblings; unrelated items don't", async () => {
+  const { hub, agents, prompts } = setup();
+  const src = { type: "agent" as const, url: "https://developers.cloudflare.com/changelog/post/2026-10-21-createai/" };
+  const parent = hub.createItem({ title: "Dodo createAI changelog", kind: "idea", status: "doing", source: src });
+  const child = hub.createItem({ title: "Wire createAI into Dodo", kind: "task", status: "doing", source: src });
+  const other = hub.createItem({ title: "Unrelated", kind: "task", status: "doing", source: { type: "agent", url: "https://example.com/x" } });
+  const noUrl = hub.createItem({ title: "No url", kind: "task", status: "doing" });
+  const a = await agents.dispatch(parent.id, "work", undefined, "Q? → Do it");
+  const o = await agents.dispatch(other.id, "work");
+  await agents.dispatch(noUrl.id, "work");
+  const b = await agents.dispatch(child.id, "work");
+  const p = prompts.get(b!.id)!;
+  expect(p).toContain("ALSO RUNNING ON OTHER ITEMS FROM THE SAME SOURCE");
+  expect(p).not.toContain("ALSO RUNNING ON THIS ITEM");
+  expect(p).toContain(`- ${a!.id} · WORK on "Dodo createAI changelog": Q? → Do it`);
+  expect(p).not.toContain(o!.id);
+  expect(scopeBlock({ siblings: [{ id: "j1", action: "work", item: `Dodo's "changelog"` }, { id: "j2", action: "work", item: "  " }] })).toContain(
+    `- j1 · WORK on "Dodo's 'changelog'"\n- j2 · WORK on "another item"`,
+  );
+  // An item with no url doesn't match other url-less items.
+  const c = await agents.dispatch(hub.createItem({ title: "Also no url", kind: "task", status: "doing" }).id, "work");
+  expect(prompts.get(c!.id)!).not.toContain("ALSO RUNNING");
+  // Once the parent's job is over it drops out.
+  hub.putJob({ ...hub.store.job(a!.id)!, status: "done", finishedAt: new Date().toISOString() });
+  const d = await agents.dispatch(child.id, "verify");
+  expect(prompts.get(d!.id)!).not.toContain(a!.id);
 });

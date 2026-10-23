@@ -145,8 +145,8 @@ Work HQ removes an empty one when the job ends.`;
 export interface ActionScope {
   /** The one answer that sent this job ("<question> → <option>"). */
   decision?: string;
-  /** Action jobs already queued or running on the same item. */
-  siblings?: { id: string; action: string; decision?: string }[];
+  /** Action jobs already queued or running on the same item, or (with `item`, its title; blank reads "another item") on an item with the same source.url. */
+  siblings?: { id: string; action: string; decision?: string; item?: string }[];
 }
 
 /**
@@ -163,11 +163,21 @@ The other decisions in the notes below are context. Each one that sent an agent 
 parallel. Don't act on them: no tickets, messages or closures for them. If one looks undone and nobody has it,
 add it as a question in your report.`);
   }
-  if (scope.siblings?.length) {
+  const line = (s: NonNullable<ActionScope["siblings"]>[number]) =>
+    `- ${s.id} · ${s.action.toUpperCase()}${s.item !== undefined ? ` on "${s.item.replace(/\s+/g, " ").replace(/"/g, "'").trim().slice(0, 100) || "another item"}"` : ""}${s.decision ? `: ${s.decision.replace(/\s+/g, " ").slice(0, 300)}` : ""}`;
+  const same = scope.siblings?.filter((s) => s.item === undefined) ?? [];
+  const related = scope.siblings?.filter((s) => s.item !== undefined) ?? [];
+  if (same.length) {
     parts.push(`ALSO RUNNING ON THIS ITEM (started before you; leave their work to them):
-${scope.siblings.map((s) => `- ${s.id} · ${s.action.toUpperCase()}${s.decision ? `: ${s.decision.replace(/\s+/g, " ").slice(0, 300)}` : ""}`).join("\n")}
+${same.map(line).join("\n")}
 Before you file, send or close anything, search for what they may have just done (new tickets, sent messages)
 and link to it rather than repeat it.`);
+  }
+  if (related.length) {
+    // One meeting doc or changelog can hold several distinct items: these may overlap, or may not.
+    parts.push(`ALSO RUNNING ON OTHER ITEMS FROM THE SAME SOURCE (may overlap with yours; check before you duplicate):
+${related.map(line).join("\n")}
+If one is doing the same work as you, link to it and report rather than do it twice. If it's different work, carry on.`);
   }
   return parts.join("\n\n");
 }

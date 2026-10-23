@@ -52,7 +52,16 @@ p(`# Work HQ usage ${since.slice(0, 16)} → ${until.slice(0, 16)}`);
 p();
 
 // ── volume ─────────────────────────────────────────────────────────────────
-const created = asked.filter((q) => inWin(q.createdAt));
+// A card put back by "keep" (Open draft) or snooze is the same ask, not a new one. Keep copies the original
+// createdAt, so counting it gave a 4,910-minute "wait" (10-22). New copies carry reopenedFrom; older ones
+// share key and createdAt with the card they copy, and the original is the one answered first. (Legacy snooze
+// copies got a fresh createdAt and no stamp, so they still count: nothing ties them to the card they copy.)
+const reopened = new Set(allQuestions.filter((q) => q.reopenedFrom).map((q) => q.id));
+const byAsk = new Map<string, Question[]>();
+for (const q of allQuestions) if (!q.reopenedFrom) byAsk.set(`${q.key}|${q.createdAt}`, [...(byAsk.get(`${q.key}|${q.createdAt}`) ?? []), q]);
+for (const qs of byAsk.values())
+  if (qs.length > 1) qs.sort((a, b) => { const x = a.answeredAt ?? "~", y = b.answeredAt ?? "~"; return x < y ? -1 : x > y ? 1 : 0; }).slice(1).forEach((q) => reopened.add(q.id));
+const created = asked.filter((q) => inWin(q.createdAt) && !reopened.has(q.id));
 const byKind = new Map<string, Question[]>();
 for (const q of created) byKind.set(q.kind, [...(byKind.get(q.kind) ?? []), q]);
 p("## Questions by kind");
@@ -116,8 +125,11 @@ function noteFate(j: JournalEntry): string {
   const q = j.questionId ? qById.get(j.questionId) : undefined;
   if (q) {
     // The card it was typed on says what happened.
-    if (q.status !== "open" && q.answeredAt && q.answeredAt >= j.at) return `card closed: ${md(cut(q.answer ?? q.status, 60))}`;
+    // Only an answer within 5 minutes is the note's doing. 10-22: a 07:58 note read "card closed" for a tap at 13:58.
+    const gap = q.answeredAt ? Date.parse(q.answeredAt) - Date.parse(j.at) : -1;
+    if (q.status !== "open" && gap >= 0 && gap < 5 * 60_000) return `card closed: ${md(cut(q.answer ?? q.status, 60))}`;
     if (q.status === "open" && q.notBefore && q.notBefore > j.at) return "parked till morning (read as background)";
+    if (gap >= 0) return `not acted on; card ${q.status === "expired" ? "expired" : "answered separately"} at ${hm(q.answeredAt)}`;
     return "**nothing happened**";
   }
   // Older entries have no questionId. Without an item there's nothing to match on.
