@@ -153,7 +153,7 @@ function App() {
             <div className="col right">
               <TodayPanel items={s.items} jobs={s.jobs} onOpen={setSel} selected={sel} />
               <CoachingPanel c={s.coaching} now={now} />
-              <AgentsPanel jobs={s.jobs} cmux={s.config.cmux} load={s.load} />
+              <AgentsPanel jobs={s.jobs} cmux={s.config.cmux} load={s.load} questions={s.questions} />
             </div>
           </>
         )}

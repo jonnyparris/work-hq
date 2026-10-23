@@ -4,6 +4,7 @@
 //   action  — interactive pi in a cmux workspace. Anything the owner dispatches. Highly visible.
 
 import { type BulkRequest, deferHorizon } from "../shared/batch.ts";
+import { isAgentCard, isWaitingSession } from "../shared/boss.ts";
 import { claimsDispatch } from "../shared/dead-button.ts";
 import { explainKey, sentences } from "../shared/detail.ts";
 import { spawn } from "node:child_process";
@@ -21,10 +22,25 @@ import { backoffMs, isRateLimited, LaunchGate, RunCap } from "./launch-gate.ts";
 import { overloaded } from "./load.ts";
 import { assertShortArgs, PiPool, PiRpc, piStamp, type RunOutcome } from "./pi-rpc.ts";
 import {
-  actionPrompt, calendarPrompt, calendarSweepPrompt, explainPrompt, notePrompt, openUrl, postSweepPrompt, schedulePrompt, SITE_LINK, SITE_POSTS,
+  actionPrompt, type BossCard, bossPrompt, calendarPrompt, calendarSweepPrompt, explainPrompt, notePrompt, openUrl, postSweepPrompt, schedulePrompt, SITE_LINK, SITE_POSTS,
   transcriptSweepPrompt, triagePrompt, WIKI_DRAFTS,
 } from "./prompts.ts";
 import { cleanupWorktree, createWorktree, repoFor, type WorktreeResult } from "./worktrees.ts";
+
+/** Open cards an agent raised (or raised about an agent): what the boss check verifies. */
+export function bossCards(hub: Hub): BossCard[] {
+  const jobs = hub.store.jobs(500);
+  return hub.store
+    .questions("open")
+    .filter(isAgentCard)
+    .map((q) => {
+      const item = q.itemId ? hub.store.item(q.itemId) : undefined;
+      const askedBy = item
+        ? jobs.filter((j) => j.kind === "action" && j.itemId === item.id && j.createdAt <= q.createdAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
+        : undefined;
+      return { q, item, askedBy };
+    });
+}
 
 const modelArgs = () => (config.pi.model ? ["--model", config.pi.model] : []);
 const backoff = () => backoffMs({ minSec: config.pi.rateLimitBackoffSec[0] ?? 60, maxSec: config.pi.rateLimitBackoffSec[1] ?? 90 });
@@ -238,6 +254,40 @@ export class Agents implements Dispatcher {
     });
     if (useCmux) writeFileSync(promptFile(job.id), prompt);
     // Launch in the background: the gate may hold it for a while and callers shouldn't wait.
+    void this.launchAction(job.id, title, prompt, useCmux);
+    return this.hub.store.job(job.id);
+  }
+
+  /**
+   * "Boss check": one agent verifies every open agent card (Agent asks / finished / stopped / didn't run) and every
+   * live session against the real state, closes what's stale and leaves the real asks. Not tied to an item.
+   * 10-23: 13 "Agent asks" cards were open; 10 were about PRs that had already merged.
+   */
+  async bossCheck() {
+    const live = this.hub.store.liveJobs();
+    const running = live.find((j) => j.kind === "action" && j.name === "boss");
+    if (running) {
+      this.hub.toast(`Already running: ${running.title}`, "info");
+      return running;
+    }
+    const cards = bossCards(this.hub);
+    const sessions = live
+      .filter((j) => j.kind === "action" && j.surface === "cmux" && ["blocked", "running"].includes(j.status))
+      .map((job) => ({ job, statusFile: resolve(cmux.jobDir(job.id), "status.json") }));
+    if (!cards.length && !sessions.some((s) => isWaitingSession(s.job))) {
+      this.hub.toast("Nothing for the boss to check: no agent is waiting on you", "info");
+      return undefined;
+    }
+    const useCmux = this.cmuxDeps.available();
+    const title = `Boss check \u00b7 ${cards.length} agent card${cards.length === 1 ? "" : "s"}${sessions.length ? `, ${sessions.length} live` : ""}`;
+    const job = this.newJob("action", "boss", title, useCmux ? "cmux" : "headless");
+    this.hub.journal(`Boss check sent: ${cards.length} cards, ${sessions.length} live sessions`);
+    if (config.demo) {
+      this.patch(job.id, { status: "done", startedAt: nowIso(), finishedAt: nowIso(), summary: `Demo: would check ${cards.length} cards and ${sessions.length} sessions` });
+      return this.hub.store.job(job.id);
+    }
+    const prompt = bossPrompt(job.id, cards, sessions.filter((s) => s.job.id !== job.id), useCmux);
+    if (useCmux) writeFileSync(promptFile(job.id), prompt);
     void this.launchAction(job.id, title, prompt, useCmux);
     return this.hub.store.job(job.id);
   }

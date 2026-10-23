@@ -8,6 +8,7 @@ import type {
 } from "../shared/types.ts";
 import { type BulkRequest, deckGroup, deferHorizon, localDay, optionFor, setsStatus } from "../shared/batch.ts";
 import { affirms, claimsDispatch, deadOptions, promisesAction, stallsOptions } from "../shared/dead-button.ts";
+import { AGENT_ASKS, isAgentCard } from "../shared/boss.ts";
 import { asksForIdeas, IDEA_CAP } from "../shared/ideas.ts";
 import { config, memoryOn } from "./config.ts";
 import { newId, nowIso, type Store } from "./db.ts";
@@ -918,6 +919,21 @@ export class Hub {
       const { id, note, ...patch } = u;
       this.updateItem(id, patch as Partial<Item>);
       if (note || patch.status) this.journal(`${patch.status ? label(patch.status) + ": " : ""}${this.store.item(id)!.title}${note ? ` — ${note}` : ""}`, { itemId: id, who: "agent" });
+      // A closed item's agent cards are moot, as with setStatus (which closes every card). Only agent cards here: an
+      // agent's "done" shouldn't silently take the owner's own questions with it. Lets the boss check close an item
+      // and its stale asks in one update.
+      if (patch.status === "done" || patch.status === "dropped") {
+        for (const q of this.store.questions("open").filter((q) => q.itemId === id && isAgentCard(q))) this.expireQuestion(q.id, `item ${patch.status}`);
+      }
+    }
+    let closed = 0;
+    // Boss check only, and only agent cards: no other job closes cards it didn't raise, and never the owner's own.
+    for (const c of job?.kind === "action" && job.name === "boss" ? r.closeQuestions ?? [] : []) {
+      const q = this.store.question(c.id);
+      if (!q || !isAgentCard(q)) continue;
+      this.expireQuestion(q.id, c.reason || "no longer applies");
+      this.journal(`Closed card: ${q.prompt.slice(0, 120)}${c.reason ? ` — ${c.reason}` : ""}`, { itemId: q.itemId, who: "agent" });
+      closed++;
     }
     for (const q of r.questions ?? []) {
       const opts = q.options?.length ? q.options : ["Yes", "No"];
@@ -925,7 +941,7 @@ export class Hub {
       const itemId = byKey ?? (q.itemId && this.store.item(q.itemId) ? q.itemId : job?.itemId);
       const made = this.ask({
         kind: "open",
-        badge: job ? "Agent asks" : undefined,
+        badge: job ? AGENT_ASKS : undefined,
         itemId,
         prompt: q.prompt,
         context: q.context,
@@ -959,7 +975,7 @@ export class Hub {
         for (const q of this.store.questions("open").filter((q) => q.key === `after:${job.id}`)) this.expireQuestion(q.id, "agent reported");
       }
     }
-    return { created: created.map((i) => i.id), ...(asked.length ? { questions: asked } : {}), ...(folded.length ? { folded } : {}) };
+    return { created: created.map((i) => i.id), ...(asked.length ? { questions: asked } : {}), ...(folded.length ? { folded } : {}), ...(closed ? { closed } : {}) };
   }
 }
 

@@ -132,6 +132,11 @@ with bulk buttons per group and "push everything that needs your head to Thu". Y
 bar: *"skip all blog posts till Thursday"*. **`q`** sorts the normal queue quick wins first. Answering *"Doing it today"*
 won't bring the same question back tomorrow morning.
 
+Lots of agents say they need you? Agent cards go stale: the PR merged, another agent did it, the session died.
+From three agent cards or waiting sessions, the Agents panel shows **Boss check: which are real?** One agent checks
+each one at the source (`gh`/`glab`, the ticket, the job's status file), closes the stale cards with the evidence,
+re-asks any whose facts changed, and leaves you the short list. Its prompt keeps it read-only (no merging, sending or filing), and it can only close agent cards, never your own.
+
 No button fits? Type it in the note field and press **`⌘↵`**: *"drop it"*, *"chase Sam on Thursday"*, *"it's Joan, not Jon,
 and tighten it first"*. The note is the answer. Work HQ picks the matching option, changes the status, schedules it,
 or sends an agent with your words. If the note is only background, it's kept on the item and the question waits

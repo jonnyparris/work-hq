@@ -208,6 +208,8 @@ const server = Bun.serve({
 
     "/api/jobs/:id/focus": { POST: (req) => handle(() => ({ ok: agents.focus(req.params.id) })) },
     "/api/jobs/:id/cancel": { POST: (req) => handle(() => agents.cancel(req.params.id)) },
+    // "Boss check" in the Agents panel: one agent verifies every open agent card and live session, closes the stale ones.
+    "/api/agents/boss": { POST: () => handle(async () => ({ job: (await agents.bossCheck()) ?? null })) },
 
     "/api/sync/:name": {
       POST: (req) =>

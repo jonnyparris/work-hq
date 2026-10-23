@@ -394,6 +394,8 @@ a:hover { text-decoration: underline; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ── agents ────────────────────────────────────────────────────────────── */
+.boss { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; padding: 8px 12px; border-radius: 12px; border: 1px solid var(--gold); color: var(--gold); font-size: 12px; }
+.boss .mini { margin-left: auto; }
 .job { padding: 10px 12px; border-radius: 12px; background: rgba(0,0,0,0.2); border: 1px solid var(--line); }
 .job + .job { margin-top: 8px; }
 .job-h { display: flex; align-items: center; gap: 8px; }

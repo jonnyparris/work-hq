@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CalendarEvent, Coaching, CoachOutcome, Item, ItemStatus, Job, JournalEntry, LoadNow, Question, SyncState } from "../shared/types.ts";
 import { explainKey } from "../shared/detail.ts";
 import { committedView } from "../shared/committed.ts";
+import { BOSS_MIN, waitingOnYou } from "../shared/boss.ts";
 import { type PlanGroup, planView, score, searchPlan } from "../shared/plan.ts";
 import { CalmScene } from "./calm.tsx";
 import { api } from "./store.ts";
@@ -759,7 +760,7 @@ export function CoachTrack({ history }: { history: CoachOutcome[] }) {
 }
 
 // ── Agents ────────────────────────────────────────────────────────────────
-export function AgentsPanel({ jobs, cmux, load }: { jobs: Job[]; cmux: boolean; load?: LoadNow }) {
+export function AgentsPanel({ jobs, cmux, load, questions = [] }: { jobs: Job[]; cmux: boolean; load?: LoadNow; questions?: Question[] }) {
   const live = jobs.filter((j) => ["running", "blocked", "queued"].includes(j.status));
   const recent = jobs.filter((j) => !live.includes(j)).slice(0, 6);
   return (
@@ -770,8 +771,32 @@ export function AgentsPanel({ jobs, cmux, load }: { jobs: Job[]; cmux: boolean; 
         {load && <LoadChip load={load} />}
         <span className="act" title="Dispatched actions open as pi sessions in the cmux 'Work HQ' group">{cmux ? "cmux ✓" : "headless"}</span>
       </div>
+      <BossButton jobs={jobs} questions={questions} />
       {!jobs.length && <div className="empty">No agents yet. Dispatch from any item or question.</div>}
       {[...live, ...recent].map((j) => <JobCard key={j.id} j={j} />)}
+    </div>
+  );
+}
+
+/**
+ * "Boss check": when several agents say they're waiting on you, one agent checks which are real (PR merged? job
+ * gone?), closes the stale cards and leaves the short list. Shown from BOSS_MIN things waiting, or while one runs.
+ */
+export function BossButton({ jobs, questions, min = BOSS_MIN }: { jobs: Job[]; questions: Question[]; min?: number }) {
+  const n = waitingOnYou(questions, jobs);
+  const running = jobs.find((j) => j.kind === "action" && j.name === "boss" && ["running", "blocked", "queued"].includes(j.status));
+  if (!running && n < min) return null;
+  return (
+    <div className="boss" data-testid="boss">
+      <span>{n} agent{n === 1 ? "" : "s"} say{n === 1 ? "s" : ""} they need you</span>
+      <button
+        className="mini"
+        disabled={Boolean(running)}
+        title="Send one agent to check every agent card and waiting session against the real state (PRs, tickets, jobs), close the stale ones and leave you the real asks"
+        onClick={() => api.bossCheck()}
+      >
+        {running ? "Boss checking…" : "Boss check: which are real?"}
+      </button>
     </div>
   );
 }

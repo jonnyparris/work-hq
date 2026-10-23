@@ -112,6 +112,8 @@ export const api = {
   sync: (name: string) => call("POST", `/api/sync/${name}`),
   focusJob: (id: string) => call("POST", `/api/jobs/${id}/focus`),
   cancelJob: (id: string) => call("POST", `/api/jobs/${id}/cancel`),
+  /** One agent checks every open agent card and live session against the real state and closes the stale ones. */
+  bossCheck: () => call("POST", "/api/agents/boss"),
   /** Live dashboard: start (or restart, with reset) the demo sandbox and get its URL. */
   demoStart: (reset = false) => call<{ url: string }>("POST", `/api/demo/start${reset ? "?reset=1" : ""}`),
   demoStop: () => call("POST", "/api/demo/stop"),

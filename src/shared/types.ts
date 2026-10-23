@@ -428,6 +428,9 @@ export interface AgentReport {
   /** With `events`: the last local day (YYYY-MM-DD) they cover, so empty days get cleared too. */
   eventsThrough?: string;
   journal?: string[];
+  /** Boss check: open questions whose premise no longer holds (the PR merged, the job died). Each is expired with
+   *  the reason, no effect runs. To also move the item, send an `updates` entry for it. */
+  closeQuestions?: Array<{ id: string; reason: string }>;
   cursor?: string;
   /** Transcript sweep: every meeting whose notes it read, items or not. Closes "X just ended" questions. */
   meetings?: Array<{ title: string; start?: string; url?: string }>;

@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { type DeckGroup, deckGroup, deferTargets, GROUP_ORDER, GROUPS } from "../shared/batch.ts";
 import { IDEA_CAP } from "../shared/ideas.ts";
-import type { ActionKind, CalendarEvent, Item, Question } from "../shared/types.ts";
+import type { ActionKind, CalendarEvent, Item, Job, Question } from "../shared/types.ts";
 import { config, ROOT } from "./config.ts";
 import { WORKTREE_SCRIPT, type WorktreeResult } from "./worktrees.ts";
 
@@ -195,6 +195,54 @@ ${itemBlock(it)}
 ${toolRoutes()}
 
 ${REPORT_CONTRACT(jobId)}`;
+}
+
+/** One open card for the boss check, with what's needed to verify it. */
+export interface BossCard {
+  q: Question;
+  item?: Item;
+  /** The latest action job on the card's item that started before the card: usually the one that asked. */
+  askedBy?: Pick<Job, "id" | "name" | "status" | "summary">;
+}
+
+/** A live job that claims to be waiting for the owner (or running), with its cmux beacon. */
+export interface BossSession {
+  job: Pick<Job, "id" | "title" | "status" | "startedAt" | "workspace">;
+  statusFile: string;
+}
+
+export function bossPrompt(jobId: string, cards: BossCard[], sessions: BossSession[], watched = true) {
+  const card = (c: BossCard, i: number) =>
+    [
+      `${i + 1}. Card ${c.q.id} \u00b7 ${c.q.badge ?? c.q.kind} \u00b7 asked ${c.q.createdAt.slice(0, 16).replace("T", " ")}Z`,
+      `   Q: ${c.q.prompt}`,
+      c.q.context ? `   Context: ${c.q.context}` : "",
+      `   Buttons: ${c.q.options.map((o) => `${o.label} \u2192 ${o.effect.type === "status" ? `status ${o.effect.status}` : o.effect.type === "dispatch" ? `dispatch ${o.effect.action}` : o.effect.type}`).join(" | ")}`,
+      c.item ? `   Item ${c.item.id} \u00b7 ${c.item.status}${c.item.project ? ` \u00b7 ${c.item.project}` : ""}: ${c.item.title}` : "   (no item)",
+      c.item?.links?.length ? `   Links: ${c.item.links.join(" ")}` : "",
+      c.askedBy ? `   Asked by job ${c.askedBy.id} (${c.askedBy.name}, now ${c.askedBy.status})${c.askedBy.summary ? `: ${c.askedBy.summary.slice(0, 240)}` : ""}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  const session = (s: BossSession) =>
+    `- ${s.job.id} \u00b7 ${s.job.status} since ${s.job.startedAt?.slice(0, 16).replace("T", " ") ?? "?"}Z \u00b7 ${s.job.title}\n  status file: ${s.statusFile}`;
+  return `You are the Work HQ boss agent for ${OWNER_INTRO}. They clicked "Boss check" in their dashboard.
+${watched ? "They may be watching this session." : "This run is headless: nobody sees it until your report."}
+
+TASK: BOSS CHECK
+${template("actions/boss")}
+
+OPEN CARDS (${cards.length}):
+${cards.length ? cards.map(card).join("\n\n") : "(none)"}
+
+LIVE SESSIONS (${sessions.length}):
+${sessions.length ? sessions.map(session).join("\n") : "(none)"}
+
+${toolRoutes()}
+
+${REPORT_CONTRACT(jobId)}
+- closeQuestions: [{ "id": "<card id>", "reason": "evidence, one line" }] closes a card without running any of its buttons.
+  An update with "status": "done" or "dropped" also closes every open agent card on that item; the owner's own cards stay open.`;
 }
 
 export function transcriptSweepPrompt(jobId: string, since: string, known: string[]) {
