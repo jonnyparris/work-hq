@@ -5,7 +5,7 @@
 
 import { type BulkRequest, deferHorizon } from "../shared/batch.ts";
 import { isAgentCard, isWaitingSession } from "../shared/boss.ts";
-import { claimsDispatch } from "../shared/dead-button.ts";
+import { claimsDispatch, claimsStatus } from "../shared/dead-button.ts";
 import { explainKey, sentences } from "../shared/detail.ts";
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
@@ -820,17 +820,21 @@ export class Agents implements Dispatcher {
       this.reaskTriage(job.id, error, { text: utterance, mode });
       return { jobId: job.id, reply: "Triage failed — your words are on a card to retry." };
     }
-    const missed = await this.applyTriage(result, mode, utterance);
+    const { missed, applied, bulkDispatched } = await this.applyTriage(result, mode, utterance);
     // The reply was written before anything ran. If it promised an agent that never started, say so:
     // either a dispatch that failed (missed), or a reply that claims one with dispatch[] empty.
-    const unbacked = !result.dispatch?.length && claimsDispatch(result.reply);
+    const unbacked = !result.dispatch?.length && !bulkDispatched && claimsDispatch(result.reply);
     if (unbacked) this.hub.journal(`Triage reply claimed a dispatch but dispatch[] was empty (heuristic, check it): "${result.reply}"`, { who: "hq" });
-    const reply = missed
+    // Same for status: "Marked the Joao Duarte reference calls done." with nothing marked (10-23).
+    const unmarked = !applied && claimsStatus(result.reply);
+    if (unmarked) this.hub.journal(`Triage reply claimed a status change but none was applied (heuristic, check it): "${result.reply}"`, { who: "hq" });
+    let reply = missed
       ? `${result.reply ?? ""} (No agent started for ${missed} of those: item not found.)`.trim()
       : unbacked
         ? `${result.reply} (No agent started.)`
         : result.reply;
-    // reply-safe: applyTriage ran first; the prompt words dispatches as handed off; failed or missing dispatches get a suffix.
+    if (unmarked) reply = `${reply} (Nothing was marked.)`;
+    // reply-safe: applyTriage ran first; the prompt words dispatches as handed off; failed or missing dispatches, and status claims with nothing applied, get a suffix.
     this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: reply });
     return { ...result, reply, jobId: job.id };
   }
@@ -862,9 +866,13 @@ export class Agents implements Dispatcher {
     });
   }
 
-  /** Returns how many requested dispatches didn't start (unknown id, bad 'new:' index). */
-  private async applyTriage(t: TriageResult, mode: TriageMode, utterance: string): Promise<number> {
+  /** missed: requested dispatches that didn't start (unknown id, bad 'new:' index).
+   *  bulkDispatched: cards a bulk dispatch op answered (agents started).
+   *  applied: status changes that landed (updates with a status on known ids, bulk done/drop, new items born with a status). */
+  private async applyTriage(t: TriageResult, mode: TriageMode, utterance: string): Promise<{ missed: number; applied: number; bulkDispatched: number }> {
     let missed = 0;
+    let applied = 0;
+    let bulkDispatched = 0;
     const created: Item[] = [];
     for (const raw of t.items ?? []) {
       created.push(
@@ -875,10 +883,16 @@ export class Agents implements Dispatcher {
         }),
       );
     }
+    applied += (t.items ?? []).filter((i) => i.status && i.status !== "inbox").length;
     for (const u of t.updates ?? []) {
-      if (!this.hub.store.item(u.id)) continue;
+      if (!this.hub.store.item(u.id)) {
+        // 10-23: a skipped update used to vanish while the reply said "Marked … done".
+        this.hub.journal(`Triage update skipped: unknown item ${u.id}`, { who: "hq" });
+        continue;
+      }
       const { id, note, ...patch } = u;
       if (patch.scheduledFor && !patch.status) patch.status = "scheduled";
+      if (patch.status) applied++; // a detail-only edit doesn't back "Marked … done"
       if (patch.status) this.hub.setStatus(id, patch.status, note);
       const { status: _s, ...rest } = patch;
       if (Object.keys(rest).length) this.hub.updateItem(id, { ...rest, confirmedAt: nowIso() });
@@ -887,7 +901,9 @@ export class Agents implements Dispatcher {
     for (const b of t.bulk ?? []) {
       if (!b?.op || !(b.group || b.kind || b.ids?.length)) continue;
       try {
-        await this.hub.bulk(b);
+        const { count } = await this.hub.bulk(b);
+        if (b.op === "done" || b.op === "drop") applied += count; // dispatch/dismiss/defer mark nothing
+        if (b.op === "dispatch") bulkDispatched += count; // backs "Dispatched …" like dispatch[] does (over-counts an item-less card: rare)
       } catch (e) {
         this.hub.toast(`Batch ${b.op}: ${(e as Error).message}`, "warn");
       }
@@ -927,7 +943,7 @@ export class Agents implements Dispatcher {
       if (item.scheduledFor !== c.start) this.hub.schedule(item.id, c.start, item.when ?? new Date(c.start).toLocaleString());
       void this.calendarBlock(item.id, c.start, c.durationMin ?? 30);
     }
-    return missed;
+    return { missed, applied, bulkDispatched };
   }
 
   // ── a note typed on a question: what does it mean? ─────────────────────

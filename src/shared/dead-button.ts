@@ -80,3 +80,40 @@ export function claimsDispatch(reply: string | undefined): boolean {
   if (!reply) return false;
   return reply.split(/(?<=[.!?;])\s+/).some((s) => DISPATCH_CLAIM.test(s) && !DISPATCH_HEDGE.test(s));
 }
+
+// Words that say an item's status was changed. 10-23 18:26: "Marked the Joao Duarte reference calls done."
+// Nothing was marked (no update applied) until the owner did it by hand 82 min later. Past-tense verbs plus
+// "set … to/as <status>", not "moved" / "scheduled": in 233 triage replies (10-24) those mostly describe
+// meetings or reminders ("Sofia 1-1 moved to tomorrow"), which go through other paths.
+const STATUS_WORD = "(?:done|waiting|today|doing|later|dropped)";
+const STATUS_CLAIM = new RegExp(String.raw`\b(marked|dropped|parked|closed|reopened|snoozed|archived|set (?:(?!(?:to|as) ${STATUS_WORD}(?![\w-])|(?:up|aside|out|for|on|at|by|with|in)(?![\w-]))\S+ ){0,6}(?:to|as) ${STATUS_WORD})\b`, "gi");
+/** Checked on the clause before the claim word: "Dropped; won't ask Kunwar" and "Not those, but I marked X done" are claims. */
+const STATUS_HEDGE = /\b(not|no|nothing|never|want me|shall i|should i|i can|i'll|i will|i'm going to|i am going to|you can|could|would|if)\b|n't\b/i;
+/** Right before the claim word, a state or an adjective, not an action: "Sofia's 1-1 is closed for today",
+ *  "that's already archived", "were closed and archived", "the closed Joao calls".
+ *  A comma ends the state: "It's closed, marked the rest done" is a claim. */
+const STATE_NOT_ACTION = /(\b(is|are|was|were|be|been|being|stays?|remains?)|\b(that|it|there|this|what|here)'s)\s+(\w+\s+)?(\w+\s+and\s+)?$|\b(the|a|an|this|that|these|those|my|your|all)\s+$/i;
+/** Everything up to the last clause break: the hedge in "Not the Sofia ones, but I marked Joao's done" stays in its clause. */
+const CLAUSE_BREAK = /^[\s\S]*(?:[,;:—–\n]|\s--?\s|\bbut\b|\band\b|\bso\s+(?:i|we|you|it|they)\b)/i;
+/** Right after the claim word: "I marked nothing". */
+const NEGATED_OBJECT = /^\s+(nothing|none|no one|neither|no)\b/i;
+/** After the claim word, an offer: "I'd set the Joao calls to done if you like". */
+const OFFER_AFTER = /\bif (you|that's|needed|wanted)\b/i;
+
+/** True when some sentence of a triage reply says an item's status was changed ("Marked X done", "Dropped it"),
+ *  skipping negated, offered or asked ones ("I'll set it to done", "Not marked", "Mark it done?"). A heuristic:
+ *  triage appends "(Nothing was marked.)" only when it fires and no status change was applied. Misses on purpose
+ *  (a false flag on an honest reply is worse): passive "were archived", a claim in a sentence with "?", an
+ *  update that re-sets the status the item already had, a bulk done/drop over cards already closed.
+ *  Known false hit: a sentence opening with an adjective use ("Closed items are hidden now"). */
+export function claimsStatus(reply: string | undefined): boolean {
+  if (!reply) return false;
+  // Parentheticals and slash lists name statuses, they don't claim them: "(capture/proposed/scheduled/waiting/closed)".
+  const prose = reply.replace(/[‘’]/g, "'").replace(/\([^)]*\)/g, " ").replace(/\S*\/\S*/g, " ");
+  // Every match, not the first: "Sofia's 1-1 is closed for today and I marked the Joao calls done" is a claim.
+  return prose.split(/(?<=[.!?;])\s+/).some((s) => !s.includes("?") && [...s.matchAll(STATUS_CLAIM)].some((m) => {
+    const before = s.slice(0, m.index);
+    const after = s.slice(m.index! + m[0].length);
+    return !STATUS_HEDGE.test(before.replace(CLAUSE_BREAK, "")) && !STATE_NOT_ACTION.test(before) && !NEGATED_OBJECT.test(after) && !OFFER_AFTER.test(after);
+  }));
+}
