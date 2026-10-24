@@ -3,7 +3,7 @@
 // (pi/status-beacon.ts), never from scraping the terminal.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { config, ROOT } from "./config.ts";
 import type { Job, Question } from "../shared/types.ts";
@@ -62,6 +62,42 @@ export function jobDir(jobId: string) {
   return dir;
 }
 
+export type LaunchOwner = "cmux" | "headless";
+
+export const claimPath = (jobId: string) => resolve(jobDir(jobId), "launch.claim");
+
+/**
+ * One launch per job. The cmux session (launch.sh, as it starts) and the headless fallback both claim the job's
+ * launch.claim with an exclusive create; the first wins and the other stands down. Returns true if this caller won,
+ * else who holds it. 10-23: `cmux workspace create` hit cli()'s 20 s timeout, the server fell back to headless, and
+ * cmux then made the workspace anyway: two pi sessions on one item, both editing scripts/mr-workflow.
+ */
+export function claimLaunch(jobId: string, owner: LaunchOwner): true | string {
+  const path = claimPath(jobId);
+  // Write then hard-link: link() fails if the claim exists, and the claim never exists empty (a bare "wx" create
+  // would let the other side read it between create and write).
+  const tmp = `${path}.${owner}.${process.pid}`;
+  writeFileSync(tmp, `${owner}\n`);
+  try {
+    linkSync(tmp, path);
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    return readClaim(jobId) ?? "unknown";
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+
+/** Who holds the job's launch claim, if anyone. */
+export function readClaim(jobId: string): string | undefined {
+  try {
+    return readFileSync(claimPath(jobId), "utf8").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Start interactive pi in a new cmux workspace. */
 export function launchInCmux(opts: {
   jobId: string;
@@ -89,7 +125,18 @@ export function launchInCmux(opts: {
     [
       "#!/bin/zsh",
       `# Work HQ job ${opts.jobId} — ${opts.title}`,
-      `cd ${shq(opts.cwd)} || exit 1`,
+      `bail() { printf '{"state":"exited","seq":-1,"code":1}\\n' > ${shq(statusPath)}; exit 1; }`,
+      `cd ${shq(opts.cwd)} || bail`,
+      // Claim the job before starting pi: if the server already gave up on this workspace and ran the job headless
+      // (a slow `cmux workspace create`), this session must not start a second agent. See claimLaunch.
+      `claim=${shq(claimPath(opts.jobId))}; print cmux > "$claim.cmux.$$" || bail`,
+      `if ! ln "$claim.cmux.$$" "$claim" 2>/dev/null; then`,
+      `  rm -f "$claim.cmux.$$"`,
+      `  [[ -e "$claim" ]] || { print -- "Work HQ: couldn't claim $claim"; bail; }`,
+      `  print -- ${shq(`Work HQ job ${opts.jobId} is already running`)}" ($(cat "$claim" 2>/dev/null)). Not starting a second session; close this workspace."`,
+      "  exit 0",
+      "fi",
+      `rm -f "$claim.cmux.$$"`,
       `export PATH=${shq(`${process.env.HOME}/.local/bin:${process.env.HOME}/.bun/bin:/opt/homebrew/bin:${process.env.PATH ?? "/usr/bin:/bin"}`)}`,
       ...Object.entries(env).map(([k, v]) => `export ${k}=${shq(v)}`),
       `printf '\\033]0;%s\\007' ${shq(`🛰 ${opts.title}`)}`,

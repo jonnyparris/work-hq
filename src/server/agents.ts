@@ -120,8 +120,18 @@ export function extractJson<T = any>(text: string): T | undefined {
 export interface CmuxDeps {
   available(): boolean;
   launch: typeof cmux.launchInCmux;
+  /** One launch per job (see cmux.claimLaunch). Defaults to the real claim file. */
+  claim?: typeof cmux.claimLaunch;
+  /** The cmux workspace already running this job, if any. Defaults to a cmux tree lookup. */
+  findWorkspace?: (jobId: string) => string | undefined;
+  /** Defaults to cmux.closeWorkspace. */
+  closeWorkspace?: (id: string) => unknown;
 }
 const realCmux: CmuxDeps = { available: () => Boolean(config.cmux.bin) && cmux.cmuxAvailable(), launch: cmux.launchInCmux };
+
+function findJobWorkspace(jobId: string) {
+  return cmux.jobWorkspaces()?.find((w) => w.jobId === jobId)?.id;
+}
 
 /** Prompt saved at dispatch, so a restart while the job waits on the launch gate can still launch it. */
 const promptFile = (jobId: string) => resolve(cmux.jobDir(jobId), "prompt.md");
@@ -150,12 +160,24 @@ export class Agents implements Dispatcher {
   constructor(private hub: Hub, private cmuxDeps: CmuxDeps = realCmux) {
     hub.dispatcher = this;
     ensureSiteLink();
+    // One `cmux tree` for every job the restart caught, not one per job: it's a blocking CLI call at boot.
+    // Only a successful tree is cached: a failed call falls back to a per-job lookup rather than "no workspace".
+    let tree: Map<string, string> | undefined;
+    const bootFind = (id: string) => {
+      if (this.cmuxDeps.findWorkspace || this.cmuxDeps !== realCmux) return this.findWorkspace(id);
+      if (!tree) {
+        const listed = cmux.jobWorkspaces();
+        if (!listed) return this.findWorkspace(id);
+        tree = new Map(listed.map((w) => [w.jobId, w.id]));
+      }
+      return tree.get(id);
+    };
     // Pick up jobs that were live when the server restarted. Every live job, oldest first, so queued cmux
     // launches rejoin the cap queue in their old order (a recent-100 window could strand an old one).
     for (const job of hub.store.liveJobs().sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
       if (job.surface === "cmux" && job.status === "queued" && !job.workspace) {
         // Was waiting on the launch gate; never started, so it's safe to launch again.
-        this.relaunchUnstarted(job);
+        this.relaunchUnstarted(job, bootFind);
       } else if (job.surface === "cmux" && ["running", "blocked", "queued"].includes(job.status)) {
         this.running.set(job.id, { statusPath: resolve(cmux.jobDir(job.id), "status.json"), seenWork: true });
       } else if (job.surface === "headless" && job.kind === "action" && ["running", "queued"].includes(job.status)) {
@@ -173,9 +195,27 @@ export class Agents implements Dispatcher {
    * saved at dispatch. If that can't work (no cmux, no saved prompt, item gone, demo), fail it
    * and hand the item back with a card to send it again — never leave the item stuck on `doing`.
    */
-  private relaunchUnstarted(job: Job) {
+  private relaunchUnstarted(job: Job, find: (jobId: string) => string | undefined) {
     const item = job.itemId ? this.hub.store.item(job.itemId) : undefined;
     const prompt = existsSync(promptFile(job.id)) ? readFileSync(promptFile(job.id), "utf8") : undefined;
+    // Already launched before the restart (claim file): don't launch it a second time.
+    const claim = cmux.readClaim(job.id);
+    if (claim === "cmux") {
+      void this.adoptCmux(job.id, job.title, "▸ its cmux session started before the restart — tracking it", find(job.id));
+      return;
+    }
+    if (claim) {
+      this.finishAction(job.id, { ok: false, text: "", error: "server restarted mid-run" });
+      return;
+    }
+    // No claim yet, but its workspace exists: the restart came while `cmux workspace create` ran or before its
+    // launch.sh claimed. Track that one; a second launch would only stand down and leave us tracking the wrong one.
+    // (Still being made at boot? startAction re-reads the claim just before it launches.)
+    const made = find(job.id);
+    if (made) {
+      void this.adoptCmux(job.id, job.title, "▸ its cmux workspace was made before the restart — tracking it", made);
+      return;
+    }
     if (item && prompt && job.kind === "action" && !config.demo && this.cmuxDeps.available()) {
       this.hub.putJob({ ...job, tail: [...job.tail, "▸ server restarted before launch — queued again"].slice(-12) });
       void this.launchAction(job.id, job.title, prompt, true);
@@ -336,6 +376,11 @@ export class Agents implements Dispatcher {
       }
       await this.gate.acquire();
       if (this.hub.store.job(jobId)?.status !== "queued") return; // cancelled while waiting
+      // A session from before a restart may have claimed the job while this one waited on the cap and gate.
+      // Launching now would only stand down, with no beacon, and leave the job tracking the wrong workspace.
+      const prior = cmux.readClaim(jobId);
+      if (prior === "cmux") return void this.adoptCmux(jobId, title, "▸ its cmux session from before the restart claimed it — tracking that");
+      if (prior) return this.finishAction(jobId, { ok: false, text: "", error: `already launched (${prior}); not starting a second session` });
       const launched = this.cmuxDeps.launch({
         jobId: jobId,
         title,
@@ -353,6 +398,15 @@ export class Agents implements Dispatcher {
       }
       this.line(jobId, "cmux launch failed — falling back to headless");
     }
+    // The cmux workspace may exist after all (create timed out, cmux made it anyway). Its launch.sh claims the job
+    // first; if it got there, adopt that session instead of starting a second pi.
+    const claim = (this.cmuxDeps.claim ?? cmux.claimLaunch)(jobId, "headless");
+    if (claim !== true) {
+      if (claim === "cmux") return void this.adoptCmux(jobId, title, "▸ the cmux session started after all — using it, not starting headless");
+      return this.finishAction(jobId, { ok: false, text: "", error: `already launched (${claim}); not starting a second session` });
+    }
+    // Headless now, whatever was planned: a restart must fail this run, not wait on a cmux beacon that never comes.
+    if (useCmux) this.patch(jobId, { surface: "headless" });
     // No cmux: run headless with full tools. Still visible in the dashboard feed.
     // Don't hold the reservation for the whole run: once runHeadless marks the job running, the store counts it.
     let settled = false;
@@ -361,6 +415,32 @@ export class Agents implements Dispatcher {
       .catch((e) => this.finishAction(jobId, { ok: false, text: "", error: (e as Error).message }))
       .finally(() => (settled = true));
     while (!settled && this.hub.store.job(jobId)?.status === "queued") await sleep(100);
+  }
+
+  /**
+   * Track a cmux session that claimed the job though its launch looked failed (create timed out) or a restart
+   * came between. The workspace may not be listed yet: look a few times, since cancel/focus/close-detection need it.
+   */
+  private async adoptCmux(jobId: string, title: string, note: string, known?: string) {
+    this.running.set(jobId, { statusPath: resolve(cmux.jobDir(jobId), "status.json"), seenWork: false });
+    const tail = (extra: string) => [...(this.hub.store.job(jobId)?.tail ?? []), extra].slice(-12);
+    this.patch(jobId, { status: "running", surface: "cmux", startedAt: this.hub.store.job(jobId)?.startedAt ?? nowIso(), tail: tail(note) });
+    this.hub.toast(`Dispatched to cmux: ${title}`, "good");
+    // Cancelled: look for longer (past cmux's 20 s create timeout), so the session that claimed the job still gets
+    // closed. No new look starts after 35 s: each lookup is a blocking CLI call that a hung cmux stretches to 20 s.
+    const t0 = Date.now();
+    for (let i = 0; i < (this.cancelled(jobId) ? 30 : 5) && Date.now() - t0 < 35_000; i++) {
+      const workspace = i === 0 && known ? known : this.findWorkspace(jobId);
+      const live = ["running", "blocked"].includes(this.hub.store.job(jobId)?.status ?? "");
+      // Cancelled while we looked: close what we found rather than reviving the job. Finished normally: leave it open.
+      if (workspace && this.cancelled(jobId)) return void (this.cmuxDeps.closeWorkspace ?? cmux.closeWorkspace)(workspace);
+      if (workspace) return this.patch(jobId, { workspace });
+      // Cancelled before it was listed: keep looking so the session that claimed the job still gets closed.
+      if (!live && !this.cancelled(jobId)) return;
+      await sleep(1000);
+    }
+    if (this.cancelled(jobId)) return this.line(jobId, "⚠ stopped, but its cmux workspace never showed up to close: close it in cmux if it's there");
+    this.line(jobId, "⚠ couldn't find its cmux workspace: Stop/Focus won't reach it; the session's beacon still reports");
   }
 
   // ── demo mode: scripted runs that look real and reach nothing ───────────
@@ -384,6 +464,10 @@ export class Agents implements Dispatcher {
       }
       this.line(jobId, "cmux launch failed — running in the dashboard");
     }
+    const claim = (this.cmuxDeps.claim ?? cmux.claimLaunch)(jobId, "headless");
+    if (claim === "cmux") return void this.adoptCmux(jobId, title, "▸ the cmux session started after all — using it");
+    if (claim !== true) return this.finishAction(jobId, { ok: false, text: "", error: `already launched (${claim})` });
+    if (useCmux) this.patch(jobId, { surface: "headless" });
     this.patch(jobId, { status: "running", startedAt: nowIso() });
     await this.playFeed(jobId, script, 0);
     this.hub.ingestReport({ ...script.report, jobId }, "agent");
@@ -1062,6 +1146,12 @@ export class Agents implements Dispatcher {
     void this.sweep("transcripts");
   }
 
+  /** The cmux workspace running this job, if listed. Only real cmux (or an injected finder) is asked: tests never reach the CLI. */
+  private findWorkspace(jobId: string) {
+    if (this.cmuxDeps.findWorkspace) return this.cmuxDeps.findWorkspace(jobId);
+    return this.cmuxDeps === realCmux ? findJobWorkspace(jobId) : undefined;
+  }
+
   private cancelled(jobId: string) {
     return this.hub.store.job(jobId)?.error === "cancelled";
   }
@@ -1258,7 +1348,9 @@ export class Agents implements Dispatcher {
     r?.proc?.kill("SIGTERM");
     r?.cancel?.();
     const job = this.hub.store.job(jobId);
-    if (job?.workspace) cmux.closeWorkspace(job.workspace);
+    // An adopted session whose workspace wasn't found yet: one more look, so Stop still reaches it.
+    const workspace = job?.workspace ?? (job?.surface === "cmux" && ["running", "blocked"].includes(job.status) ? this.findWorkspace(jobId) : undefined);
+    if (workspace) (this.cmuxDeps.closeWorkspace ?? cmux.closeWorkspace)(workspace);
     this.running.delete(jobId);
     if (job && !["done", "failed"].includes(job.status)) this.patch(jobId, { status: "failed", error: "cancelled", finishedAt: nowIso() });
   }
