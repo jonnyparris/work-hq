@@ -134,8 +134,27 @@ export interface CmuxDeps {
   closeWorkspace?: (id: string) => unknown;
   /** Type a line into a workspace (the retry nudges). Defaults to cmux.sendLine; tests stub it. */
   send?: typeof cmux.sendLine;
+  /** Boot only: is cmux configured at all? No binary means no point waiting for it. Defaults to true. */
+  installed?(): boolean;
+  /** Boot only: a ping that doesn't block the event loop. Defaults to available(). */
+  ping?(): Promise<boolean>;
+  /** Boot only: how long to keep pinging a cmux that doesn't answer before failing queued jobs. Defaults to CMUX_BOOT_WAIT_MS. */
+  bootWaitMs?: number;
+  /** Boot only: gap between those pings. Defaults to CMUX_BOOT_RETRY_MS. */
+  bootRetryMs?: number;
 }
-const realCmux: CmuxDeps = { available: () => Boolean(config.cmux.bin) && cmux.cmuxAvailable(), launch: cmux.launchInCmux };
+/**
+ * A restart under load can catch cmux too busy to answer one ping (10-23: job_mvk4yyv2kw6e6 failed "server restarted
+ * before launch" with its item and prompt in place). Keep asking this long before giving the queued jobs up.
+ */
+export const CMUX_BOOT_WAIT_MS = 60_000;
+export const CMUX_BOOT_RETRY_MS = 3_000;
+const realCmux: CmuxDeps = {
+  available: () => Boolean(config.cmux.bin) && cmux.cmuxAvailable(),
+  launch: cmux.launchInCmux,
+  installed: () => Boolean(config.cmux.bin),
+  ping: () => cmux.cmuxPing(),
+};
 
 function findJobWorkspace(jobId: string) {
   return cmux.jobWorkspaces()?.find((w) => w.jobId === jobId)?.id;
@@ -204,32 +223,60 @@ export class Agents implements Dispatcher {
    * and hand the item back with a card to send it again — never leave the item stuck on `doing`.
    */
   private relaunchUnstarted(job: Job, find: (jobId: string) => string | undefined) {
-    const item = job.itemId ? this.hub.store.item(job.itemId) : undefined;
-    const prompt = existsSync(promptFile(job.id)) ? readFileSync(promptFile(job.id), "utf8") : undefined;
-    // Already launched before the restart (claim file): don't launch it a second time.
-    const claim = cmux.readClaim(job.id);
-    if (claim === "cmux") {
-      void this.adoptCmux(job.id, job.title, "▸ its cmux session started before the restart — tracking it", find(job.id));
-      return;
-    }
-    if (claim) {
-      this.finishAction(job.id, { ok: false, text: "", error: "server restarted mid-run" });
-      return;
-    }
-    // No claim yet, but its workspace exists: the restart came while `cmux workspace create` ran or before its
-    // launch.sh claimed. Track that one; a second launch would only stand down and leave us tracking the wrong one.
-    // (Still being made at boot? startAction re-reads the claim just before it launches.)
-    const made = find(job.id);
-    if (made) {
-      void this.adoptCmux(job.id, job.title, "▸ its cmux workspace was made before the restart — tracking it", made);
-      return;
-    }
-    if (item && prompt && job.kind === "action" && !config.demo && this.cmuxDeps.available()) {
-      this.hub.putJob({ ...job, tail: [...job.tail, "▸ server restarted before launch — queued again"].slice(-12) });
+    // Everything waits on one boot probe, so the jobs rejoin the cap queue oldest first among themselves (a dispatch
+    // made meanwhile can still get the next slot). The claim and workspace checks come after it: `cmux tree` on a
+    // busy cmux would block boot, and the old launch.sh may claim the job while we wait.
+    void this.cmuxAtBoot().then((ok) => {
+      const now = this.hub.store.job(job.id);
+      if (now?.status !== "queued" || now.workspace) return; // cancelled (or otherwise moved on) while we waited
+      // Already launched before the restart (claim file): don't launch it a second time.
+      const claim = cmux.readClaim(job.id);
+      if (claim === "cmux") {
+        return void this.adoptCmux(job.id, job.title, "▸ its cmux session started before the restart — tracking it", ok ? find(job.id) : undefined, ok);
+      }
+      if (claim) return this.finishAction(job.id, { ok: false, text: "", error: "server restarted mid-run" });
+      // No claim yet, but its workspace exists: the restart came while `cmux workspace create` ran or before its
+      // launch.sh claimed. Track that one; a second launch would only stand down and leave us tracking the wrong one.
+      // (Still being made? startAction re-reads the claim just before it launches.) No cmux: nothing to find.
+      const made = ok ? find(job.id) : undefined;
+      if (made) return void this.adoptCmux(job.id, job.title, "▸ its cmux workspace was made before the restart — tracking it", made);
+      const item = job.itemId ? this.hub.store.item(job.itemId) : undefined;
+      const prompt = existsSync(promptFile(job.id)) ? readFileSync(promptFile(job.id), "utf8") : undefined;
+      if (!ok || !(item && prompt && job.kind === "action" && !config.demo)) return this.failUnstarted(now);
+      this.hub.putJob({ ...now, tail: [...now.tail, "▸ server restarted before launch — queued again"].slice(-12) });
       void this.launchAction(job.id, job.title, prompt, true);
-      return;
-    }
+    });
+  }
+
+  /** Is cmux there? Asked once per boot, pinging for up to CMUX_BOOT_WAIT_MS before saying no. */
+  private bootProbe?: Promise<boolean>;
+  private cmuxAtBoot() {
+    return (this.bootProbe ??= (async () => {
+      const wait = this.cmuxDeps.bootWaitMs ?? CMUX_BOOT_WAIT_MS;
+      const every = this.cmuxDeps.bootRetryMs ?? CMUX_BOOT_RETRY_MS;
+      if (this.cmuxDeps.installed && !this.cmuxDeps.installed()) return false;
+      const ping = this.cmuxDeps.ping ?? (async () => this.cmuxDeps.available());
+      const t0 = Date.now();
+      for (let n = 1; ; n++) {
+        if (await ping()) {
+          if (n > 1) console.log(`cmux answered on ping ${n}, ${Math.round((Date.now() - t0) / 1000)}s after boot: relaunching queued jobs`);
+          return true;
+        }
+        const left = wait - (Date.now() - t0);
+        if (left <= 0) {
+          console.warn(`cmux didn't answer ${n} ping(s) over ${Math.round((Date.now() - t0) / 1000)}s at boot: failing queued cmux jobs`);
+          return false;
+        }
+        if (n === 1) console.warn(`cmux didn't answer at boot: retrying for up to ${Math.round(wait / 1000)}s before failing queued jobs`);
+        await sleep(Math.min(every, left));
+      }
+    })());
+  }
+
+  /** Fail a job a restart caught before launch, and hand its item back with a card to send it again. */
+  private failUnstarted(job: Job) {
     this.hub.putJob({ ...job, status: "failed", error: "server restarted before launch", finishedAt: nowIso() });
+    const item = job.itemId ? this.hub.store.item(job.itemId) : undefined;
     if (!item || job.kind !== "action") return;
     if (item.status === "doing") this.hub.updateItem(item.id, { status: "proposed" });
     const action = job.name as ActionKind;
@@ -428,12 +475,15 @@ export class Agents implements Dispatcher {
   /**
    * Track a cmux session that claimed the job though its launch looked failed (create timed out) or a restart
    * came between. The workspace may not be listed yet: look a few times, since cancel/focus/close-detection need it.
+   * `look` false (cmux not answering at boot): don't look at all, each lookup would block the server.
    */
-  private async adoptCmux(jobId: string, title: string, note: string, known?: string) {
+  private async adoptCmux(jobId: string, title: string, note: string, known?: string, look = true) {
     this.running.set(jobId, { statusPath: resolve(cmux.jobDir(jobId), "status.json"), seenWork: false });
     const tail = (extra: string) => [...(this.hub.store.job(jobId)?.tail ?? []), extra].slice(-12);
     this.patch(jobId, { status: "running", surface: "cmux", startedAt: this.hub.store.job(jobId)?.startedAt ?? nowIso(), tail: tail(note) });
     this.hub.toast(`Dispatched to cmux: ${title}`, "good");
+    // cmux isn't answering (boot probe gave up): each lookup would block the server for up to 20 s, for nothing.
+    if (!look) return this.line(jobId, "⚠ cmux didn't answer at boot, so its workspace isn't looked up: Focus won't reach it, Stop looks once; the session's beacon still reports");
     // Cancelled: look for longer (past cmux's 20 s create timeout), so the session that claimed the job still gets
     // closed. No new look starts after 35 s: each lookup is a blocking CLI call that a hung cmux stretches to 20 s.
     const t0 = Date.now();

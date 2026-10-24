@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Agents, type CmuxDeps } from "../src/server/agents.ts";
-import { jobDir } from "../src/server/cmux.ts";
+import { claimLaunch, jobDir } from "../src/server/cmux.ts";
 import { Store } from "../src/server/db.ts";
 import { Hub } from "../src/server/hub.ts";
 import type { Item, Job } from "../src/shared/types.ts";
@@ -39,9 +39,11 @@ test("queued cmux job with no workspace goes back on the gate and launches with 
   expect(hub.store.questions("open")).toHaveLength(0);
 });
 
-test("no cmux after the restart: fail the job, hand the item back, ask to send it again", () => {
+test("no cmux after the restart: fail the job, hand the item back, ask to send it again", async () => {
   const { hub, item, job } = setup("b");
-  new Agents(hub, fakeCmux(false));
+  new Agents(hub, { ...fakeCmux(false), bootWaitMs: 30, bootRetryMs: 10 });
+  expect(hub.store.job(job.id)!.status).toBe("queued"); // still pinging cmux
+  for (let i = 0; i < 50 && hub.store.job(job.id)!.status === "queued"; i++) await Bun.sleep(10);
   expect(hub.store.job(job.id)!.status).toBe("failed");
   expect(hub.store.item(item.id)!.status).toBe("proposed");
   const [q] = hub.store.questions("open");
@@ -50,9 +52,10 @@ test("no cmux after the restart: fail the job, hand the item back, ask to send i
   expect(q?.options[0]?.effect).toEqual({ type: "dispatch", action: "work" });
 });
 
-test("job queued before prompts were saved: same hand-back, never a stuck doing", () => {
+test("job queued before prompts were saved: same hand-back, never a stuck doing", async () => {
   const { hub, item, job } = setup("c", { savedPrompt: false });
   new Agents(hub, fakeCmux(true));
+  for (let i = 0; i < 50 && hub.store.job(job.id)!.status === "queued"; i++) await Bun.sleep(10);
   expect(hub.store.job(job.id)!.status).toBe("failed");
   expect(hub.store.item(item.id)!.status).toBe("proposed");
   expect(hub.store.questions("open")[0]?.key).toBe(`restart:${job.id}`);
@@ -79,4 +82,100 @@ test("headless sweep caught mid-run still just fails, no card", () => {
   new Agents(hub, fakeCmux(true));
   expect(hub.store.job(job.id)!.status).toBe("failed");
   expect(hub.store.questions("open")).toHaveLength(0);
+});
+
+test("cmux slow to answer at boot: keep pinging, then launch every queued job in its old order", async () => {
+  const a = setup("f");
+  const hub = a.hub;
+  const item2: Item = { ...a.item, id: "it_g" };
+  hub.store.putItem(item2);
+  const job2: Job = { ...a.job, id: "job_g", itemId: item2.id, createdAt: new Date(Date.now() + 1000).toISOString() };
+  hub.store.putJob(job2);
+  writeFileSync(resolve(jobDir(job2.id), "prompt.md"), "do the work");
+  let pings = 0;
+  const launches: string[] = [];
+  // The boot probe uses the non-blocking ping when there is one, not available().
+  const agents = new Agents(hub, { ...fakeCmux(false, launches), ping: async () => ++pings >= 3, bootWaitMs: 5_000, bootRetryMs: 10 });
+  expect(launches).toEqual([]);
+  for (let i = 0; i < 100 && !launches.length; i++) await Bun.sleep(10);
+  expect(pings).toBe(3); // one probe shared by both jobs, not one per job
+  // Oldest first; the second waits out the launch gate's spacing, back in the queue rather than failed.
+  expect(launches).toEqual([`${a.job.id}:do the work`]);
+  expect(hub.store.job(job2.id)!.status).toBe("queued");
+  expect(hub.store.job(job2.id)!.tail.some((l) => l.includes("queued again"))).toBe(true);
+  expect(hub.store.questions("open")).toHaveLength(0);
+  agents.cancel(job2.id); // don't leave it polling the launch gate past the test
+});
+
+test("no cmux binary configured: fail at once, no minute of pinging", () => {
+  const { hub, item, job } = setup("i");
+  let pings = 0;
+  new Agents(hub, { ...fakeCmux(false), installed: () => false, ping: async () => (pings++, false), bootWaitMs: 60_000 });
+  return Bun.sleep(0).then(() => {
+    expect(pings).toBe(0);
+    expect(hub.store.job(job.id)!.status).toBe("failed");
+    expect(hub.store.item(item.id)!.status).toBe("proposed");
+  });
+});
+
+test("job cancelled while cmux was being pinged at boot stays cancelled", async () => {
+  const { hub, job } = setup("h");
+  const launches: string[] = [];
+  let pings = 0;
+  const agents = new Agents(hub, { ...fakeCmux(true, launches), ping: async () => ++pings >= 3, bootWaitMs: 5_000, bootRetryMs: 10 });
+  agents.cancel(job.id);
+  for (let i = 0; i < 20 && pings < 3; i++) await Bun.sleep(10);
+  await Bun.sleep(20);
+  expect(launches).toEqual([]);
+  expect(hub.store.job(job.id)!.error).toBe("cancelled");
+  expect(hub.store.questions("open")).toHaveLength(0);
+});
+
+test("old session claims the job while cmux is down at boot: adopt it without cmux lookups, don't fail it or launch a second", async () => {
+  const { hub, item, job } = setup("j");
+  const launches: string[] = [];
+  let pings = 0;
+  const found: string[] = [];
+  new Agents(hub, {
+    ...fakeCmux(false, launches),
+    ping: async () => {
+      if (++pings === 2) claimLaunch(job.id, "cmux"); // the pre-restart launch.sh gets there mid-probe
+      return false;
+    },
+    findWorkspace: (id) => (found.push(id), undefined),
+    bootWaitMs: 40,
+    bootRetryMs: 10,
+  });
+  for (let i = 0; i < 100 && hub.store.job(job.id)!.status === "queued"; i++) await Bun.sleep(10);
+  expect(launches).toEqual([]);
+  expect(hub.store.job(job.id)!.status).toBe("running");
+  expect(hub.store.job(job.id)!.tail.some((l) => l.includes("tracking it"))).toBe(true);
+  expect(found).toEqual([]); // cmux isn't answering: no blocking `cmux tree`
+  expect(hub.store.job(job.id)!.tail.at(-1)).toContain("cmux didn't answer at boot");
+  expect(hub.store.item(item.id)!.status).toBe("doing");
+  expect(hub.store.questions("open")).toHaveLength(0);
+});
+
+test("boot doesn't look up cmux workspaces before the probe answers", async () => {
+  const { hub, job } = setup("k");
+  const found: string[] = [];
+  let answer = false;
+  new Agents(hub, { ...fakeCmux(true), ping: async () => answer, findWorkspace: (id) => (found.push(id), undefined), bootWaitMs: 5_000, bootRetryMs: 10 });
+  await Bun.sleep(30);
+  expect(found).toEqual([]); // no `cmux tree` while cmux isn't answering
+  answer = true;
+  for (let i = 0; i < 100 && !found.length; i++) await Bun.sleep(10);
+  expect(found).toEqual([job.id]);
+});
+
+test("boot probe keeps pinging for its whole window before it gives up", async () => {
+  const { hub, job } = setup("l");
+  const at: number[] = [];
+  const t0 = Date.now();
+  new Agents(hub, { ...fakeCmux(false), ping: async () => (at.push(Date.now() - t0), false), bootWaitMs: 100, bootRetryMs: 30 });
+  for (let i = 0; i < 100 && hub.store.job(job.id)!.status === "queued"; i++) await Bun.sleep(10);
+  expect(hub.store.job(job.id)!.status).toBe("failed");
+  expect(Date.now() - t0).toBeGreaterThanOrEqual(100);
+  expect(at.at(-1)!).toBeGreaterThanOrEqual(95); // a last ping at the deadline, not one interval early
+  expect(at.length).toBeGreaterThanOrEqual(4);
 });

@@ -86,6 +86,11 @@
   headless job (sweep, triage) is live, starts no new sweeps meanwhile, folds several landings into one
   restart, and gives up waiting after 25 min (`src/server/restart.ts`). Boot sweeps only what's due by
   its last good run, so a restart doesn't start a fresh calendar sweep for the next one to kill.
+  A cmux job the restart caught before launch goes back on the gate with its saved prompt. If cmux
+  doesn't answer the first ping (busy under load), boot keeps pinging every 3 s for up to 60 s, without
+  blocking the server, before failing those jobs. No cmux binary configured: they fail at once. Server
+  `console.log/info/warn/error/debug` lines in `~/Library/Logs/work-hq.log` start (after any blank spacer lines) with an ISO timestamp
+  (crash output from bun itself doesn't).
 - **Provider rate limits are waited out, not fatal.** Every pi launch with tools (cmux actions,
   sweeps) goes through one launch gate (`src/server/launch-gate.ts`) that spaces starts at least
   `pi.launchSpacingSec` apart (default 20). Tool-less triage skips the gate. If a run still dies

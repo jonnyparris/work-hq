@@ -2,7 +2,7 @@
 // running interactive pi. Completion comes from the status beacon extension
 // (pi/status-beacon.ts), never from scraping the terminal.
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { linkSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { config, ROOT } from "./config.ts";
@@ -38,6 +38,28 @@ function cli(args: string[]) {
 
 export function cmuxAvailable() {
   return cli(["ping"]).code === 0;
+}
+
+/** `cmux ping` that doesn't block the event loop: for retrying a busy cmux at boot while the server serves. */
+export function cmuxPing(timeoutMs = 5_000, bin = config.cmux.bin): Promise<boolean> {
+  if (!bin) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    const p = spawn(bin, ["ping"], { stdio: "ignore", env: { ...process.env, CMUX_QUIET: "1" } });
+    // Our own timer, and SIGKILL: a cmux that ignores SIGTERM must not leave the boot probe hanging.
+    const timer = setTimeout(() => {
+      p.kill("SIGKILL");
+      done(false);
+    }, timeoutMs);
+    p.on("error", () => done(false));
+    p.on("close", (code) => done(code === 0));
+  });
 }
 
 /** Corporate root CA for child processes, if configured. */

@@ -211,7 +211,8 @@ test("restart relaunch: the job got claimed headless meanwhile — fail it, laun
   for (let i = 0; i < 200 && hub.store.job(jobId)!.status === "queued"; i++) await Bun.sleep(10);
   expect(launches).toEqual([]);
   expect(hub.store.job(jobId)!).toMatchObject({ status: "failed" });
-  expect(hub.store.job(jobId)!.error).toContain("already launched");
+  // The relaunch reads the claim after the boot cmux probe, so it sees this one there.
+  expect(hub.store.job(jobId)!.error).toBe("server restarted mid-run");
 });
 
 test("Stop after the adopted workspace lookup gave up: cancel looks once more and closes it", async () => {

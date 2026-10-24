@@ -12,6 +12,7 @@ import { resetDemo } from "./demo.ts";
 import { DemoSandbox } from "./demo-sandbox.ts";
 import { Store, nowIso } from "./db.ts";
 import { Hub } from "./hub.ts";
+import { stampConsole } from "./log-time.ts";
 import { summarise } from "./load.ts";
 import { MemoryClient } from "./memory.ts";
 import { MemorySync } from "./memory-sync.ts";
@@ -20,6 +21,7 @@ import { RestartGate } from "./restart.ts";
 import { Scheduler } from "./scheduler.ts";
 import { dictationEngine, transcribe } from "./transcribe.ts";
 
+stampConsole();
 const store = new Store(config.dbPath);
 const hub = new Hub(store);
 const memory = new MemoryClient();
