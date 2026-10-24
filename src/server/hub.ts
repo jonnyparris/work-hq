@@ -1017,11 +1017,15 @@ export function picksFromNote(picks: Array<{ id: string; label: string; hint?: s
 const PICK_STOP = new Set(["prep", "brief", "the", "and", "not", "all", "for", "with", "meeting", "meetings", "sync", "please", "just", "one", "only", "today", "call", "chat", "weekly"]);
 
 /** Only local app schemes, web links and markdown/text files; never arbitrary files or commands. */
+export function openableUrl(url: string): boolean {
+  return /^(obsidian|https?):\/\//.test(url) || /^file:\/\/\/.+\.(md|markdown|txt)$/i.test(url);
+}
+
+/** `open <url>` for an openable URL. WORK_HQ_OPEN_BIN swaps the binary: test/setup.ts points it at `true`. */
 export function openLocal(url: string) {
-  const ok = /^(obsidian|https?):\/\//.test(url) || /^file:\/\/\/.+\.(md|markdown|txt)$/i.test(url);
-  if (!ok) return;
+  if (!openableUrl(url)) return;
   try {
-    Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" });
+    Bun.spawn([process.env.WORK_HQ_OPEN_BIN || "open", url], { stdout: "ignore", stderr: "ignore" });
   } catch {}
 }
 
