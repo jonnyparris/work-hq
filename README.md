@@ -122,7 +122,7 @@ and cheap to run every 30 seconds. The model decides what things *mean*. The rul
 | **State unknown** | your notes admit they don't know | max 3 open |
 | **Still on it?** | an item on *doing* with no agent running and no open card, quiet for 4 work hours | Done / Waiting / Today / Drop; at most daily per item, max 3 open |
 | **Still waiting** | waiting on someone for > 3 days | |
-| **MR merged / Ticket done** | waiting items whose GitLab MRs all merged and JIRA tickets are all done (status category Done) | one card for all, at most daily: mark all done, one by one, or keep waiting. A JIRA lookup that fails (stale Access token) keeps the item off |
+| **PR / MR merged · Ticket done** | waiting items whose GitLab MRs all merged and JIRA tickets are all done (status category Done) | one card for all, at most daily: mark all done, one by one, or keep waiting. A JIRA lookup that fails (stale Access token) keeps the item off |
 | **Wrap up** | 90 min before end of day | what actually happened |
 | **Post idea / Draft to review** | the weekly writing scout found something | never nags |
 
@@ -133,6 +133,9 @@ bar: *"skip all blog posts till Thursday"*. **`q`** sorts the normal queue quick
 won't bring the same question back tomorrow morning.
 
 Lots of agents say they need you? Agent cards go stale: the PR merged, another agent did it, the session died.
+The common case closes itself: once every MR, PR and ticket an item links has landed, its agent cards close (with
+the merge as the reason) and the item joins the merged card, whoever merged it (unless another agent card on it is still open). Cards asked after the merge, or
+that wait for it ("when #137 merges…"), or that ask for more (a deploy, a PR that hasn't merged) stay. For the rest:
 From three agent cards or waiting sessions, the Agents panel shows **Boss check: which are real?** One agent checks
 each one at the source (`gh`/`glab`, the ticket, the job's status file), closes the stale cards with the evidence,
 re-asks any whose facts changed, and leaves you the short list. Its prompt keeps it read-only (no merging, sending or filing), and it can only close agent cards, never your own.

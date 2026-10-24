@@ -4,6 +4,8 @@
 
 import type { ActionKind, CalendarEvent, Coaching, Item, Job, Question, QuestionOption, QuestionPick } from "../shared/types.ts";
 import { config, sweepOn } from "./config.ts";
+import { isAgentCard } from "../shared/boss.ts";
+import { isOpen } from "./dedupe.ts";
 import type { Hub } from "./hub.ts";
 import { localDate } from "./memory-sync.ts";
 import { type JiraDone, JiraStates } from "./jira-state.ts";
@@ -131,21 +133,25 @@ export class Prompter {
     if ((hasMr && mr === undefined) || (hasJira && jr === undefined) || (hasPr && pr === undefined)) return undefined; // something's open: no need to wait
     if (mr === "pending" || jr === "pending" || pr === "pending") return "pending";
     const tickets = jr?.done ?? [];
-    const at = [mr?.mergedAt ?? "", pr?.mergedAt ?? "", ...tickets.map((t) => t.doneAt ?? "")].sort().pop() || undefined;
+    // Latest by time, not by string: GitHub drops milliseconds, so "…55Z" sorts after "…55.100Z".
+    const at = [mr?.mergedAt, pr?.mergedAt, ...tickets.map((t) => t.doneAt)].filter((x): x is string => Boolean(x) && !Number.isNaN(Date.parse(x!))).sort((a, b) => Date.parse(a) - Date.parse(b)).pop();
     return { mrs: mr?.refs ?? [], mergedAt: mr?.mergedAt, prs: pr?.refs ?? [], prMergedAt: pr?.mergedAt, tickets, at };
   }
 
   tick(now = new Date()) {
     const store = this.hub.store;
-    const items = store.items();
-    const open = (this.open = store.questions("open"));
+    let items = store.items();
+    let open = (this.open = store.questions("open"));
     const openCount = (kind: Question["kind"], pred: (q: Question) => boolean = () => true) =>
       open.filter((q) => q.kind === kind && pred(q)).length;
+    const stale = this.expireMoot(open, items, now);
+    // It moves items to `waiting`: re-read them so the merged card below picks them up this tick.
+    if (this.expireLanded(store.questions("open"), items)) items = store.items();
+    // Both passes close cards: the caps and checks below count only what's still open.
+    open = this.open = store.questions("open");
     // Deferred questions (notBefore later) don't count against the total: they aren't nagging anyone.
     // Per-kind caps still count them, so "skip all posts till Thu" also stops new post questions.
     let budget = CAP.total - open.filter((q) => !q.notBefore || Date.parse(q.notBefore) <= now.getTime()).length;
-
-    const stale = this.expireMoot(open, items, now);
     this.foldReviews(stale, now);
 
     const hour = now.getHours() + now.getMinutes() / 60;
@@ -663,6 +669,44 @@ export class Prompter {
     this.ask({ ...q, key, ...(now < start ? { notBefore: start.toISOString() } : {}) });
   }
 
+  /**
+   * Agent cards on an item whose links have all landed (every MR / PR merged, every ticket done) are about work
+   * that's finished, whoever merged it: close them, and put the item on the merged card (it goes to `waiting`, the
+   * merged card's lane) so the owner confirms "done" with one tap. Unless another agent card stays open on it: then
+   * the item stays in its lane, on the board where the owner sees it. 10-23: 10 of 13 "Agent asks" cards asked to merge
+   * PRs that had merged hours before; the job that merged them never touched the items.
+   * Skipped: items an agent is on (it will report), cards that wait for the merge ("When #137 merges, …"), cards
+   * asked after the last merge (they're about the next step), and cards that name an unlanded ref or ask for work
+   * after the merge ("…and deploy"). The Boss check covers those.
+   */
+  private expireLanded(open: Question[], items: Item[]) {
+    const byId = new Map(items.map((i) => [i.id, i]));
+    const busy = new Set(this.hub.store.liveJobs().map((j) => j.itemId).filter(Boolean));
+    const cards = open.filter((q) => isAgentCard(q) && q.itemId && !followsMerge(q));
+    const done = new Map<string, Landed>();
+    for (const q of cards) {
+      const it = byId.get(q.itemId!);
+      if (!it || !isOpen(it) || busy.has(it.id)) continue;
+      const l = done.get(it.id) ?? this.landed(it);
+      if (!l || l === "pending") continue;
+      // Asked after the last merge: the agent knew, so it's about what comes next ("#150 merged. Now what?").
+      // No landing date (some JIRA workflows): can't tell, leave it. Parsed: GitHub drops the milliseconds.
+      if (!l.at || Date.parse(q.createdAt) >= Date.parse(l.at)) continue;
+      if (!settledByLanding(q, l)) continue;
+      done.set(it.id, l);
+      this.hub.expireQuestion(q.id, `landed: ${mergedLine(l)}`);
+    }
+    const left = new Set(this.hub.store.questions("open").filter(isAgentCard).map((q) => q.itemId));
+    for (const [id, l] of done) {
+      const it = byId.get(id)!;
+      // A scheduled item keeps its slot: its due card will ask then. An agent card still open on it (a deploy ask)
+      // keeps it where it is too: "Done" on the merged card would close that card unanswered.
+      if (it.status !== "waiting" && it.status !== "scheduled" && !left.has(id)) this.hub.updateItem(id, { status: "waiting" });
+      this.hub.journal(`Closed agent cards, everything it links landed: ${it.title} — ${mergedLine(l)}`, { itemId: id, who: "hq" });
+    }
+    return done.size > 0;
+  }
+
   /** Close questions whose item moved on without them. Returns the meeting-ended cards it closed as stale. */
   private expireMoot(open: Question[], items: Item[], now: Date) {
     const byId = new Map(items.map((i) => [i.id, i]));
@@ -857,6 +901,32 @@ export function dueOptions(act: { action: ActionKind; label: string } | undefine
     ...(tired ? [] : [opt("1h", PUSH_1H, { type: "schedule", at: new Date(now.getTime() + 60 * MIN).toISOString(), inMin: 60, label: "in an hour" })]),
     WHEN_OPT,
   ];
+}
+
+/** A card that waits for a merge rather than asks for one: "When #137 merges, should an agent flip the var?"
+ *  Only "merges / merged / lands…": "After review, merge #150?" asks for the merge, so its card can close. */
+export function followsMerge(q: Pick<Question, "prompt">) {
+  // Up to the end of the sentence: "!16" and "v1.2" don't end one, ". " and a final "?" do.
+  return /\b(when|once|after|as soon as)\b(?:(?![.?!](?:\s|$)).)*?\b(merges|merged|lands|landed|ships|shipped|closes|closed)\b/i.test(q.prompt);
+}
+
+/** Work that comes after a merge. A card that asks for it isn't settled by the merge ("Merge and deploy #150?"). */
+const FOLLOW_UP = /\b(deploy\w*|releas\w*|roll(?:s|ed|ing)?[ -]?out|back(?:[ -]\w+){0,2}?[ -]?out\b|backout\w*|rollout|roll(?:s|ed|ing)?(?:[ -]\w+){0,2}?[ -]?back\b|rollback\w*|ship\w*|cut[ -]?over\w*|enabl\w*|feature[ -]?flag\w*|revert\w*|rebas\w*|migrat\w*|prod|production|tag|publish\w*|flip\w*|announc\w*|notif\w*|backport\w*)\b/i;
+
+/**
+ * Is the merge all this card asks about? Every PR (#n), MR (!n) and ticket key it names must be one that landed,
+ * and it asks for nothing that comes after. "Merge #151 too?" on an item whose #150 merged stays open.
+ */
+export function settledByLanding(q: Pick<Question, "prompt">, l: Landed) {
+  if (FOLLOW_UP.test(q.prompt)) return false;
+  const landed = new Set([
+    ...(l.prs ?? []).map((r) => `#${r.number}`),
+    ...l.mrs.map((r) => `!${r.iid}`),
+    ...l.tickets.map((t) => t.ref.key.toUpperCase()),
+  ]);
+  // Case-insensitive and loose on purpose: "GPT-4" reads as a ticket and keeps the card, which is the safe miss.
+  const named = [...q.prompt.matchAll(/[#!]\d+\b|\b[A-Z][A-Z0-9_]+-\d+\b/gi)].map((m) => m[0].toUpperCase());
+  return named.every((r) => landed.has(r));
 }
 
 /** Everything the item links to has landed: MRs and PRs merged, tickets done. `at` is the latest of those dates. */
