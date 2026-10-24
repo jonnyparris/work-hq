@@ -57,6 +57,37 @@ describe("prompter", () => {
     expect(seen).toContain("It's time: reply to Sam");
   });
 
+  test("'Chase them' only when there's someone to chase", () => {
+    const later = new Date(Date.now() + 4 * 86_400_000);
+    const nobody = hub.createItem({ title: "fix the bug", status: "waiting", people: [] });
+    const omar = hub.createItem({ title: "Omar's review", status: "waiting", people: ["Omar"] });
+    p.tick(later);
+    const card = (id: string) => hub.store.questions("open").find((q) => q.key === `wait:${id}`)!;
+    const q = card(nobody.id);
+    expect(q.options.some((o) => o.id === "chase")).toBe(false);
+    expect(q.options.filter((o) => o.tone === "primary")).toMatchObject([{ id: "done", label: "Resolved" }]);
+    expect(optionFor(q, "dispatch")).toBeUndefined(); // "Chase all" skips it
+    expect(card(omar.id).options[0]).toMatchObject({ id: "chase", tone: "primary", effect: { type: "dispatch", action: "reply" } });
+  });
+
+  test("a blank name is nobody to chase", () => {
+    const it = hub.createItem({ title: "blank", status: "waiting", people: [" "] });
+    p.tick(new Date(Date.now() + 4 * 86_400_000));
+    const q = hub.store.questions("open").find((q) => q.key === `wait:${it.id}`)!;
+    expect(q.options.some((o) => o.id === "chase")).toBe(false);
+  });
+
+  test("followup with nobody named: inbox and due cards send an agent, not a chase", () => {
+    const nobody = hub.createItem({ title: "check the fix landed", kind: "followup", status: "inbox" });
+    const omar = hub.createItem({ title: "nudge Omar", kind: "followup", status: "inbox", people: ["Omar"] });
+    const due = hub.createItem({ title: "follow up on deploy", kind: "followup", status: "scheduled", people: [], scheduledFor: at(9, 30).toISOString() });
+    p.tick(at(15));
+    const first = (id: string) => hub.store.questions("open").find((q) => q.itemId === id)!.options[0]!;
+    expect(first(nobody.id)).toMatchObject({ label: "Send an agent", effect: { type: "dispatch", action: "work" } });
+    expect(first(omar.id)).toMatchObject({ label: "Chase them for me", effect: { type: "dispatch", action: "reply" } });
+    expect(first(due.id).effect).toEqual({ type: "dispatch", action: "work" });
+  });
+
   test("'Push 1 hour' counts from the click, not from when it was asked", async () => {
     const it = hub.createItem({ title: "reply to Sam", kind: "message", status: "scheduled", scheduledFor: new Date(Date.now() - 3 * 3600_000).toISOString() });
     p.tick(new Date(Date.now() - 2 * 3600_000)); // asked two hours ago, ignored since
@@ -566,7 +597,7 @@ describe("state cards check the item's MR first", () => {
 
   test("long-waiting item with a merged MR, kept waiting on the batch card, leads with Done, not 'Chase them'", async () => {
     const { mrs, p } = stub({ [MR]: merged });
-    const it = hub.createItem({ title: "waiting on review", status: "waiting", links: [MR] });
+    const it = hub.createItem({ title: "waiting on review", status: "waiting", links: [MR], people: ["Omar"] });
     p.tick(new Date());
     await mrs.settled();
     p.tick(new Date());
@@ -580,6 +611,20 @@ describe("state cards check the item's MR first", () => {
     expect(q.badge).toBe("MR merged");
     expect(q.options[0]).toMatchObject({ label: "Done (merged 10-14)", tone: "primary" });
     expect(q.options.find((o) => o.id === "chase")!.tone).toBe("quiet");
+  });
+
+  test("long-waiting item with a merged MR and nobody named: Done leads, no chase", async () => {
+    const { mrs, p } = stub({ [MR]: merged });
+    const it = hub.createItem({ title: "my own fix", status: "waiting", links: [MR], people: [] });
+    p.tick(new Date());
+    await mrs.settled();
+    p.tick(new Date());
+    await hub.answer(hub.store.questions("open").find((q) => q.key === "wait:merged")!.id, "keep");
+    p.tick(new Date(Date.now() + 4 * 86_400_000));
+    const q = hub.store.questions("open").find((q) => q.key === `wait:${it.id}`)!;
+    expect(q.options[0]).toMatchObject({ label: "Done (merged 10-14)", tone: "primary" });
+    expect(q.options.some((o) => o.id === "chase" || o.label === "Resolved")).toBe(false);
+    expect(q.options.filter((o) => o.tone === "primary")).toHaveLength(1);
   });
 
   test("an open MR (or one of two still open) keeps the usual card", async () => {

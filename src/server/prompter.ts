@@ -98,6 +98,14 @@ const ACTION_FOR: Partial<Record<Item["kind"], { action: ActionKind; label: stri
   post: { action: "draft", label: "Draft it" },
 };
 
+/** Is there someone to chase? 10-22..10-24 three "Chase them" taps sent reply jobs with nobody to message. */
+export const hasPeople = (it: Pick<Item, "people">) => Boolean(it.people?.some((p) => p.trim()));
+
+/** The card's agent button for this item. A followup with no people has nobody to chase: send an agent instead. */
+function actionFor(it: Item, kind: Item["kind"] = it.kind) {
+  return kind === "followup" && !hasPeople(it) ? ACTION_FOR.task : ACTION_FOR[kind];
+}
+
 /** "Scheduled for…" — the owner says or types when (booked it already, or wants it booked/reminded). */
 export const WHEN_OPT: QuestionOption = {
   id: "when",
@@ -172,7 +180,7 @@ export class Prompter {
       // cooldown is per slot (key), so a reschedule to a new slot still asks.
       const since = new Date(now.getTime() - 15 * MIN).toISOString();
       if (store.answeredForItem(it.id, since).some((q) => !q.key.startsWith("due:"))) continue;
-      const act = ACTION_FOR[it.kind];
+      const act = actionFor(it);
       this.ask(
         {
           kind: "when",
@@ -274,7 +282,7 @@ export class Prompter {
       if (open.some((q) => q.itemId === it.id)) continue;
       if (busy.has(it.id)) continue;
       // 🍍 means "this should become a ticket" unless it's clearly a message/email.
-      const act = it.signals?.pineapple && !["message", "email"].includes(it.kind) ? ACTION_FOR.ticket : ACTION_FOR[it.kind];
+      const act = it.signals?.pineapple && !["message", "email"].includes(it.kind) ? ACTION_FOR.ticket : actionFor(it);
       if (
         this.ask({
           kind: "confirm",
@@ -445,8 +453,9 @@ export class Prompter {
           context: mr ? `${waited} ${mergedLine(mr)}` : waited,
           options: [
             ...(mr ? [opt("done", mergedLabel(mr), { type: "status", status: "done", note: mergedLine(mr) }, "primary")] : []),
-            opt("chase", "Chase them", { type: "dispatch", action: "reply" }, mr ? "quiet" : "primary"),
-            ...(mr ? [] : [opt("done", "Resolved", { type: "status", status: "done" }, "good")]),
+            // Nobody named: nothing to chase, so "Resolved" leads (10-24: a bug to fix got a chase job).
+            ...(hasPeople(it) ? [opt("chase", "Chase them", { type: "dispatch", action: "reply" }, mr ? "quiet" : "primary")] : []),
+            ...(mr ? [] : [opt("done", "Resolved", { type: "status", status: "done" }, hasPeople(it) ? "good" : "primary")]),
             opt("keep", "Keep waiting", { type: "status", status: "waiting" }),
             WHEN_OPT,
           ],
