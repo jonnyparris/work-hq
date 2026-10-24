@@ -18,7 +18,7 @@ import { newId, nowIso } from "./db.ts";
 import { type DemoScript, demoActionScript, demoSweepScript, feedLine } from "./demo.ts";
 import { type Dispatcher, type Hub, isCrash, queuedNote } from "./hub.ts";
 import { GatewayToken } from "./gateway-token.ts";
-import { backoffMs, isRateLimited, LaunchGate, RunCap } from "./launch-gate.ts";
+import { backoffMs, isRateLimited, isTransient, LaunchGate, RunCap } from "./launch-gate.ts";
 import { overloaded } from "./load.ts";
 import { assertShortArgs, PiPool, PiRpc, piStamp, type RunOutcome } from "./pi-rpc.ts";
 import {
@@ -53,6 +53,10 @@ export const ERROR_GRACE_MS = 180_000;
 /** A cmux session only gets the shared gateway token if it has at least this long left (see GatewayToken.env). */
 export const CMUX_TOKEN_TTL_MS = 24 * 3600_000;
 const RESUME_NUDGE = "Your last request failed on a provider rate limit. Carry on from where you stopped.";
+/** A cmux turn that ended on a network blip (isTransient) gets one nudge this long after it settled. */
+export const TRANSIENT_RETRY_MS = 60_000;
+const TRANSIENT_NUDGE = "Your last request failed on a network error (timeout or dropped connection). Carry on from where you stopped.";
+const NUDGE = { rate: RESUME_NUDGE, transient: TRANSIENT_NUDGE } as const;
 
 /** `slept`: ms the laptop slept mid-run (rpc runner). A failure after a sleep gets rerun, not counted as a stall. */
 type RunResult = { ok: boolean; text: string; error?: string; session?: string; toolsRan?: boolean; slept?: number };
@@ -65,7 +69,9 @@ interface Running {
   cancel?: () => void;
   /** cmux: rate-limit nudges sent so far, and the pending one (if any). */
   rateRetries?: number;
-  retry?: { at: number; seq: number; sent?: number };
+  retry?: { at: number; seq: number; sent?: number; kind: "rate" | "transient" };
+  /** cmux: network-blip retry scheduled (one per job, back to 0 if a new turn beats it; a blip after it fails the job). */
+  transientRetries?: number;
   /** cmux: the turn ended on a model error at this beacon seq. pi keeps the session, so wait for it to recover or report. */
   errored?: { at: number; seq: number };
   /** cmux: last settled turn (beacon seq) already passed to noteGateway. */
@@ -126,6 +132,8 @@ export interface CmuxDeps {
   findWorkspace?: (jobId: string) => string | undefined;
   /** Defaults to cmux.closeWorkspace. */
   closeWorkspace?: (id: string) => unknown;
+  /** Type a line into a workspace (the retry nudges). Defaults to cmux.sendLine; tests stub it. */
+  send?: typeof cmux.sendLine;
 }
 const realCmux: CmuxDeps = { available: () => Boolean(config.cmux.bin) && cmux.cmuxAvailable(), launch: cmux.launchInCmux };
 
@@ -526,22 +534,29 @@ export class Agents implements Dispatcher {
       }
       // Waiting out a provider rate limit. Any new turn (seq bump — ours or the owner's) ends the wait.
       if (r.retry && b.seq > r.retry.seq) {
+        // A turn the owner started before our network-blip nudge went out: the retry wasn't used, so it's still there.
+        if (r.retry.kind === "transient" && !r.retry.sent) r.transientRetries = 0;
         r.retry = undefined;
         r.seenWork = true;
       }
       if (r.retry && b.state === "idle") {
+        const { kind } = r.retry;
+        const what = b.detail ?? (kind === "rate" ? "rate limited" : "network error");
         if (!r.retry.sent && Date.now() >= r.retry.at && this.gate.wait() === 0) {
           void this.gate.acquire();
-          if (job.workspace && cmux.sendLine(job.workspace, RESUME_NUDGE)) {
+          if (job.workspace && (this.cmuxDeps.send ?? cmux.sendLine)(job.workspace, NUDGE[kind])) {
             r.retry.sent = Date.now();
-            this.line(id, `↻ nudged after rate limit (${r.rateRetries}/${config.pi.rateLimitRetries})`);
+            const key = kind === "rate" ? "rateLimit" : "transient";
+            const nudges = { ...job.nudges, [key]: (job.nudges?.[key] ?? 0) + 1, ...(kind === "transient" ? { transientSeq: r.retry.seq } : {}) };
+            this.patch(id, { nudges });
+            this.line(id, kind === "rate" ? `↻ nudged after rate limit (${r.rateRetries}/${config.pi.rateLimitRetries})` : `↻ nudged after ${what} (retry 1/1)`);
           } else {
             this.running.delete(id);
-            this.finishAction(id, { ok: false, text: "", error: `${b.detail ?? "rate limited"} (couldn't nudge the session)` });
+            this.finishAction(id, { ok: false, text: "", error: `${what} (couldn't nudge the session)` });
           }
         } else if (r.retry.sent && Date.now() - r.retry.sent > 120_000) {
           this.running.delete(id);
-          this.finishAction(id, { ok: false, text: "", error: `${b.detail ?? "rate limited"} (nudge didn't start a new turn)` });
+          this.finishAction(id, { ok: false, text: "", error: `${what} (nudge didn't start a new turn)` });
         }
         continue;
       }
@@ -561,8 +576,30 @@ export class Agents implements Dispatcher {
       ) {
         r.rateRetries = (r.rateRetries ?? 0) + 1;
         const ms = backoff();
-        r.retry = { at: Date.now() + ms, seq: b.seq };
+        r.retry = { at: Date.now() + ms, seq: b.seq, kind: "rate" };
         this.patch(id, { status: "running", tail: [...job.tail, `⏳ rate limited — retrying in ${Math.round(ms / 1000)} s (${r.rateRetries}/${config.pi.rateLimitRetries})`].slice(-12) });
+      } else if (
+        b.state === "idle" && b.seq >= 1 && (r.seenWork || job.status === "running") &&
+        b.outcome === "error" && !job.reported && isTransient(b.detail) && job.workspace
+      ) {
+        // A network blip ("Request timed out.", "Connection error."): pi won't go on by itself. Nudge once after
+        // TRANSIENT_RETRY_MS; if the retried turn blips too, fail now and say so rather than sit out the grace.
+        // job.nudges survives a restart; r.transientRetries doesn't. Still at the seq of the errored turn we nudged: a
+        // restart came between the nudge and its turn, so give the nudge its 120 s window (from now; the send time isn't
+        // kept) rather than call it a second blip.
+        if (!r.transientRetries && job.nudges?.transient && job.nudges.transientSeq === b.seq) {
+          r.transientRetries = 1;
+          r.retry = { at: Date.now(), seq: b.seq, sent: Date.now(), kind: "transient" };
+        } else if (!r.transientRetries && !job.nudges?.transient) {
+          r.transientRetries = 1;
+          r.retry = { at: Date.now() + TRANSIENT_RETRY_MS, seq: b.seq, kind: "transient" };
+          this.line(id, `⏳ ${b.detail} — retrying once in ${Math.round(TRANSIENT_RETRY_MS / 1000)} s`);
+        } else {
+          this.running.delete(id);
+          this.finishAction(id, { ok: false, text: "", error: `${b.detail} (again after one retry)` });
+          this.hub.emit({ type: "notify", data: { title: "Agent failed twice on a network error", body: job.title } });
+          cmux.notify(job.workspace, "Work HQ", `Failed twice on ${b.detail}: ${job.title}`);
+        }
       } else if (b.state === "idle" && b.seq >= 1 && (r.seenWork || job.status === "running")) {
         // Turn settled. The session stays open for follow-ups; the job is done.
         // An errored turn isn't the end: pi keeps the session and the agent often recovers and reports.

@@ -156,3 +156,19 @@ test("hub.reopen stamps reopenedFrom on the copy", async () => {
   expect(copy?.createdAt).toBe(q.createdAt);
 });
 
+
+test("usage digest: network-error retries reconcile to the jobs they ran on", async () => {
+  const path = `${tmpdir()}/whq-usage-nudges-${Date.now()}.db`;
+  const hub = new Hub(new Store(path));
+  const at = new Date(Date.now() - 10 * 60_000).toISOString();
+  const job = { id: "n1", kind: "action", name: "work", title: "t", surface: "cmux", status: "done", tail: [], createdAt: at, nudges: { transient: 1 } } as any;
+  hub.store.putJob(job);
+  hub.store.putJob({ ...job, id: "n2", status: "failed", error: "Connection error. (again after one retry)" });
+  hub.store.putJob({ ...job, id: "n3", status: "running" });
+  hub.store.putJob({ ...job, id: "n4", nudges: undefined });
+  hub.store.db.close();
+  const out = await digest(path);
+  rmSync(path, { force: true });
+  expect(out).toContain("network-error retries: 3 on 3 job(s) \u00b7 then done 1 \u00b7 failed 1 \u00b7 still open 1");
+  expect(out).not.toContain("rate-limit retries");
+});

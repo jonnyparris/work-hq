@@ -182,6 +182,13 @@ for (const j of jobs.filter((j) => j.status === "failed")) {
   const e = (j.error ?? "?").replace(/\s+/g, " ").slice(0, 90);
   errors.set(e, (errors.get(e) ?? 0) + 1);
 }
+// In-place "carry on" nudges after a turn failed (rate limit, network blip), and how those jobs ended.
+for (const [key, label] of [["transient", "network-error retries"], ["rateLimit", "rate-limit retries"]] as const) {
+  const nudged = jobs.filter((j) => (j.nudges?.[key] ?? 0) > 0);
+  if (!nudged.length) continue;
+  const sent = nudged.reduce((n, j) => n + (j.nudges?.[key] ?? 0), 0);
+  p(`\n${label}: ${sent} on ${nudged.length} job(s) \u00b7 then done ${nudged.filter((j) => j.status === "done").length} \u00b7 failed ${nudged.filter((j) => j.status === "failed").length} \u00b7 still open ${nudged.filter((j) => j.status !== "done" && j.status !== "failed").length}`);
+}
 if (errors.size) {
   p("\nFailures:");
   for (const [e, n] of [...errors].sort((a, b) => b[1] - a[1])) p(`- ×${n} ${md(e)}`);

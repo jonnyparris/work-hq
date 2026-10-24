@@ -29,6 +29,32 @@ export function isRateLimited(text: string | undefined): boolean {
   return RATE_LIMIT.test(text) && !NOT_TRANSIENT.test(text);
 }
 
+/**
+ * Network blips that end a turn: pi's "Request timed out." / "Connection error.", a cut stream. Not rate limits
+ * (isRateLimited) and not auth. 10-19 and 10-22: 13 job sessions stalled on these until the owner typed "retry".
+ */
+const TRANSIENT = new RegExp(
+  [
+    "request timed out",
+    "connection error",
+    "^terminated\\.?$",
+    "stream ended (before|without)",
+    "socket hang up",
+    "fetch failed",
+    "\\bECONNRESET\\b",
+    "\\bETIMEDOUT\\b",
+    "\\bECONNREFUSED\\b",
+  ].join("|"),
+  "i",
+);
+const NOT_BLIP = /auth|api key|\b401\b|\b403\b|unauthori[sz]ed|quota|billing/i;
+
+export function isTransient(text: string | undefined): boolean {
+  if (!text) return false;
+  const t = text.trim();
+  return TRANSIENT.test(t) && !NOT_BLIP.test(t) && !isRateLimited(t);
+}
+
 /** 60–90 s by default, jittered so parallel retries don't land together again. */
 export function backoffMs(o: { minSec: number; maxSec: number }, rand = Math.random) {
   const lo = Math.max(0, o.minSec);

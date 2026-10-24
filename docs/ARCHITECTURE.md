@@ -94,6 +94,15 @@
   (default 2) times. A cmux session is nudged in place ("carry on"); a headless tool run resumes
   its own session so finished tool calls aren't repeated. pi's own retries (2/4/8 s) sit inside
   this and don't outlast a per-minute limit on their own.
+- **Network blips get one retry.** A cmux turn that ends on "Request timed out.", "Connection error."
+  or a cut stream (`isTransient` in `src/server/launch-gate.ts`) leaves pi idle for good. Unless the
+  agent already reported, Work HQ nudges the session once after 60 s (`TRANSIENT_RETRY_MS`, through the
+  launch gate so a burst of blips doesn't come back at once). If the retried turn blips too, the job
+  fails at once with "(again after one retry)" and a notification, instead of sitting out the 3-min
+  error grace. A turn you type before the nudge goes out drops it and gets its own retry. A restart
+  between the nudge and its turn waits up to 120 s for that turn rather than failing it as a second
+  blip. Nudges sent are kept on the job (`job.nudges`) and `bin/work-hq usage` counts them under
+  "Agent runs". 10-19 and 10-22: the owner typed "retry" into 13 stalled sessions by hand.
 - **At most 8 action agents work at once.** The launch gate spaces starts but doesn't cap them: on
   10-21 a burst had 20-25 pi sessions working together, load hit 255 on 12 cores and test suites
   everywhere timed out. `RunCap` (`src/server/launch-gate.ts`) holds launches past

@@ -264,6 +264,13 @@ export interface Job {
   ideasFiled?: number;
   /** Action jobs: titles of idea items over the cap, folded into the summary instead of filed. */
   ideasFolded?: string[];
+  /** cmux jobs: in-place "carry on" nudges sent after a turn failed, by cause (the usage digest counts them). */
+  nudges?: {
+    rateLimit?: number;
+    transient?: number;
+    /** Beacon seq of the errored turn the network-blip nudge answered (tells a restart "nudge typed, no turn yet"). */
+    transientSeq?: number;
+  };
   /** Headless pi session file, for audit. */
   session?: string;
   createdAt: string;
