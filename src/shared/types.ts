@@ -180,6 +180,8 @@ export type Effect =
   | { type: "commitPlan" }
   /** Morning prep card: send a prep agent for each meeting ticked in the card's `picks` (sent with the answer as `picks`). */
   | { type: "prepMeetings" }
+  /** Recheck card: mark done each item ticked in the card's `picks` (pick id = item id, hint = what landed), or every pick with `all`. */
+  | { type: "donePicks"; all?: boolean }
   /** Write the journal to memory now (wrap-up). */
   | { type: "flushJournal" }
   /** Run a sweep now ("Scan the transcript now"). */

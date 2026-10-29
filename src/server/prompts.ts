@@ -11,6 +11,8 @@ import { type DeckGroup, deckGroup, deferTargets, GROUP_ORDER, GROUPS } from "..
 import { IDEA_CAP } from "../shared/ideas.ts";
 import type { ActionKind, CalendarEvent, Item, Job, Question } from "../shared/types.ts";
 import { config, ROOT } from "./config.ts";
+import { jobPath, shq } from "./cmux.ts";
+import { piAgentDir } from "./pi-rpc.ts";
 import { WORKTREE_SCRIPT, type WorktreeResult } from "./worktrees.ts";
 
 const WHQ = `${ROOT}/bin/whq`;
@@ -195,6 +197,34 @@ ${itemBlock(it)}
 ${toolRoutes()}
 
 ${REPORT_CONTRACT(jobId)}`;
+}
+
+/**
+ * The job's own pi transcript, for a job without a recorded session file (cmux; the print runner keeps only a uuid).
+ * Its first message names the id (a cmux prompt path, a headless prompt's `whq report <id>`), so it's the earliest
+ * session that does: anything else naming it (a verify agent, this command in its note) came later, and pi names
+ * session files by creation time. Not mtime: a verify session is newer, and so is the stopped one if someone typed into it.
+ */
+export function transcriptSearch(jobId: string, sessions = resolve(piAgentDir(), "sessions")) {
+  return `grep -rlF ${shq(jobId)} ${shq(sessions)} 2>/dev/null | awk -F/ '{print $NF "\\t" $0}' | sort | head -1 | cut -f2-`;
+}
+
+/**
+ * The after-card's "Check for me": a verify agent works out whether a stopped job's work landed, so the owner
+ * doesn't have to. 10-29: 18 "Agent stopped" cards, most sessions already pruned, no way to look but ask.
+ * Points at what outlives the cmux workspace: the pi transcript, the job folder, the worktree branch.
+ */
+export function stoppedJobNote(job: Pick<Job, "id" | "title" | "status" | "summary" | "error" | "session">) {
+  const sessions = resolve(piAgentDir(), "sessions");
+  const how = job.status === "failed" ? `stopped${job.error ? `, error: ${JSON.stringify(job.error)}` : ""}` : "finished";
+  return `Agent job ${job.id} (title: ${JSON.stringify(job.title)}) ${how}, without settling this item.${job.summary && job.summary !== "Finished" ? ` Its last summary: ${JSON.stringify(job.summary)}` : ""}
+Find out if its work is actually done. Its cmux session may be closed already, so don't count on it. Look at:
+- its pi transcript: ${job.session?.startsWith("/") ? job.session : `the earliest session naming its id, \`${transcriptSearch(job.id, sessions)}\``}.
+  Read its last assistant messages and tool results.
+- its job folder ${jobPath(job.id)}: prompt.md (the task), worktree.json (repo, dir, branch, base) if it had a worktree.
+- that branch: commits past base, whether they reached the default branch or a pushed MR/PR, uncommitted edits left in the worktree.
+- MRs, PRs, tickets or messages it opened or names.
+Propose "Mark done" if the work landed or nothing's left. Otherwise say exactly what's left and who has it.`;
 }
 
 /** One open card for the boss check, with what's needed to verify it. */
@@ -382,6 +412,7 @@ export function notePrompt(q: Question, it: Item | undefined, note: string, ctx:
     : e.type === "open" ? "open a link (not an answer)"
     : e.type === "multi" ? e.effects.map(effect).join(" + ")
     : e.type === "prepMeetings" ? "send a prep agent for each meeting the note names (or all, if it says all)"
+    : e.type === "donePicks" ? "mark done each item the note names (or all, if it says all)"
     : "acknowledge, nothing else";
   const options = q.options.map((o) => `- ${o.id}: "${o.label}" \u2192 ${effect(o.effect)}`).join("\n");
   return `You are Work HQ's note reader. ${me} was shown a question in their dashboard and, instead of pressing a button,

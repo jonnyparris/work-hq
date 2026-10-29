@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CalendarEvent, Coaching, CoachOutcome, Item, ItemStatus, Job, JournalEntry, LoadNow, Question, SyncState } from "../shared/types.ts";
+import type { CalendarEvent, Coaching, CoachOutcome, Effect, Item, ItemStatus, Job, JournalEntry, LoadNow, Question, SyncState } from "../shared/types.ts";
 import { explainKey } from "../shared/detail.ts";
 import { committedView } from "../shared/committed.ts";
 import { BOSS_MIN, waitingOnYou } from "../shared/boss.ts";
@@ -240,8 +240,8 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
     const o = q.options.find((x) => x.id === optionId);
     const text = (words ?? note).trim();
     if (o?.effect.type === "when" && !text) return startWhen(optionId);
-    // "Prep the ticked ones" with nothing ticked and no note would do nothing.
-    if (o?.effect.type === "prepMeetings" && !ticks.length && !text) return;
+    // "Prep the ticked ones" / "Mark ticked done" with nothing ticked and no note would do nothing.
+    if (o && needsTicks(o.effect) && !ticks.length && !text) return;
     // Typed or ⌘↵ submit while still dictating: release the mic now, drop the late final result.
     if (whenFor) { stopDictation(); setHeard(false); }
     setBusy(true);
@@ -375,8 +375,8 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
       ) : (
       <div className="options">
         {q.options.map((o, i) => (
-          <button key={o.id} className={`opt ${o.tone ?? ""}`} disabled={busy || (o.effect.type === "prepMeetings" && !ticks.length && !note.trim())} onClick={() => answer(o.id)}>
-            <kbd>{i + 1}</kbd>{q.kind === "plan" && o.id === "plan" ? (picked.length ? `Commit to ${picked.length}` : "Clear today") : o.effect.type === "prepMeetings" ? (ticks.length ? `Prep ${ticks.length}` : "Tick a meeting to prep") : o.label}
+          <button key={o.id} className={`opt ${o.tone ?? ""}`} disabled={busy || (needsTicks(o.effect) && !ticks.length && !note.trim())} onClick={() => answer(o.id)}>
+            <kbd>{i + 1}</kbd>{q.kind === "plan" && o.id === "plan" ? (picked.length ? `Commit to ${picked.length}` : "Clear today") : o.effect.type === "prepMeetings" ? (ticks.length ? `Prep ${ticks.length}` : "Tick a meeting to prep") : o.effect.type === "donePicks" && !o.effect.all ? (ticks.length ? `Mark ${ticks.length} done` : "Tick the done ones") : o.label}
           </button>
         ))}
       </div>
@@ -760,6 +760,9 @@ export function CoachTrack({ history }: { history: CoachOutcome[] }) {
 }
 
 // ── Agents ────────────────────────────────────────────────────────────────
+/** Options that act on the card's ticked picks: no tick and no note, nothing to do. */
+const needsTicks = (e: Effect) => e.type === "prepMeetings" || (e.type === "donePicks" && !e.all);
+
 export function AgentsPanel({ jobs, cmux, load, questions = [] }: { jobs: Job[]; cmux: boolean; load?: LoadNow; questions?: Question[] }) {
   const live = jobs.filter((j) => ["running", "blocked", "queued"].includes(j.status));
   const recent = jobs.filter((j) => !live.includes(j)).slice(0, 6);

@@ -9,6 +9,10 @@ import { dirname } from "node:path";
 export class RefCache<Ref extends { url: string }, Info> {
   private cache = new Map<string, Info & { checkedAt: number }>();
   private inflight = new Map<string, Promise<void>>();
+  /** Lookups running now, and the ones queued for a slot. A recheck starts ~100 at once: 100 glabs, or 30
+   *  cloudflared + JIRA calls, and a third of the JIRA ones came back unknown. */
+  private active = 0;
+  private queue: Array<() => void> = [];
 
   constructor(
     private fetch: (ref: Ref) => Promise<Info>,
@@ -16,19 +20,43 @@ export class RefCache<Ref extends { url: string }, Info> {
     private ttl: (info: Info) => number,
     /** What a thrown fetch is cached as. */
     private failed: Info,
+    private maxActive = 6,
   ) {}
 
   /** Cached info (stale-but-present entries too), starting a refresh if missing or stale. */
   get(ref: Ref, now = Date.now()): Info | undefined {
     const hit = this.cache.get(ref.url);
     if ((!hit || now - hit.checkedAt > this.ttl(hit)) && !this.inflight.has(ref.url)) {
-      const p = this.fetch(ref)
+      const p = this.limited(ref)
         .catch(() => this.failed)
         .then((info) => void this.cache.set(ref.url, { ...info, checkedAt: Date.now() }))
         .finally(() => this.inflight.delete(ref.url));
       this.inflight.set(ref.url, p);
     }
     return hit;
+  }
+
+  /** The cached answer, without starting a lookup. */
+  peek(url: string): Info | undefined {
+    return this.cache.get(url);
+  }
+
+  /** Drop cached answers, so the next get() looks again ("Recheck"). Lookups in flight carry on. */
+  forget(urls: Iterable<string>) {
+    for (const u of urls) this.cache.delete(u);
+  }
+
+  /** At most maxActive fetches at once. A finished one hands its slot straight to the next in line. */
+  private async limited(ref: Ref): Promise<Info> {
+    if (this.active >= this.maxActive) await new Promise<void>((r) => this.queue.push(r));
+    else this.active++;
+    try {
+      return await this.fetch(ref);
+    } finally {
+      const next = this.queue.shift();
+      if (next) next();
+      else this.active--;
+    }
   }
 
   /** Resolves when every lookup started so far has landed. For tests and the CLI. */

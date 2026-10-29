@@ -74,6 +74,16 @@ export class MrStates {
     return { merged: true, mergedAt, refs };
   }
 
+  /** Forget what's cached for these items' refs: the next verdict looks them up again. */
+  forget(items: Array<Pick<Item, "links" | "source">>) {
+    this.cache.forget(items.flatMap((it) => mrRefs(it).map((r) => r.url)));
+  }
+
+  /** How many of the item's refs the last lookup couldn't read (glab / gh / Access failed). */
+  failed(it: Pick<Item, "links" | "source">) {
+    return mrRefs(it).filter((r) => this.cache.peek(r.url)?.state === "unknown").length;
+  }
+
   /** Resolves when every lookup started so far has landed. For tests and the CLI. */
   settled() {
     return this.cache.settled();

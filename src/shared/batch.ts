@@ -5,7 +5,7 @@
 
 import type { CalendarEvent, Effect, Item, ItemKind, ItemStatus, Question, QuestionOption } from "./types.ts";
 
-export type DeckGroup = "review" | "inbox" | "waiting" | "due" | "state" | "proposal" | "agent" | "post" | "day";
+export type DeckGroup = "review" | "inbox" | "waiting" | "due" | "state" | "proposal" | "agent" | "post" | "recheck" | "day";
 
 /** quick = one tap, no thinking · agent = hand it off · think = needs your head (defer these at 6pm). */
 export type Effort = "quick" | "agent" | "think";
@@ -29,6 +29,8 @@ export const GROUPS: Record<DeckGroup, GroupInfo> = {
   proposal: { label: "Reflection proposals", effort: "agent", ops: { dispatch: "Send agents", drop: "Reject all", defer: "Defer" } },
   agent: { label: "Agents asking", effort: "think", ops: { defer: "Defer" } },
   post: { label: "Blog posts", effort: "think", ops: { defer: "Defer", drop: "Not for me — drop all" } },
+  // Tick the done ones: some ask for a deploy after the merge, so no bulk op marks them all.
+  recheck: { label: "Landed: tick what's done", effort: "think", ops: { defer: "Defer" } },
   day: { label: "Plan / wrap / prep", effort: "think", ops: {} },
 };
 
@@ -46,6 +48,7 @@ export function deckGroup(q: Pick<Question, "key" | "kind">): DeckGroup {
   if (k.startsWith("proposal:")) return "proposal";
   if (q.kind === "post") return "post";
   // coach: the M5 move check. Only you know whether it happened, so no bulk op answers it.
+  if (k === "recheck") return "recheck";
   if (q.kind === "plan" || q.kind === "wrap" || q.kind === "prep" || k.startsWith("coach:")) return "day";
   return "agent";
 }
@@ -72,6 +75,7 @@ export function setsStatus(e: Effect, s: ItemStatus): boolean {
 /** Which of this question's own options a bulk op means. Undefined = op doesn't apply here. */
 export function optionFor(q: Pick<Question, "key" | "kind" | "options">, op: Exclude<BulkOp, "defer">): QuestionOption | undefined {
   const o = q.options;
+  if (q.key === "recheck") return undefined;
   switch (op) {
     case "dispatch":
       return o.find((x) => x.effect.type === "dispatch" && BULK_ACTIONS.has(x.effect.action));

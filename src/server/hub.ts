@@ -451,6 +451,39 @@ export class Hub {
         }
         break;
       }
+      case "donePicks": {
+        // The recheck card: the ticked items landed and are done. A typed note with nothing ticked picks by name.
+        const listed = q?.picks ?? [];
+        const ticked = Array.isArray(ctx.picks) ? ctx.picks.filter((id) => listed.some((p) => p.id === id)) : [];
+        // "All but the deploy one", "not Bravo": name matching can't subtract, so ask for ticks rather than guess.
+        // Fail closed: any word that might leave something out ("skip", "no", "leave", "still") means ticks.
+        // Best effort for picking by name; ticks are the real answer.
+        const excludes = /\b(but|except\w*|exclud\w*|not|no|none|never|neither|nothing|without|minus|apart|aside|besides?|others?|rest|else|skip\w*|omit\w*|ignor\w*|leav\w*|bar|save|spar\w*|still|hold|keep\w*|only|just|cannot|ain't|aint|\w+nt(?<=(?:do|is|are|does|did|wo|ca|should|could|would|has|have|was|were)nt))\b|n['’]t\b/i.test(note ?? "");
+        // "Mark all" takes no qualifiers: a note on it ("all but Bravo", "all with the exception of…") might leave
+        // something out, and a blocklist can't catch every way of saying so. Only a plain "all" / "done" goes through.
+        const plainAll = !note?.trim() || /^(all|every(thing| one)?|all of them|both|yes|yep|done|all done)[.!]*$/i.test(note.trim());
+        const ids = effect.all ? (plainAll ? listed.map((p) => p.id) : []) : ticked.length ? ticked : note?.trim() && !excludes ? picksFromNote(listed, note) : [];
+        if (!ids.length) {
+          if (q) this.reopen(q, 0);
+          this.toast(
+            effect.all && note?.trim() ? "“Mark all” takes no note. Tick the ones you mean, or clear the note." : excludes ? "Tick the ones you mean: I won't guess what to leave out." : note?.trim() ? "No item on the card matched that. Tick one, or name it." : "Nothing ticked. Tick the done ones first.",
+            "warn",
+          );
+          break;
+        }
+        if (q && !itemId) answerLine();
+        // An agent picked one up since the card was drawn: it will report, don't close it under it.
+        const busy = new Set(this.store.liveJobs().map((j) => j.itemId).filter(Boolean));
+        const skipped: string[] = [];
+        for (const id of ids) {
+          const it = this.store.item(id);
+          if (!it || ["done", "dropped"].includes(it.status)) continue;
+          if (busy.has(id)) skipped.push(it.title);
+          else this.setStatus(id, "done", `rechecked: ${listed.find((p) => p.id === id)?.hint ?? "landed"}`);
+        }
+        if (skipped.length) this.toast(`Left open, an agent is on ${skipped.length === 1 ? "it" : "them"}: ${skipped.join("; ")}`, "info");
+        break;
+      }
       case "flushJournal":
         void this.journalFlusher?.().catch((e) => this.toast(`Couldn't save the journal: ${errText(e)}`, "warn"));
         if (q && !itemId) answerLine();
@@ -707,7 +740,10 @@ export class Hub {
     }
     if (stranded) {
       this.park(q, back.toISOString());
-      this.toast(batchedItems(q) > 1 ? "That card covers several items. Open one to act on it." : "That card isn't tied to an item, so no agent started.", "warn");
+      this.toast(
+        q.options.some((o) => o.effect.type === "donePicks") ? (batchedItems(q) > 1 ? "That card covers several items. Tick the ones that are done, or open one to act on it." : "That card only marks things done. Open the item to act on it.") : batchedItems(q) > 1 ? "That card covers several items. Open one to act on it." : "That card isn't tied to an item, so no agent started.",
+        "warn",
+      );
       return;
     }
     // A drawer note read as background: nobody asked a question, so there's no card to bring back.
@@ -996,6 +1032,7 @@ export function effectText(e: Effect): string {
     case "gatewayLogin": return "gateway login";
     case "commitPlan": return "commit the picked items to today";
     case "prepMeetings": return "dispatch prep for each ticked meeting";
+    case "donePicks": return e.all ? "mark every listed item done" : "mark each ticked item done";
     case "flushJournal": return "save the journal to memory";
     case "sweep": return `run the ${e.name} sweep`;
     case "focusSession": return "focus the agent session";
@@ -1104,9 +1141,11 @@ export function runsLater(e: Effect): boolean {
   return e.type === "dispatch" || e.type === "when" || e.type === "triage" || e.type === "gatewayLogin" || e.type === "sweep" || e.type === "flushJournal";
 }
 
-/** How many items a batched card's options act on (its widest multi of per-item status effects). 0 for a normal card. */
-export function batchedItems(q: Pick<Question, "options">): number {
-  return Math.max(0, ...q.options.map((o) => (o.effect.type === "multi" ? o.effect.effects.filter((e) => e.type === "status" && e.itemId).length : 0)));
+/** How many items a batched card's options act on (its widest multi of per-item status effects, or the picks a donePicks card acts on). 0 for a normal card. */
+export function batchedItems(q: Pick<Question, "options" | "picks">): number {
+  // The recheck card acts on its picks (donePicks), not a multi.
+  const picked = q.options.some((o) => o.effect.type === "donePicks") ? (q.picks?.length ?? 0) : 0;
+  return Math.max(picked, ...q.options.map((o) => (o.effect.type === "multi" ? o.effect.effects.filter((e) => e.type === "status" && e.itemId).length : 0)));
 }
 
 /**

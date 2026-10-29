@@ -146,6 +146,72 @@ export class Prompter {
     return { mrs: mr?.refs ?? [], mergedAt: mr?.mergedAt, prs: pr?.refs ?? [], prMergedAt: pr?.mergedAt, tickets, at };
   }
 
+  /**
+   * "Recheck": look up every open item's MRs, PRs and tickets again now, whatever the cache says, and put every
+   * item whose links have all landed on one card, any lane (the merged card only reads `waiting`, once a day).
+   * Tick the done ones: some ask for what comes after the merge ("Merge + deploy", "Verify after deploy").
+   * Items an agent is on are left out: it will report. Replaces an open recheck card and folds in the merged card.
+   */
+  recheck(): Promise<RecheckResult> {
+    // A second click while one runs gets the same answer, not a second round of lookups.
+    this.rechecking ??= this.runRecheck()
+      .catch((e) => {
+        // Not a success, so no lastOkAt: the error alone stops the chip's "running" dots.
+        const msg = e instanceof Error ? e.message : String(e);
+        this.hub.putSync({ ...this.hub.store.syncState("recheck"), error: `Recheck failed: ${msg}` });
+        this.hub.toast(`Recheck failed: ${msg}`, "warn");
+        throw e;
+      })
+      .finally(() => (this.rechecking = undefined));
+    return this.rechecking;
+  }
+  private rechecking?: Promise<RecheckResult>;
+
+  private async runRecheck(): Promise<RecheckResult> {
+    const store = this.hub.store;
+    const hasRefs = (it: Item) => mrRefs(it).length > 0 || prRefs(it).length > 0 || this.jira.refs(it).length > 0;
+    const before = store.items().filter((it) => isOpen(it) && hasRefs(it));
+    this.hub.putSync({ ...store.syncState("recheck"), lastRunAt: new Date().toISOString(), error: undefined });
+    // A lookup the 30-s tick started before the click may predate the merge, and get() won't start another while
+    // it runs: let those land, then forget them too.
+    await Promise.all([this.mrs.settled(), this.prs.settled(), this.jira.settled()]);
+    this.mrs.forget(before);
+    this.prs.forget(before);
+    this.jira.forget(before);
+    for (const it of before) this.landed(it);
+    await Promise.all([this.mrs.settled(), this.prs.settled(), this.jira.settled()]);
+    // Re-read: lookups take a while, and items close in the meantime.
+    const busy = new Set(store.liveJobs().map((j) => j.itemId).filter(Boolean));
+    const items = store.items().filter((it) => isOpen(it) && hasRefs(it));
+    const failed = items.reduce((n, it) => n + this.mrs.failed(it) + this.prs.failed(it) + this.jira.failed(it), 0);
+    const found: Array<{ it: Item; l: Landed }> = [];
+    for (const it of items) {
+      if (busy.has(it.id)) continue;
+      const l = this.landed(it);
+      if (l && l !== "pending") found.push({ it, l });
+    }
+    found.sort((a, b) => (a.l.at ?? "").localeCompare(b.l.at ?? "") || a.it.createdAt.localeCompare(b.it.createdAt));
+    const summary = `${items.length} checked · ${found.length} landed${failed ? ` · ${failed} lookup${failed === 1 ? "" : "s"} failed` : ""}`;
+    const prev = store.openQuestionByKey(RECHECK_KEY);
+    if (prev) this.hub.expireQuestion(prev.id, "rechecked");
+    let question: Question | undefined;
+    if (found.length) {
+      const merged = store.openQuestionByKey(MERGED_KEY);
+      if (merged) this.hub.expireQuestion(merged.id, "folded into recheck");
+      question = this.ask(recheckCard(found));
+    }
+    this.hub.putSync({
+      ...store.syncState("recheck"),
+      lastOkAt: new Date().toISOString(),
+      cursor: summary,
+      // A failed lookup never counts as landed: say so, it's usually a stale glab / Access login.
+      error: failed ? `${failed} lookup${failed === 1 ? "" : "s"} failed (glab / gh / cloudflared access login?). Those items weren't counted.` : undefined,
+    });
+    this.hub.toast(found.length ? `Rechecked: ${summary}. One card to tick the done ones.` : `Rechecked: ${summary}. Nothing new landed.`, failed ? "warn" : "info");
+    this.hub.journal(`Recheck: ${summary}`, { who: "hq" });
+    return { checked: items.length, landed: found.map((f) => ({ id: f.it.id, title: f.it.title, status: f.it.status, line: mergedLine(f.l) })), failed, question: question?.id };
+  }
+
   tick(now = new Date()) {
     const store = this.hub.store;
     let items = store.items();
@@ -554,8 +620,10 @@ export class Prompter {
     }
     const found: Array<{ it: Item; mr: Landed }> = [];
     let pending = false;
+    // On the open recheck card already: one card per item.
+    const onRecheck = new Set((store.openQuestionByKey(RECHECK_KEY)?.picks ?? []).map((p) => p.id));
     for (const it of items) {
-      if (it.status !== "waiting") continue;
+      if (it.status !== "waiting" || onRecheck.has(it.id)) continue;
       const mr = this.landed(it);
       if (mr === "pending") pending = true;
       else if (mr && !(kept[it.id] !== undefined && (mr.at ?? "") <= kept[it.id]!)) found.push({ it, mr });
@@ -590,7 +658,7 @@ export class Prompter {
    */
   private mergedAnswers(): { kept: Record<string, string>; split: Record<string, string> } {
     const store = this.hub.store;
-    let saved: { kept: Record<string, string>; split: Record<string, string>; seen?: string } = { kept: {}, split: {} };
+    let saved: { kept: Record<string, string>; split: Record<string, string>; seen?: string; seenRecheck?: string } = { kept: {}, split: {} };
     try {
       saved = { ...saved, ...JSON.parse(store.kv(KEPT_KEY) ?? "{}") };
     } catch {}
@@ -605,6 +673,14 @@ export class Prompter {
         if (split) saved.split[id] = at;
       }
       saved.seen = last.id;
+      store.setKv(KEPT_KEY, JSON.stringify(saved));
+    }
+    // An answered recheck card already showed these items: the merged card skips them too, unless a newer merge lands.
+    const re = store.lastAnswered(RECHECK_KEY);
+    if (re?.status === "answered" && saved.seenRecheck !== re.id) {
+      const at = re.answeredAt ?? re.createdAt;
+      for (const p of re.picks ?? []) saved.kept[p.id] = at;
+      saved.seenRecheck = re.id;
       store.setKv(KEPT_KEY, JSON.stringify(saved));
     }
     return saved;
@@ -716,6 +792,25 @@ export class Prompter {
     return done.size > 0;
   }
 
+  /** The recheck card follows the board: items closed elsewhere drop off, and it goes once none are left. */
+  private pruneRecheck(q: Question, byId: Map<string, Item>) {
+    const keep = (q.picks ?? []).filter((p) => {
+      const it = byId.get(p.id);
+      return it && isOpen(it);
+    });
+    if (keep.length === (q.picks ?? []).length) return;
+    if (!keep.length) return this.hub.expireQuestion(q.id, "nothing left");
+    const n = keep.length;
+    Object.assign(q, {
+      picks: keep,
+      prompt: n === 1 ? `Everything this links to has landed: ${keep[0]!.label}. Done?` : `${n} open items: everything they link to has landed. Which are done?`,
+      context: `${(q.context ?? "").split("\n")[0]}\n${keep.map((p) => `- ${p.label} (${p.hint})`).join("\n")}`,
+      options: q.options.map((o) => (o.id === "all" ? { ...o, label: n === 1 ? "Mark it done" : `Mark all ${n} done` } : o)),
+    });
+    this.hub.store.putQuestion(q);
+    this.hub.emit({ type: "question", data: q });
+  }
+
   /** Close questions whose item moved on without them. Returns the meeting-ended cards it closed as stale. */
   private expireMoot(open: Question[], items: Item[], now: Date) {
     const byId = new Map(items.map((i) => [i.id, i]));
@@ -730,6 +825,7 @@ export class Prompter {
       else if (q.key.startsWith("doing:") && it && (it.status !== "doing" || this.hub.store.liveJobs().some((j) => j.itemId === it.id))) this.hub.expireQuestion(q.id, "moved on");
       // The one-item merged card is that item's card now (it blocks its other prompts): gone once it's off `waiting`.
       else if (q.key === MERGED_KEY && it && it.status !== "waiting") this.hub.expireQuestion(q.id, "moved on");
+      else if (q.key === RECHECK_KEY) this.pruneRecheck(q, byId);
       else if (q.kind === "confirm" && it && it.status !== "inbox") this.hub.expireQuestion(q.id, "triaged");
       else if (q.kind === "post" && it && q.key.endsWith(":idea") && hasDraft(it)) this.hub.expireQuestion(q.id, "drafted");
       else if (q.kind === "prep" && q.eventId && this.startedAgo(q.eventId, now) > 10 * MIN) this.hub.expireQuestion(q.id, "meeting started");
@@ -989,6 +1085,8 @@ function landedBadge(ls: Landed[]) {
 }
 
 const MERGED_KEY = "wait:merged";
+/** The "Recheck" card (Prompter.recheck): every open item whose links all landed, any lane, tick the done ones. */
+const RECHECK_KEY = "recheck";
 const KEPT_KEY = "wait:merged:kept";
 const KEEP_LABEL = "Keep waiting";
 const SPLIT_LABEL = "One by one";
@@ -1025,6 +1123,34 @@ export function mergedCard(found: Array<{ it: Pick<Item, "id" | "title">; mr: La
       opt("done", n === 1 ? mergedLabel(found[0]!.mr) : `Mark all ${n} done`, each("done", mergedLine), "primary"),
       ...(n > 1 ? [opt("split", SPLIT_LABEL, { type: "noop" })] : []),
       opt("keep", n > 1 ? `${KEEP_LABEL} on all` : KEEP_LABEL, each("waiting", (mr) => `kept waiting: ${mergedLine(mr)}`), "quiet"),
+    ],
+  };
+}
+
+export interface RecheckResult {
+  checked: number;
+  landed: Array<{ id: string; title: string; status: Item["status"]; line: string }>;
+  failed: number;
+  question?: string;
+}
+
+/** The recheck card: one tick-box per landed item (pick id = item id), nothing pre-ticked. */
+export function recheckCard(found: Array<{ it: Pick<Item, "id" | "title" | "status">; l: Landed }>) {
+  const n = found.length;
+  const picks: QuestionPick[] = found.map((f) => ({ id: f.it.id, label: f.it.title, hint: `${f.it.status} · ${mergedLine(f.l)}` }));
+  return {
+    kind: "state" as const,
+    key: RECHECK_KEY,
+    badge: "Recheck",
+    priority: 70,
+    prompt: n === 1 ? `Everything this links to has landed: ${found[0]!.it.title}. Done?` : `${n} open items: everything they link to has landed. Which are done?`,
+    // The list is in the context too, so a typed note ("all but the deploy one") reads against it.
+    context: `Tick the done ones. Some ask for what comes after the merge (a deploy, a check).\n${picks.map((p) => `- ${p.label} (${p.hint})`).join("\n")}`,
+    picks,
+    options: [
+      opt("done", "Mark ticked done", { type: "donePicks" }, "primary"),
+      opt("all", n === 1 ? mergedLabel(found[0]!.l) : `Mark all ${n} done`, { type: "donePicks", all: true }),
+      opt("keep", "Leave them", { type: "noop" }, "quiet"),
     ],
   };
 }

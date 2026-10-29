@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { loadavg } from "node:os";
 import { resolve } from "node:path";
-import type { ActionKind, AgentReport, Item, Job, JobKind, NoteDecision } from "../shared/types.ts";
+import type { ActionKind, AgentReport, Item, Job, JobKind, NoteDecision, QuestionOption } from "../shared/types.ts";
 import * as cmux from "./cmux.ts";
 import { config } from "./config.ts";
 import { newId, nowIso } from "./db.ts";
@@ -23,9 +23,14 @@ import { overloaded } from "./load.ts";
 import { assertShortArgs, PiPool, PiRpc, piStamp, type RunOutcome } from "./pi-rpc.ts";
 import {
   actionPrompt, type BossCard, bossPrompt, calendarPrompt, calendarSweepPrompt, explainPrompt, notePrompt, openUrl, postSweepPrompt, schedulePrompt, SITE_LINK, SITE_POSTS,
-  transcriptSweepPrompt, triagePrompt, WIKI_DRAFTS,
+  stoppedJobNote, transcriptSweepPrompt, triagePrompt, WIKI_DRAFTS,
 } from "./prompts.ts";
 import { cleanupWorktree, createWorktree, repoFor, type WorktreeResult } from "./worktrees.ts";
+
+/** The after-card's "Check for me": a verify agent reads what the stopped job left (see stoppedJobNote). */
+export function checkStoppedOption(job: Pick<Job, "id" | "title" | "status" | "summary" | "error" | "session">): QuestionOption {
+  return { id: "check", label: "Check for me", hint: "An agent reads its transcript, commits, MRs", effect: { type: "dispatch", action: "verify", note: stoppedJobNote(job) } };
+}
 
 /** Open cards an agent raised (or raised about an agent): what the boss check verifies. */
 export function bossCards(hub: Hub): BossCard[] {
@@ -187,6 +192,7 @@ export class Agents implements Dispatcher {
   constructor(private hub: Hub, private cmuxDeps: CmuxDeps = realCmux) {
     hub.dispatcher = this;
     ensureSiteLink();
+    this.addCheckToAfterCards();
     // One `cmux tree` for every job the restart caught, not one per job: it's a blocking CLI call at boot.
     // Only a successful tree is cached: a failed call falls back to a per-job lookup rather than "no workspace".
     let tree: Map<string, string> | undefined;
@@ -214,6 +220,19 @@ export class Agents implements Dispatcher {
         hub.putJob({ ...job, status: "failed", error: "server restarted mid-run", finishedAt: nowIso() });
         if (job.kind === "triage") this.reaskTriage(job.id, "server restarted mid-run");
       }
+    }
+  }
+
+  /** After-cards drawn before "Check for me" existed get it. Idempotent; drop once no pre-10-29 card can be open. */
+  private addCheckToAfterCards() {
+    for (const q of this.hub.store.questions("open")) {
+      if (!q.key.startsWith("after:") || q.options.some((o) => o.id === "check")) continue;
+      const job = this.hub.store.job(q.key.slice("after:".length));
+      if (!job) continue;
+      const at = q.options.findIndex((o) => o.id === "look");
+      const options = [...q.options];
+      options.splice(at < 0 ? options.length : at, 0, checkStoppedOption(job));
+      this.hub.store.putQuestion({ ...q, options });
     }
   }
 
@@ -731,6 +750,7 @@ export class Agents implements Dispatcher {
           { id: "wait", label: "Waiting on someone", effect: { type: "status", status: "waiting" } },
           { id: "today", label: "Still mine today", tone: "primary", effect: { type: "status", status: "today" } },
           { id: "when", label: "Scheduled for…", hint: "say when", effect: { type: "when" } },
+          checkStoppedOption({ ...after, status: r.ok ? "done" : "failed", error: r.error }),
           ...(job.workspace ? [{ id: "look", label: "Show me the session", tone: "quiet" as const, effect: { type: "focusSession" as const, keep: true } }] : []),
         ],
       });

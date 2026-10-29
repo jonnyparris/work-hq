@@ -78,8 +78,11 @@ export interface Launched {
   statusPath: string;
 }
 
+/** A job's folder, without creating it (jobDir creates it). */
+export const jobPath = (jobId: string) => resolve(config.stateDir, "jobs", jobId);
+
 export function jobDir(jobId: string) {
-  const dir = resolve(config.stateDir, "jobs", jobId);
+  const dir = jobPath(jobId);
   mkdirSync(dir, { recursive: true });
   return dir;
 }

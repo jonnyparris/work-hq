@@ -225,6 +225,16 @@ const server = Bun.serve({
     },
 
     "/api/tick": { POST: () => handle(() => prompter.tick()) },
+    // "Recheck" chip / `whq recheck`: look up every open item's MRs, PRs and tickets now, one card for what landed.
+    // Fire and forget, like the sweeps: a slow glab / JIRA pass can outlast the 120-s idle timeout. The result
+    // arrives as a toast, the chip's summary and (if anything landed) the card. recheck() records its own failures.
+    "/api/recheck": {
+      POST: () =>
+        handle(() => {
+          void prompter.recheck().catch(() => {});
+          return { started: "recheck" };
+        }),
+    },
 
     // `whq land` asks here instead of kickstarting: restart once no headless job would die (src/server/restart.ts).
     // 409 = not this server's checkout, or no restart command configured: the caller runs its own.

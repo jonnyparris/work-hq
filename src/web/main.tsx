@@ -204,12 +204,12 @@ function DemoToggle({ demo, liveUrl }: { demo: boolean; liveUrl?: string }) {
 }
 
 function TopBar({ sync, connected, memoryOn, view, go, now, demo, liveUrl }: { sync: SyncState[]; connected: boolean; memoryOn: boolean; view: string; go: (v: "today" | "journal") => void; now: Date; demo: boolean; liveUrl?: string }) {
-  const chip = (name: string, label: string) => {
+  const chip = (name: string, label: string, run: () => unknown = () => api.sync(name), title?: string) => {
     const x = sync.find((y) => y.name === name);
     const running = x?.lastRunAt && (!x.lastOkAt || x.lastRunAt > x.lastOkAt) && !x.error && Date.now() - Date.parse(x.lastRunAt) < 25 * 60_000;
     const cls = running ? "run" : x?.error ? "err" : x?.lastOkAt ? "ok" : "off";
     return (
-      <button key={name} className="sync-chip" onClick={() => api.sync(name)} title={x?.error ?? `${x?.cursor ?? ""} — click to run now`}>
+      <button key={name} className="sync-chip" onClick={run} title={[title, x?.error ?? `${x?.cursor ?? ""} — click to run now`].filter(Boolean).join("\n")}>
         <span className={`dot ${cls}`} />{label}<span style={{ color: "var(--text-3)" }}>{running ? "…" : ago(x?.lastOkAt, now.getTime())}</span>
       </button>
     );
@@ -228,6 +228,7 @@ function TopBar({ sync, connected, memoryOn, view, go, now, demo, liveUrl }: { s
         {chip("transcripts", "transcripts")}
         {chip("calendar", "calendar")}
         {chip("journal", "saved")}
+        {!demo && chip("recheck", "recheck", () => api.recheck(), "Look up every open item's MRs, PRs and tickets now. Anything that landed goes on one card to tick off.")}
         {!connected && <span className="sync-chip"><span className="dot err" />offline</span>}
       </div>
     </div>

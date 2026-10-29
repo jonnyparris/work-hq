@@ -6,6 +6,7 @@
 #   whq pineapple "<text>"    # capture an action (🍍) from any terminal
 #   whq journal "<text>"      # add a line to the journal as an agent (no triage)
 #   whq sync <memory|journal|calendar|transcripts>
+#   whq recheck               # re-read every open item's MRs / PRs / tickets; result shows in the dashboard
 #   whq land <jobId>          # land a work job's worktree: rebase, check, push, publish, clean up, restart
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -33,6 +34,7 @@ if fo: print("Not filed (idea cap per job; added to the summary as \"Could also:
   pineapple) echo "{\"text\": $(jstr "$*"), \"mode\": \"pineapple\"}" | post /api/say ;;
   journal)   echo "{\"text\": $(jstr "$*")}" | post /api/journal ;;
   sync)      echo '{}' | post "/api/sync/${1:?name}" ;;
+  recheck)   echo '{}' | post /api/recheck ;;
   land)      cd "$ROOT" && exec "${BUN:-$(command -v bun || echo "$HOME/.bun/bin/bun")}" src/cli/land.ts "${1:?usage: whq land <jobId>}" ;;
   *) sed -n '2,10p' "$0"; exit 2 ;;
 esac

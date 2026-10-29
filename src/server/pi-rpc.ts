@@ -10,6 +10,7 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { appendFileSync, existsSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
@@ -480,8 +481,11 @@ export class PiPool {
   }
 }
 
+/** pi's agent dir (settings, packages, sessions). */
+export const piAgentDir = () => process.env.PI_CODING_AGENT_DIR || resolve(homedir(), ".pi/agent");
+
 /** mtime of the pi install and of the agent's npm packages (extensions). Changes on update. */
-export function piStamp(bin: string, agentDir = process.env.PI_CODING_AGENT_DIR ?? resolve(process.env.HOME ?? "", ".pi/agent")) {
+export function piStamp(bin: string, agentDir = piAgentDir()) {
   const m = (p: string) => {
     try {
       return existsSync(p) ? String(statSync(realpathSync(p)).mtimeMs) : "";

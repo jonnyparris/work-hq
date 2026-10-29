@@ -140,6 +140,10 @@ From three agent cards or waiting sessions, the Agents panel shows **Boss check:
 each one at the source (`gh`/`glab`, the ticket, the job's status file), closes the stale cards with the evidence,
 re-asks any whose facts changed, and leaves you the short list. Its prompt keeps it read-only (no merging, sending or filing), and it can only close agent cards, never your own.
 
+An **Agent finished / Agent stopped** card has **Check for me**. It sends a read-only verify agent to find out if
+the job's work landed. The agent reads the job's pi transcript, its job folder, its worktree branch and any MRs or
+tickets it names, so it still works after the cmux session was closed. It reports back with a card that proposes the status.
+
 No button fits? Type it in the note field and press **`⌘↵`**: *"drop it"*, *"chase Sam on Thursday"*, *"it's Joan, not Jon,
 and tighten it first"*. The note is the answer. Work HQ picks the matching option, changes the status, schedules it,
 or sends an agent with your words. If the note is only background, it's kept on the item and the question waits
@@ -154,6 +158,13 @@ meeting's notes. The sweep runs 10–25 min after the meeting, and again at 45�
 card waits until then, so most cards close before you see them. The same
 work arriving from two places (memory rewords a todo, a transcript finds what an agent already filed) becomes
 one item. Something you dropped isn't brought back under a new title. Details: [architecture](docs/ARCHITECTURE.md#duplicates-across-sources-srcserverdedupets).
+
+Things moved on and Work HQ hasn't caught up (a batch of MRs merged this morning)? Click **recheck** in the top bar
+(or `bin/whq recheck`). It looks up every open item's MRs, PRs and tickets again right now, whatever the cache says,
+in every lane, not only *waiting*. Anything whose links have all landed goes on one card: tick the done ones, or mark
+them all. Some items ask for what comes after the merge (a deploy, a check), so nothing is ticked for you. The chip
+shows when it last ran and what it found; it turns red when lookups failed (a stale `glab`, `gh` or Access login), and
+those items aren't counted.
 
 Set `labels.trackerUrl` and every ticket key (`PAY-123`) in a question, a card or an item becomes a link to it. If it's a JIRA `/browse/` URL (or you set `jira.hosts`), waiting items whose linked tickets are all done also
 (links only, not the source URL, which is usually the parent ticket) reach the "Ticket done" card; lookups use `cloudflared access token`, and a failed one keeps the item off.

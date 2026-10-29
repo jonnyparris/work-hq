@@ -94,6 +94,16 @@ export class JiraStates {
     return { done: refs.map((ref, n) => ({ ref, status: infos[n]!.status || "Done", doneAt: infos[n]!.doneAt })) };
   }
 
+  /** Forget what's cached for these items' refs: the next verdict looks them up again. */
+  forget(items: Array<Pick<Item, "links" | "source">>) {
+    this.cache.forget(items.flatMap((it) => this.refs(it).map((r) => r.url)));
+  }
+
+  /** How many of the item's refs the last lookup couldn't read (glab / gh / Access failed). */
+  failed(it: Pick<Item, "links" | "source">) {
+    return this.refs(it).filter((r) => this.cache.peek(r.url)?.state === "unknown").length;
+  }
+
   settled() {
     return this.cache.settled();
   }
@@ -113,7 +123,7 @@ export function parseIssue(status: number, body: string): JiraInfo {
   }
 }
 
-let token: { host: string; value: string; at: number } | undefined;
+const tokens = new Map<string, { value: string; at: number }>();
 const TOKEN_TTL = 5 * 60_000;
 
 /** One REST call with the cloudflared Access token. Never throws: a failure is "unknown". */
@@ -126,19 +136,31 @@ export async function jiraFetch(ref: JiraRef): Promise<JiraInfo> {
       redirect: "manual",
       signal: AbortSignal.timeout(20_000),
     });
-    if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) token = undefined;
+    if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) tokens.delete(ref.host);
     return parseIssue(res.status, await res.text());
   } catch {
     return { state: "unknown" };
   }
 }
 
-async function accessToken(host: string): Promise<string | undefined> {
-  if (token?.host === host && Date.now() - token.at < TOKEN_TTL) return token.value;
+const minting = new Map<string, Promise<string | undefined>>();
+
+/** One cloudflared at a time per host: lookups that start together share it. */
+function accessToken(host: string): Promise<string | undefined> {
+  const token = tokens.get(host);
+  if (token && Date.now() - token.at < TOKEN_TTL) return Promise.resolve(token.value);
+  const running = minting.get(host);
+  if (running) return running;
+  const p = mintToken(host).finally(() => minting.delete(host));
+  minting.set(host, p);
+  return p;
+}
+
+async function mintToken(host: string): Promise<string | undefined> {
   const bin = existsSync("/opt/homebrew/bin/cloudflared") ? "/opt/homebrew/bin/cloudflared" : "cloudflared";
   // `access token` never opens a browser: a missing or expired token prints an error and exits non-zero.
   const out = (await runCli(bin, ["access", "token", `-app=https://${host}`], 10_000, true)).trim();
   if (!/^ey[\w-]+\.[\w-]+\.[\w-]+$/.test(out)) return undefined;
-  token = { host, value: out, at: Date.now() };
+  tokens.set(host, { value: out, at: Date.now() });
   return out;
 }

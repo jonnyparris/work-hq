@@ -110,6 +110,7 @@ export const api = {
   say: (text: string, mode: "chat" | "pineapple" | "review" = "chat") => call<{ reply?: string }>("POST", "/api/say", { text, mode }),
   bulk: (req: BulkRequest) => call<{ count: number; skipped: number }>("POST", "/api/questions/bulk", req),
   sync: (name: string) => call("POST", `/api/sync/${name}`),
+  recheck: () => call("POST", "/api/recheck"),
   focusJob: (id: string) => call("POST", `/api/jobs/${id}/focus`),
   cancelJob: (id: string) => call("POST", `/api/jobs/${id}/cancel`),
   /** One agent checks every open agent card and live session against the real state and closes the stale ones. */
