@@ -19,4 +19,5 @@ Missing files fall back to these defaults, so you only copy the ones you change.
 | `{{whq}}` `{{port}}` `{{root}}` | the running app |
 
 Some files get extra ones (`{{since}}`, `{{day}}`, `{{known}}`, …) — see the comment at the top of each.
+Every `actions/*.md` gets `{{jobId}}` and `{{jobDir}}` (the job's folder in the state dir; it outlives the session).
 Lines starting with `<!--` … `-->` are stripped before the prompt is sent.

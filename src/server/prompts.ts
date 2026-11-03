@@ -190,7 +190,7 @@ export function actionPrompt(jobId: string, it: Item, action: ActionKind, note?:
 They can see this session and may answer questions here.
 
 TASK: ${action.toUpperCase()}
-${template(`actions/${action}`)}
+${template(`actions/${action}`, { jobId, jobDir: jobPath(jobId) })}
 ${worktree ? `\n${worktreeBlock(jobId, worktree)}\n` : ""}${scoped ? `\n${scoped}\n` : ""}${note ? `\n${owner.name}'s note: ${note}\n` : ""}
 ${itemBlock(it)}
 
@@ -221,7 +221,9 @@ export function stoppedJobNote(job: Pick<Job, "id" | "title" | "status" | "summa
 Find out if its work is actually done. Its cmux session may be closed already, so don't count on it. Look at:
 - its pi transcript: ${job.session?.startsWith("/") ? job.session : `the earliest session naming its id, \`${transcriptSearch(job.id, sessions)}\``}.
   Read its last assistant messages and tool results.
-- its job folder ${jobPath(job.id)}: prompt.md (the task), worktree.json (repo, dir, branch, base) if it had a worktree.
+- its job folder ${jobPath(job.id)}: prompt.md (the task), worktree.json (repo, dir, branch, base) if it had a worktree,
+  and any notes the agent kept there, if present (a /do-style run keeps do/task.md and do/notes.md: tier, checks,
+  review verdicts, next action). No notes? Judge from the transcript and the branch.
 - that branch: commits past base, whether they reached the default branch or a pushed MR/PR, uncommitted edits left in the worktree.
 - MRs, PRs, tickets or messages it opened or names.
 Propose "Mark done" if the work landed or nothing's left. Otherwise say exactly what's left and who has it.`;
@@ -260,7 +262,7 @@ export function bossPrompt(jobId: string, cards: BossCard[], sessions: BossSessi
 ${watched ? "They may be watching this session." : "This run is headless: nobody sees it until your report."}
 
 TASK: BOSS CHECK
-${template("actions/boss")}
+${template("actions/boss", { jobId, jobDir: jobPath(jobId) })}
 
 OPEN CARDS (${cards.length}):
 ${cards.length ? cards.map(card).join("\n\n") : "(none)"}
