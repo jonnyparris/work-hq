@@ -297,6 +297,8 @@ export interface JournalEntry {
   itemId?: string;
   /** The question a typed note answered, so the usage digest can trace item-less notes. */
   questionId?: string;
+  /** On an hq line about a typed note: that note's journal id, so the digest doesn't credit it to a later note on the same card. */
+  noteId?: string;
   /** "you" = the owner, "hq" = the app, "agent" = a dispatched job. */
   who: "you" | "hq" | "agent";
   text: string;

@@ -603,13 +603,13 @@ export class Hub {
     const t = text.trim();
     if (!t) throw new Error("empty note");
     const item = q.itemId ? this.store.item(q.itemId) : undefined;
-    this.journal(item ? `Note on ${item.title}: ${t}` : `Re "${q.prompt}": ${t}`, { itemId: item?.id, questionId: q.id });
+    const noteId = this.journal(item ? `Note on ${item.title}: ${t}` : `Re "${q.prompt}": ${t}`, { itemId: item?.id, questionId: q.id }).id;
     if (item) this.updateItem(item.id, { notes: [...(item.notes ?? []), { at: nowIso(), text: t }].slice(-20), confirmedAt: nowIso() });
     this.park(q, new Date(Date.now() + 15 * 60_000).toISOString());
 
     const quick = quickNote(t, q);
     if (quick || !this.dispatcher?.readNote) {
-      await this.applyNote(q.id, quick ?? {}, t);
+      await this.applyNote(q.id, quick ?? {}, t, new Date(), noteId);
       return { pending: false };
     }
     const read = this.dispatcher.readNote.bind(this.dispatcher);
@@ -629,7 +629,7 @@ export class Hub {
         return;
       }
       if (!d) return; // question gone
-      await this.applyNote(q.id, d, t).catch((e) => this.toast(`Couldn't act on that note: ${errText(e)}`, "warn"));
+      await this.applyNote(q.id, d, t, new Date(), noteId).catch((e) => this.toast(`Couldn't act on that note: ${errText(e)}`, "warn"));
     })();
     return { pending: true };
   }
@@ -675,7 +675,7 @@ export class Hub {
     return { ...r, routed: true };
   }
 
-  async applyNote(questionId: string, d: NoteDecision, text: string, now = new Date()) {
+  async applyNote(questionId: string, d: NoteDecision, text: string, now = new Date(), noteId?: string) {
     const q = this.store.question(questionId);
     if (!q || q.status !== "open") return; // answered some other way meanwhile
     let item = q.itemId ? this.store.item(q.itemId) : undefined;
@@ -725,7 +725,7 @@ export class Hub {
     // The reply was written before anything ran. Nothing ran here, so a reply that says an agent is on it is
     // false (10-22 "chase Omar" → "Sending an agent to chase Omar.", no job). Say so wherever it's kept.
     const unbacked = Boolean(d.reply?.trim()) && (stranded || claimsDispatch(d.reply));
-    if (unbacked) this.journal(`Note reply claimed a dispatch but none started (${stranded ? "card has no single item" : "heuristic, check it"}): "${d.reply!.trim()}"`, { itemId: item?.id, questionId: q.id, who: "hq" });
+    if (unbacked) this.journal(`Note reply claimed a dispatch but none started (${stranded ? "card has no single item" : "heuristic, check it"}): "${d.reply!.trim()}"`, { itemId: item?.id, questionId: q.id, noteId, who: "hq" });
     // A question in the note ("eli5") gets its answer in d.reply. A toast alone loses it (10-15): keep it
     // on the item, in the journal and on the card, so the card that comes back still explains itself.
     const reply = unbacked ? `${d.reply!.trim()} (No agent started.)` : d.reply?.trim();
@@ -832,12 +832,13 @@ export class Hub {
   }
 
   // ── journal ────────────────────────────────────────────────────────────
-  journal(text: string, opts: { itemId?: string; questionId?: string; who?: JournalEntry["who"] } = {}) {
+  journal(text: string, opts: { itemId?: string; questionId?: string; noteId?: string; who?: JournalEntry["who"] } = {}) {
     const e: JournalEntry = {
       id: newId("j"),
       at: nowIso(),
       itemId: opts.itemId,
       ...(opts.questionId ? { questionId: opts.questionId } : {}),
+      ...(opts.noteId ? { noteId: opts.noteId } : {}),
       who: opts.who ?? "you",
       text,
       synced: false,

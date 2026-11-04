@@ -104,8 +104,21 @@ p("## Typed notes and what they did");
 const notes = journal.filter((j) => j.who === "you" && /^Note on |^Re "/.test(j.text));
 if (!notes.length) p("None.");
 const qById = new Map(allQuestions.map((q) => [q.id, q]));
+// The note reader replied "sending an agent" but nothing ran (hub.applyNote journals this). The card then sits
+// parked or expires, which read as harmless (10-27 11:46, 11-02 11:04). Unwindowed: the claim can fall after `until`.
+const isClaim = (x: JournalEntry) => x.who === "hq" && x.text.startsWith("Note reply claimed a dispatch but none started");
+const claims = docs<JournalEntry>("SELECT doc FROM journal WHERE doc LIKE '%Note reply claimed a dispatch but none started%'").filter((x) => isClaim(x));
+const youNotes = docs<JournalEntry>("SELECT doc FROM journal WHERE doc LIKE '%\"who\":\"you\"%'").filter((x) => x.who === "you" && x.questionId);
+// Claims since 11-04 carry the note's id. Older ones: same card, after the note, no later note on that card between
+// (the reader is async, so two quick notes on one card can still swap claims there).
+const claimFor = (j: JournalEntry) =>
+  claims.find((c) =>
+    c.noteId
+      ? c.noteId === j.id
+      : Boolean(j.questionId) && c.questionId === j.questionId && c.at >= j.at && !youNotes.some((n) => n.questionId === j.questionId && n.at > j.at && n.at <= c.at),
+  );
 const after = (j: JournalEntry) =>
-  journal.find((x) => x.itemId === j.itemId && x.at > j.at && Date.parse(x.at) - Date.parse(j.at) < 5 * 60_000 && !/^Note on /.test(x.text));
+  journal.find((x) => x.itemId === j.itemId && x.at > j.at && Date.parse(x.at) - Date.parse(j.at) < 5 * 60_000 && !/^Note on /.test(x.text) && !isClaim(x));
 // Notes under a second apart (any notes, not just identical ones) are a replay: a script or a
 // double-fired request, not the owner typing. Show them, but don't count them as typed again.
 const ms = notes.map((j) => Date.parse(j.at));
@@ -120,6 +133,9 @@ for (const j of notes) {
 p();
 
 function noteFate(j: JournalEntry): string {
+  // Nothing ran on that path either way; only a stranded claim is sure the reply promised an agent (the other is a regex on its wording).
+  const claim = claimFor(j);
+  if (claim) return claim.text.startsWith("Note reply claimed a dispatch but none started (card has no single item)") ? "**nothing happened** (reply claimed an agent; none started)" : "**nothing happened** (no agent started; reply may have promised one)";
   const next = j.itemId ? after(j) : undefined;
   if (next) return md(cut(next.text, 80));
   const q = j.questionId ? qById.get(j.questionId) : undefined;

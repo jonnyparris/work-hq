@@ -131,6 +131,62 @@ test("usage digest: a card answered hours after a note isn't credited to it", as
   expect(out).toMatch(/slow → not acted on; card answered separately at \d\d:\d\d/);
 });
 
+test("usage digest: a note whose reply claimed an agent that never started reads as nothing happened, not parked", async () => {
+  const path = `${tmpdir()}/whq-usage-stranded-${Date.now()}.db`;
+  const hub = new Hub(new Store(path));
+  const t0 = Date.now() - 30 * 60_000;
+  const iso = (min: number) => new Date(t0 + min * 60_000).toISOString();
+  const card = (id: string) =>
+    hub.store.putQuestion({ id, kind: "confirm", key: `k:${id}`, priority: 1, prompt: `Card ${id}?`, options: [], status: "open", createdAt: iso(0), notBefore: iso(24 * 60) });
+  card("q_strand");
+  card("q_park");
+  const put = (id: string, min: number, questionId: string, who: "you" | "hq", text: string) => hub.store.putJournal({ id, at: iso(min), questionId, who, text, synced: false });
+  put("j1", 1, "q_strand", "you", 'Re "Card q_strand?": first try');
+  put("j2", 2, "q_strand", "you", 'Re "Card q_strand?": check them all yourself');
+  put("j3", 2.1, "q_strand", "hq", 'Note reply claimed a dispatch but none started (card has no single item): "Sending an agent"');
+  put("j4", 1, "q_park", "you", 'Re "Card q_park?": just background');
+  hub.store.db.close();
+  const out = await digest(path);
+  rmSync(path, { force: true });
+  expect(out).toMatch(/check them all yourself → \*\*nothing happened\*\* \(reply claimed an agent; none started\)/);
+  // The earlier note on the same card isn't blamed for the later claim, and an unrelated parked card stays parked.
+  expect(out).toMatch(/first try → parked till morning/);
+  expect(out).toMatch(/just background → parked till morning/);
+});
+
+test("usage digest: a stamped claim goes to its own note even when a later note came first; heuristic claims are hedged", async () => {
+  const path = `${tmpdir()}/whq-usage-claimid-${Date.now()}.db`;
+  const hub = new Hub(new Store(path));
+  const t0 = Date.now() - 30 * 60_000;
+  const iso = (min: number) => new Date(t0 + min * 60_000).toISOString();
+  hub.store.putQuestion({ id: "q_race", kind: "confirm", key: "k:race", priority: 1, prompt: "Card race?", options: [], status: "open", createdAt: iso(0), notBefore: iso(24 * 60) });
+  const it = hub.createItem({ title: "Chase the vendor", status: "inbox" });
+  hub.store.putJournal({ id: "n1", at: iso(1), questionId: "q_race", who: "you", text: 'Re "Card race?": slow one', synced: false });
+  hub.store.putJournal({ id: "n2", at: iso(1.2), questionId: "q_race", who: "you", text: 'Re "Card race?": quick one', synced: false });
+  hub.store.putJournal({ id: "c1", at: iso(1.5), questionId: "q_race", noteId: "n1", who: "hq", text: 'Note reply claimed a dispatch but none started (card has no single item): "On it"', synced: false });
+  hub.store.putJournal({ id: "n3", at: iso(2), itemId: it.id, questionId: "q_item", who: "you", text: `Note on ${it.title}: chase them`, synced: false });
+  hub.store.putJournal({ id: "c2", at: iso(2.1), itemId: it.id, questionId: "q_item", noteId: "n3", who: "hq", text: 'Note reply claimed a dispatch but none started (heuristic, check it): "Chasing"', synced: false });
+  hub.store.db.close();
+  const out = await digest(path);
+  rmSync(path, { force: true });
+  expect(out).toMatch(/slow one → \*\*nothing happened\*\* \(reply claimed an agent/);
+  expect(out).not.toMatch(/quick one → \*\*nothing happened/);
+  expect(out).toMatch(/chase them → \*\*nothing happened\*\* \(no agent started; reply may have promised one\)/);
+});
+
+test("hub stamps the note's journal id on a dispatch claim that started nothing", async () => {
+  const hub = new Hub(new Store(":memory:"));
+  const q = hub.ask({ kind: "confirm", key: "k:stamp", priority: 1, prompt: "Which of these are done?", options: [] })!;
+  (hub as any).dispatcher = { readNote: async () => ({ reply: "Sending an agent to check them.", dispatch: { action: "work" } }) };
+  await hub.note(q.id, "check them all yourself");
+  const isClaim = (e: { text: string }) => e.text.startsWith("Note reply claimed a dispatch but none started");
+  for (let i = 0; i < 100 && !hub.store.journal().some(isClaim); i++) await new Promise((r) => setTimeout(r, 10));
+  const all = hub.store.journal();
+  const note = all.find((e) => e.who === "you" && e.questionId === q.id)!;
+  const claim = all.find(isClaim)!;
+  expect(claim.noteId).toBe(note.id);
+});
+
 test("usage digest: a kept card (Open draft) put back isn't a new ask with a huge wait", async () => {
   const path = `${tmpdir()}/whq-usage-keep-${Date.now()}.db`;
   const hub = new Hub(new Store(path));
