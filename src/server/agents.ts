@@ -73,6 +73,9 @@ const TRIAGE_FLAGS = ["-nt", "-nc", "-ns", "-np", "--no-session"];
 const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
 /** How long a cmux turn that ended on a model error gets to recover (new turn or report) before the job fails. */
 export const ERROR_GRACE_MS = 180_000;
+/** A cmux job with no workspace that has written no beacon this long after it started is failed (see pollCmux). */
+export const NO_BEACON_MS = 30 * 60_000;
+export const NO_BEACON_ERROR = "no session beacon: never started or lost in a restart";
 /** A cmux session only gets the shared gateway token if it has at least this long left (see GatewayToken.env). */
 export const CMUX_TOKEN_TTL_MS = 24 * 3600_000;
 const RESUME_NUDGE = "Your last request failed on a provider rate limit. Carry on from where you stopped.";
@@ -95,6 +98,8 @@ interface Running {
   retry?: { at: number; seq: number; sent?: number; kind: "rate" | "transient" };
   /** cmux: network-blip retry scheduled (one per job, back to 0 if a new turn beats it; a blip after it fails the job). */
   transientRetries?: number;
+  /** cmux: when adoptCmux took the job over. The no-beacon limit counts from here too, not just from startedAt. */
+  adoptedAt?: number;
   /** cmux: the turn ended on a model error at this beacon seq. pi keeps the session, so wait for it to recover or report. */
   errored?: { at: number; seq: number };
   /** cmux: last settled turn (beacon seq) already passed to noteGateway. */
@@ -151,8 +156,11 @@ export interface CmuxDeps {
   launch: typeof cmux.launchInCmux;
   /** One launch per job (see cmux.claimLaunch). Defaults to the real claim file. */
   claim?: typeof cmux.claimLaunch;
-  /** The cmux workspace already running this job, if any. Defaults to a cmux tree lookup. */
-  findWorkspace?: (jobId: string) => string | undefined;
+  /**
+   * The cmux workspace already running this job, if any. Defaults to a cmux tree lookup. false = cmux couldn't list:
+   * only pollCmux's no-beacon check tells that apart from "not found"; other callers treat both as not found.
+   */
+  findWorkspace?: (jobId: string) => string | undefined | false;
   /** Defaults to cmux.closeWorkspace. */
   closeWorkspace?: (id: string) => unknown;
   /** Type a line into a workspace (the retry nudges). Defaults to cmux.sendLine; tests stub it. */
@@ -523,7 +531,7 @@ export class Agents implements Dispatcher {
    * `look` false (cmux not answering at boot): don't look at all, each lookup would block the server.
    */
   private async adoptCmux(jobId: string, title: string, note: string, known?: string, look = true) {
-    this.running.set(jobId, { statusPath: resolve(cmux.jobDir(jobId), "status.json"), seenWork: false });
+    this.running.set(jobId, { statusPath: resolve(cmux.jobDir(jobId), "status.json"), seenWork: false, adoptedAt: Date.now() });
     const tail = (extra: string) => [...(this.hub.store.job(jobId)?.tail ?? []), extra].slice(-12);
     this.patch(jobId, { status: "running", surface: "cmux", startedAt: this.hub.store.job(jobId)?.startedAt ?? nowIso(), tail: tail(note) });
     this.hub.toast(`Dispatched to cmux: ${title}`, "good");
@@ -605,6 +613,16 @@ export class Agents implements Dispatcher {
     this.cap.pump(); // catches status changes that bypassed patch() (direct putJob, restarts)
     if (![...this.running.values()].some((r) => r.statusPath)) return;
     const live = cmux.liveWorkspaces();
+    // Workspace lookup for jobs past the no-beacon limit: one `cmux tree` per tick, only when one needs it.
+    // false = cmux couldn't list workspaces.
+    let tree: { jobId: string; id: string }[] | null | undefined;
+    const lastLook = (jobId: string): string | undefined | false => {
+      if (this.cmuxDeps.findWorkspace) return this.cmuxDeps.findWorkspace(jobId);
+      if (this.cmuxDeps !== realCmux) return undefined;
+      if (!live) return false; // `cmux tree` just failed this tick: don't block on it a second time
+      if (tree === undefined) tree = cmux.jobWorkspaces() ?? null;
+      return tree === null ? false : tree.find((w) => w.jobId === jobId)?.id;
+    };
     for (const [id, r] of this.running) {
       if (!r.statusPath) continue;
       const job = this.hub.store.job(id);
@@ -618,7 +636,36 @@ export class Agents implements Dispatcher {
         this.finishAction(id, { ok: job.reported ?? false, text: "", error: job.reported ? undefined : "workspace closed" });
         continue;
       }
-      if (!b) continue;
+      if (!b) {
+        // No workspace and still no beacon long after it started: the session never ran or a restart lost it (10-22:
+        // two such jobs held 2 cap slots for 6.5 days). The limit never applies to a job with a workspace: that one
+        // is left to the live-workspace check above (which waits while cmux can't list workspaces).
+        const since = Math.max(Date.parse(job.startedAt ?? job.createdAt), r.adoptedAt ?? 0);
+        if (!job.workspace && Date.now() - since > NO_BEACON_MS) {
+          // Already reported: nothing left to wait for, finish it done.
+          if (job.reported) {
+            this.running.delete(id);
+            this.finishAction(id, { ok: true, text: "" });
+            continue;
+          }
+          // Look once before failing: a session adoptCmux never found would keep running with no owner. cmux can't
+          // list workspaces: absence isn't proven, so try again next tick, for one more limit at most (cmux gone for
+          // good, or uninstalled, must not hold the slot for ever).
+          const workspace = lastLook(id);
+          if (workspace === false && Date.now() - since <= 2 * NO_BEACON_MS) continue;
+          if (workspace) {
+            this.patch(id, { workspace });
+            this.line(id, "▸ found its cmux workspace (no beacon yet) — tracking it");
+            continue;
+          }
+          // The session may have written its beacon while the lookup ran.
+          if (cmux.readBeacon(r.statusPath)) continue;
+          this.running.delete(id);
+          const error = workspace === false ? `${NO_BEACON_ERROR} (cmux couldn't list workspaces: if a session is still open, close it)` : NO_BEACON_ERROR;
+          this.finishAction(id, { ok: false, text: "", error });
+        }
+        continue;
+      }
       // A settled turn tells us about the model gateway too: an auth error raises the "Login expired" card
       // (and drops the shared token), a clean turn retires it. Once per turn.
       if (b.state === "idle" && b.seq >= 1 && b.seq !== r.gatewaySeq && (b.outcome === "error" || b.outcome === "completed")) {
@@ -1300,7 +1347,7 @@ export class Agents implements Dispatcher {
 
   /** The cmux workspace running this job, if listed. Only real cmux (or an injected finder) is asked: tests never reach the CLI. */
   private findWorkspace(jobId: string) {
-    if (this.cmuxDeps.findWorkspace) return this.cmuxDeps.findWorkspace(jobId);
+    if (this.cmuxDeps.findWorkspace) return this.cmuxDeps.findWorkspace(jobId) || undefined;
     return this.cmuxDeps === realCmux ? findJobWorkspace(jobId) : undefined;
   }
 
