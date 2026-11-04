@@ -16,7 +16,7 @@ import * as cmux from "./cmux.ts";
 import { config } from "./config.ts";
 import { newId, nowIso } from "./db.ts";
 import { type DemoScript, demoActionScript, demoSweepScript, feedLine } from "./demo.ts";
-import { type Dispatcher, type Hub, isCrash, queuedNote } from "./hub.ts";
+import { ACCESS_APP, type Dispatcher, type Hub, isCrash, queuedNote } from "./hub.ts";
 import { GatewayToken } from "./gateway-token.ts";
 import { backoffMs, isRateLimited, isTransient, LaunchGate, RunCap } from "./launch-gate.ts";
 import { overloaded } from "./load.ts";
@@ -1326,23 +1326,40 @@ export class Agents implements Dispatcher {
   }
 
   async gatewayLogin(app: string) {
-    if (!/^https:\/\/[a-z0-9.-]+\/?$/i.test(app)) return;
-    const bin = existsSync("/opt/homebrew/bin/cloudflared") ? "/opt/homebrew/bin/cloudflared" : "cloudflared";
-    this.hub.toast("Opening the Access login in your browser…", "info");
-    const ok = await new Promise<boolean>((done) => {
-      const p = spawn(bin, ["access", "login", app], { stdio: "ignore" });
-      const t = setTimeout(() => { p.kill(); done(false); }, 5 * 60_000);
-      p.on("exit", (code) => { clearTimeout(t); done(code === 0); });
-      p.on("error", () => { clearTimeout(t); done(false); });
-    });
-    if (!ok) {
-      this.hub.toast("Login didn't finish. Run `cloudflared access login " + app + "` yourself.", "warn");
-      return;
-    }
+    if (!(await this.cloudflaredLogin(app))) return;
     this.gateway = {};
     this.hub.journal(`Model gateway login renewed (${new URL(app).host})`, { who: "hq" });
     this.hub.toast("Logged in. Sweeps resume.", "good");
     void this.sweep("transcripts");
+  }
+
+  /** "Log in now" on an `access-login:` card (`whq access-login`): log in, close the app's open cards. */
+  async accessLogin(app: string) {
+    if (!(await this.cloudflaredLogin(app))) return;
+    const host = new URL(app).host;
+    this.hub.closeAccessLoginCards(host, "logged in");
+    this.hub.journal(`Cloudflare Access login renewed (${host})`, { who: "hq" });
+    this.hub.toast(`Logged in to ${host}. Its job gets through on the next run.`, "good");
+  }
+
+  /** `cloudflared access login <app>`: one browser tab, 5 min to finish. False (with a toast) if it didn't. */
+  private async cloudflaredLogin(app: string) {
+    if (!ACCESS_APP.test(app)) return false;
+    const bin = process.env.WORK_HQ_CLOUDFLARED_BIN || (existsSync("/opt/homebrew/bin/cloudflared") ? "/opt/homebrew/bin/cloudflared" : "cloudflared");
+    this.hub.toast("Opening the Access login in your browser…", "info");
+    const ok = await new Promise<boolean>((done) => {
+      let p: ReturnType<typeof spawn>;
+      try {
+        p = spawn(bin, ["access", "login", app], { stdio: "ignore" });
+      } catch {
+        return done(false);
+      }
+      const t = setTimeout(() => { p.kill(); done(false); }, 5 * 60_000);
+      p.on("exit", (code) => { clearTimeout(t); done(code === 0); });
+      p.on("error", () => { clearTimeout(t); done(false); });
+    });
+    if (!ok) this.hub.toast("Login didn't finish. Run `cloudflared access login " + app + "` yourself.", "warn");
+    return ok;
   }
 
   /** The cmux workspace running this job, if listed. Only real cmux (or an injected finder) is asked: tests never reach the CLI. */

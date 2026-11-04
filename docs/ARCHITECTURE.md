@@ -41,6 +41,9 @@
   so every sweep would fail. Work HQ spots the "API key auth failed for provider …" error, asks once
   ("Log in now" runs `cloudflared access login <app>`, one tab), and pauses sweeps. It retries once
   every 30 min until a run works again.
+  A local job that needs another Access app (launchd scripts; first user: browser-run-growth) calls
+  `whq access-login <app>` instead of a 🍍: one "Log in now" card per app per day
+  (`access-login:<host>:<day>`, `Hub.accessLoginCard`), no triage job; `whq access-ok <app>` closes it.
 - **Headless pi runs over RPC, never with the prompt in argv** (`src/server/pi-rpc.ts`). Endpoint
   security (SentinelOne) SIGKILLs any exec whose argv holds a string over ~1 KB, so prompts go over
   stdin (`pi --mode rpc`) and `assertShortArgs` rejects anything over 512 bytes. Each tool run gets its

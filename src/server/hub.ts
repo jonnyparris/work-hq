@@ -17,6 +17,10 @@ import { LoadLog, loadNow } from "./load.ts";
 
 type Listener = (e: ServerEvent) => void;
 
+/** A Cloudflare Access app origin `cloudflared access login` may be run against: https and a bare host, nothing to inject. */
+export const ACCESS_APP = /^https:\/\/[a-z0-9.-]+\/?$/i;
+const ACCESS_LATER = "Later";
+
 export interface Dispatcher {
   /** `decision`: the one answer that sent this job ("<question> → <option>"); the prompt scopes the job to it. */
   dispatch(itemId: string, action: import("../shared/types.ts").ActionKind, note?: string, decision?: string): Promise<Job | undefined>;
@@ -24,6 +28,7 @@ export interface Dispatcher {
   /** Read a typed note against the question it was typed on. Throws if the read failed; undefined = question gone. */
   readNote?(questionId: string, text: string): Promise<NoteDecision | undefined>;
   gatewayLogin?(app: string): Promise<void>;
+  accessLogin?(app: string): Promise<void>;
   triage?(text: string, mode: "chat" | "pineapple" | "review"): Promise<unknown>;
   sweep?(name: "transcripts" | "calendar"): Promise<unknown>;
   /** Focus a job's cmux workspace. */
@@ -293,6 +298,43 @@ export class Hub {
   }
 
   /**
+   * A local job (launchd script) found its Cloudflare Access session for `app` lapsed: one "Log in now" card per
+   * app per day, key `access-login:<host>:<day>`. Replaces a free-text 🍍 per run, which sent a triage job each time
+   * (10-22..10-29: six of them for a ClickHouse app). Asking again while the card is open, or after "Later" that
+   * day, does nothing; after a login (that failed, or lapsed again) or `resolved`, a lapse asks again. Yesterday's
+   * card closes. `resolved`: the job got through, so close any open card for the app instead.
+   */
+  accessLoginCard(b: { app: string; reason?: unknown; resolved?: unknown }, now = new Date()) {
+    if (typeof b.app !== "string" || !ACCESS_APP.test(b.app)) throw new Error("app must be https://<host>");
+    const host = new URL(b.app).host;
+    const key = `access-login:${host}:${localDay(now)}`;
+    if (b.resolved === true) return { asked: false, closed: this.closeAccessLoginCards(host, "session back") };
+    const closed = this.closeAccessLoginCards(host, "day moved on", key);
+    if (this.store.lastAnswered(key)?.answer?.startsWith(ACCESS_LATER)) return { asked: false, closed, key };
+    const reason = typeof b.reason === "string" ? b.reason.trim().slice(0, 400) : "";
+    const q = this.ask({
+      kind: "open",
+      key,
+      badge: "Login expired",
+      priority: 80,
+      prompt: `Your Cloudflare Access login for ${host} lapsed`,
+      context: `${reason || "A local job needs it and can't open the browser itself."} Log in and the job's next run gets through.`,
+      options: [
+        { id: "login", label: "Log in now (opens one tab)", tone: "primary", effect: { type: "accessLogin", app: `https://${host}` } },
+        { id: "later", label: ACCESS_LATER, tone: "quiet", effect: { type: "noop" } },
+      ],
+    });
+    return { asked: !!q, closed, key };
+  }
+
+  /** Close the open `access-login:<host>:*` cards (all, or all but `keep`). Returns how many. */
+  closeAccessLoginCards(host: string, why: string, keep?: string) {
+    const cards = this.store.questions("open").filter((q) => q.key.startsWith(`access-login:${host}:`) && q.key !== keep);
+    for (const q of cards) this.expireQuestion(q.id, why);
+    return cards.length;
+  }
+
+  /**
    * `journalOpen`: also journal "prompt → answer" for an `open` question, unless the effect
    * already wrote that line (item-less status/open/noop do). The answer route sets it.
    */
@@ -408,6 +450,9 @@ export class Hub {
       case "gatewayLogin":
         void this.dispatcher?.gatewayLogin?.(effect.app);
         break;
+      case "accessLogin":
+        void this.dispatcher?.accessLogin?.(effect.app)?.catch((e) => this.toast(`Login failed: ${errText(e)}`, "warn"));
+        break;
       case "triage":
         // Not awaited: triage takes seconds and the card has already been answered.
         // A note typed with the tap is part of the answer ("Yes — but only the Q3 numbers").
@@ -484,6 +529,29 @@ export class Hub {
           else this.setStatus(id, "done", `rechecked: ${listed.find((p) => p.id === id)?.hint ?? "landed"}`);
         }
         if (skipped.length) this.toast(`Left open, an agent is on ${skipped.length === 1 ? "it" : "them"}: ${skipped.join("; ")}`, "info");
+        break;
+      }
+      case "closePicks": {
+        // The stale card: close the ticked cards (or all of them). Ticks only: a typed note can't be trusted to
+        // say which of several old cards to close, so it keeps the card and asks for ticks.
+        const listed = q?.picks ?? [];
+        const ticked = Array.isArray(ctx.picks) ? ctx.picks.filter((id) => listed.some((p) => p.id === id)) : [];
+        const ids = effect.all ? (note?.trim() ? [] : listed.map((p) => p.id)) : ticked;
+        if (!ids.length) {
+          if (q) this.reopen(q, 0);
+          this.toast(effect.all && note?.trim() ? "“Close all” takes no note. Tick the ones you mean, or clear the note." : "Tick the cards to close first.", "warn");
+          break;
+        }
+        const label = new Map(listed.map((p) => [p.id, p.label]));
+        const closed: string[] = [];
+        for (const id of ids) {
+          if (this.store.question(id)?.status !== "open") continue; // answered or closed elsewhere since
+          this.expireQuestion(id, "closed as stale");
+          closed.push(label.get(id) ?? id);
+        }
+        if (closed.length && q && !itemId) answerLine();
+        if (closed.length) this.journal(`Closed ${closed.length} stale card${closed.length === 1 ? "" : "s"}: ${closed.join("; ")}`, { who: "hq" });
+        else this.toast("Those cards were already closed.", "info");
         break;
       }
       case "flushJournal":
@@ -690,6 +758,18 @@ export class Hub {
     }
 
     const opt = d.pick ? q.options.find((o) => o.id === d.pick) : undefined;
+    // The stale card closes cards on ticks or a bare "Close all" tap: a note can't say which, so don't guess.
+    if (opt?.effect.type === "closePicks") {
+      // note() hid it for 15 min: it's still waiting on a tap, so show it again now.
+      const cur = this.store.question(q.id);
+      if (cur?.notBefore) {
+        cur.notBefore = undefined;
+        this.store.putQuestion(cur);
+        this.emit({ type: "question", data: cur });
+      }
+      this.toast("Tick the cards to close, or tap Close all. A note can't pick them.", "warn");
+      return;
+    }
     // "Open the link" keeps the question open; that's not an answer.
     if (opt && !((opt.effect.type === "open" || opt.effect.type === "focusSession") && opt.effect.keep)) {
       const words = opt.effect.type === "when" ? d.when?.trim() || text : note;
@@ -1033,9 +1113,11 @@ export function effectText(e: Effect): string {
     case "when": return "ask when (needs a note)";
     case "noop": return "noop (does nothing)";
     case "gatewayLogin": return "gateway login";
+    case "accessLogin": return `cloudflared access login ${e.app}`;
     case "commitPlan": return "commit the picked items to today";
     case "prepMeetings": return "dispatch prep for each ticked meeting";
     case "donePicks": return e.all ? "mark every listed item done" : "mark each ticked item done";
+    case "closePicks": return e.all ? "close every listed card" : "close each ticked card";
     case "flushJournal": return "save the journal to memory";
     case "sweep": return `run the ${e.name} sweep`;
     case "focusSession": return "focus the agent session";
@@ -1141,7 +1223,7 @@ export function sentAgent(action: ActionKind, title: string) {
 /** Effects that hand work to a job that runs after the toast: an agent, the scheduler, triage, a login. */
 export function runsLater(e: Effect): boolean {
   if (e.type === "multi") return e.effects.some(runsLater);
-  return e.type === "dispatch" || e.type === "when" || e.type === "triage" || e.type === "gatewayLogin" || e.type === "sweep" || e.type === "flushJournal";
+  return e.type === "dispatch" || e.type === "when" || e.type === "triage" || e.type === "gatewayLogin" || e.type === "accessLogin" || e.type === "sweep" || e.type === "flushJournal";
 }
 
 /** How many items a batched card's options act on (its widest multi of per-item status effects, or the picks a donePicks card acts on). 0 for a normal card. */

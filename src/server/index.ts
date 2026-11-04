@@ -200,6 +200,16 @@ const server = Bun.serve({
         }),
     },
 
+    // `whq access-login <app>`: a local job's Cloudflare Access login lapsed. One keyed "Log in now" card per app per
+    // day, no triage (hub.accessLoginCard). `resolved: true` (`whq access-ok`) closes it once the job gets through.
+    "/api/access-login": {
+      POST: (req) =>
+        handle(async () => {
+          const b = await body<{ app: string; reason?: unknown; resolved?: unknown }>(req);
+          return hub.accessLoginCard(b);
+        }),
+    },
+
     "/api/agent/report": {
       POST: (req) =>
         handle(async () => {

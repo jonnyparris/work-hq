@@ -241,7 +241,7 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
     const text = (words ?? note).trim();
     if (o?.effect.type === "when" && !text) return startWhen(optionId);
     // "Prep the ticked ones" / "Mark ticked done" with nothing ticked and no note would do nothing.
-    if (o && needsTicks(o.effect) && !ticks.length && !text) return;
+    if (o && blockedOption(o.effect, ticks.length, text)) return;
     // Typed or ⌘↵ submit while still dictating: release the mic now, drop the late final result.
     if (whenFor) { stopDictation(); setHeard(false); }
     setBusy(true);
@@ -375,8 +375,8 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
       ) : (
       <div className="options">
         {q.options.map((o, i) => (
-          <button key={o.id} className={`opt ${o.tone ?? ""}`} disabled={busy || (needsTicks(o.effect) && !ticks.length && !note.trim())} onClick={() => answer(o.id)}>
-            <kbd>{i + 1}</kbd>{q.kind === "plan" && o.id === "plan" ? (picked.length ? `Commit to ${picked.length}` : "Clear today") : o.effect.type === "prepMeetings" ? (ticks.length ? `Prep ${ticks.length}` : "Tick a meeting to prep") : o.effect.type === "donePicks" && !o.effect.all ? (ticks.length ? `Mark ${ticks.length} done` : "Tick the done ones") : o.label}
+          <button key={o.id} className={`opt ${o.tone ?? ""}`} disabled={busy || blockedOption(o.effect, ticks.length, note)} onClick={() => answer(o.id)}>
+            <kbd>{i + 1}</kbd>{q.kind === "plan" && o.id === "plan" ? (picked.length ? `Commit to ${picked.length}` : "Clear today") : o.effect.type === "prepMeetings" ? (ticks.length ? `Prep ${ticks.length}` : "Tick a meeting to prep") : o.effect.type === "donePicks" && !o.effect.all ? (ticks.length ? `Mark ${ticks.length} done` : "Tick the done ones") : o.effect.type === "closePicks" && !o.effect.all ? (ticks.length ? `Close ${ticks.length}` : "Tick the ones to close") : o.label}
           </button>
         ))}
       </div>
@@ -761,7 +761,17 @@ export function CoachTrack({ history }: { history: CoachOutcome[] }) {
 
 // ── Agents ────────────────────────────────────────────────────────────────
 /** Options that act on the card's ticked picks: no tick and no note, nothing to do. */
-const needsTicks = (e: Effect) => e.type === "prepMeetings" || (e.type === "donePicks" && !e.all);
+const needsTicks = (e: Effect) => e.type === "prepMeetings" || ((e.type === "donePicks" || e.type === "closePicks") && !e.all);
+
+/**
+ * Would tapping this do nothing? Tick options with no tick and no note. closePicks never reads a note: "Close ticked"
+ * needs a tick even with one, and "Close all" refuses one (the server keeps the card). Button and number keys both use it.
+ */
+export function blockedOption(e: Effect, ticked: number, note: string) {
+  const typed = Boolean(note.trim());
+  if (e.type === "closePicks") return e.all ? typed : !ticked;
+  return needsTicks(e) && !ticked && !typed;
+}
 
 export function AgentsPanel({ jobs, cmux, load, questions = [] }: { jobs: Job[]; cmux: boolean; load?: LoadNow; questions?: Question[] }) {
   const live = jobs.filter((j) => ["running", "blocked", "queued"].includes(j.status));

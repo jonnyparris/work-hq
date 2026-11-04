@@ -36,6 +36,9 @@ export function isOwner(attendee: string, aliases: string[] = config.owner.alias
   });
 }
 
+/** Mon–Fri. */
+export const isWorkday = (d: Date) => d.getDay() !== 0 && d.getDay() !== 6;
+
 /**
  * Milliseconds of work time between `from` and `to`: weekdays, inside `hours` ([start, end) local, may be fractional).
  * "4 work hours" set at 17:00 Friday means 13:00 Monday, not 21:00 Friday.
@@ -45,7 +48,7 @@ export function workMsBetween(from: Date, to: Date, hours: [number, number] = co
   const day = new Date(from);
   day.setHours(0, 0, 0, 0);
   for (; day < to; day.setDate(day.getDate() + 1)) {
-    if (day.getDay() === 0 || day.getDay() === 6) continue;
+    if (!isWorkday(day)) continue;
     const start = day.getTime() + hours[0] * 3600_000;
     const end = day.getTime() + hours[1] * 3600_000;
     total += Math.max(0, Math.min(end, to.getTime()) - Math.max(start, from.getTime()));
@@ -225,12 +228,17 @@ export class Prompter {
     open = this.open = store.questions("open");
     // Deferred questions (notBefore later) don't count against the total: they aren't nagging anyone.
     // Per-kind caps still count them, so "skip all posts till Thu" also stops new post questions.
-    let budget = CAP.total - open.filter((q) => !q.notBefore || Date.parse(q.notBefore) <= now.getTime()).length;
+    // Proposal cards have their own slots (CAP.proposal), and cards older than STALE_WORKDAYS sit on the one
+    // stale card (foldStale) instead: neither counts. 10-24..11-01: 8 of 15 open cards were over 3 workdays old,
+    // the budget sat at 0, and no proposal was asked for a week.
+    const old = staleBefore(now);
+    let budget = CAP.total - open.filter((q) => !deferred(q, now) && !isProposalCard(q) && !isStale(q, old)).length;
     this.foldReviews(stale, now);
+    if (this.foldStale(open, old, now)) budget--;
 
     const hour = now.getHours() + now.getMinutes() / 60;
     const [dayStart, dayEnd] = config.sweeps.workHours;
-    const workday = now.getDay() !== 0 && now.getDay() !== 6;
+    const workday = isWorkday(now);
     const today = localDate(now);
 
     // Items an agent is already working on (verify leaves them in inbox): don't re-ask and re-dispatch.
@@ -339,6 +347,36 @@ export class Prompter {
     // 10-17..10-19 the reflection kept finding the move hadn't happened, and only guessed why. The answer goes
     // to the journal as "M5 move: … → Done / Hand to an agent / Not today", which nightly-reflect §7 reads.
     this.askCoachMove(now, open);
+
+    // 8. Reflection proposals — the ones that never turn into anything. Before the budget check: they have their own slots.
+    const proposals = items
+      // A proposal merged into an existing item (proposalOf) counts too, whatever that item's kind or source.
+      .filter((i) => i.status === "proposed" && (i.proposalOf || (i.kind === "idea" && i.source.label?.startsWith("Proposals"))))
+      // Newest reflection first; within it High Priority before Medium/Low, then file order. createdAt is the
+      // file order. memory sync writes rows top to bottom, so `updated` creeps up in file order, and store.items() is
+      // ORDER BY updated DESC: without a tiebreak a day's proposals came out last-first (10-18: #9 and #8 asked, #1 never).
+      .sort((a, b) => propDate(b).localeCompare(propDate(a)) || propRank(a) - propRank(b) || a.createdAt.localeCompare(b.createdAt));
+    // Own slots: only open proposal cards count, never the total budget. Full (the usual case): no lookups at all.
+    let slots = CAP.proposal - openCount("dispatch", isProposalCard);
+    for (const it of proposals) {
+      if (slots <= 0) break;
+      const asked = this.ask({
+        kind: "dispatch",
+        itemId: it.id,
+        key: `proposal:${it.id}`,
+        priority: 45,
+        prompt: it.title,
+        context: `${propSource(it)} ${excerpt(it.detail) ?? ""}`,
+        options: [
+          opt("go", "Do it — send an agent", { type: "dispatch", action: "work" }, "primary"),
+          ...whenOptions(now).slice(1, 2),
+          WHEN_OPT,
+          opt("no", "Reject", { type: "status", status: "dropped", note: "rejected proposal" }, "danger"),
+        ],
+        cooldownMin: 5 * 24 * 60,
+      });
+      if (asked) slots--;
+    }
 
     if (budget <= 0) return;
 
@@ -463,36 +501,6 @@ export class Prompter {
             opt("drop", "Drop it", { type: "status", status: "dropped" }, "danger"),
           ],
           cooldownMin: 3 * 24 * 60,
-        })
-      )
-        budget--;
-    }
-
-    // 8. Reflection proposals — the ones that never turn into anything.
-    const proposals = items
-      // A proposal merged into an existing item (proposalOf) counts too, whatever that item's kind or source.
-      .filter((i) => i.status === "proposed" && (i.proposalOf || (i.kind === "idea" && i.source.label?.startsWith("Proposals"))))
-      // Newest reflection first; within it High Priority before Medium/Low, then file order. createdAt is the
-      // file order. memory sync writes rows top to bottom, so `updated` creeps up in file order, and store.items() is
-      // ORDER BY updated DESC: without a tiebreak a day's proposals came out last-first (10-18: #9 and #8 asked, #1 never).
-      .sort((a, b) => propDate(b).localeCompare(propDate(a)) || propRank(a) - propRank(b) || a.createdAt.localeCompare(b.createdAt));
-    for (const it of proposals) {
-      if (budget <= 0 || openCount("dispatch") >= CAP.proposal) break;
-      if (
-        this.ask({
-          kind: "dispatch",
-          itemId: it.id,
-          key: `proposal:${it.id}`,
-          priority: 45,
-          prompt: it.title,
-          context: `${propSource(it)} ${excerpt(it.detail) ?? ""}`,
-          options: [
-            opt("go", "Do it — send an agent", { type: "dispatch", action: "work" }, "primary"),
-            ...whenOptions(now).slice(1, 2),
-            WHEN_OPT,
-            opt("no", "Reject", { type: "status", status: "dropped", note: "rejected proposal" }, "danger"),
-          ],
-          cooldownMin: 5 * 24 * 60,
         })
       )
         budget--;
@@ -759,6 +767,55 @@ export class Prompter {
   }
 
   /**
+   * Cards older than STALE_WORKDAYS go on one card: tick the ones to close, close them all, or keep them. The
+   * cards themselves stay open (an agent's question or a due slot keeps its buttons), they just stop counting
+   * against the total (the budget in `tick`). "Keep them" remembers those cards, so the next stale card lists only new ones.
+   * An open stale card follows the board: cards closed elsewhere drop off, newly stale ones join, it goes when
+   * none are left. Returns whether it asked a new card.
+   */
+  private foldStale(open: Question[], old: number, now: Date): boolean {
+    const store = this.hub.store;
+    const kept = this.staleKept(open);
+    const cards = open
+      .filter((q) => isStale(q, old) && !deferred(q, now) && !kept.has(q.id))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const prev = store.openQuestionByKey(STALE_KEY);
+    if (prev) {
+      if (!cards.length) this.hub.expireQuestion(prev.id, "nothing left");
+      else {
+        const next = staleCard(cards);
+        if ((prev.picks ?? []).map((p) => p.id).join() === next.picks.map((p) => p.id).join() && prev.prompt === next.prompt) return false;
+        Object.assign(prev, next);
+        store.putQuestion(prev);
+        this.hub.emit({ type: "question", data: prev });
+      }
+      return false;
+    }
+    if (!cards.length) return false;
+    return Boolean(this.ask({ ...staleCard(cards), key: STALE_KEY, cooldownMin: STALE_COOLDOWN_MIN }));
+  }
+
+  /** Cards a "Keep them" answer on the stale card kept, still open. Folds in the latest answer once. */
+  private staleKept(open: Question[]): Set<string> {
+    const store = this.hub.store;
+    let saved: { ids: string[]; seen?: string } = { ids: [] };
+    try {
+      saved = { ...saved, ...JSON.parse(store.kv(STALE_KEPT_KEY) ?? "{}") };
+    } catch {}
+    const openIds = new Set(open.map((q) => q.id));
+    const last = store.lastAnswered(STALE_KEY);
+    let ids = saved.ids.filter((id) => openIds.has(id));
+    let dirty = ids.length !== saved.ids.length;
+    if (last?.status === "answered" && last.answer?.startsWith(STALE_KEEP_LABEL) && saved.seen !== last.id) {
+      ids = [...new Set([...ids, ...(last.picks ?? []).map((p) => p.id).filter((id) => openIds.has(id))])];
+      saved.seen = last.id;
+      dirty = true;
+    }
+    if (dirty) store.setKv(STALE_KEPT_KEY, JSON.stringify({ ids, seen: saved.seen }));
+    return new Set(ids);
+  }
+
+  /**
    * Agent cards on an item whose links have all landed (every MR / PR merged, every ticket done) are about work
    * that's finished, whoever merged it: close them, and put the item on the merged card (it goes to `waiting`, the
    * merged card's lane) so the owner confirms "done" with one tap. Unless another agent card stays open on it: then
@@ -1014,7 +1071,7 @@ export function wrapDue(closed: Pick<Question, "key" | "status" | "answer" | "op
 /** Next workday at 09:30: tomorrow, or Monday from Friday/the weekend. */
 export function nextWorkMorning(now: Date) {
   const d = atLocal(9, 30, 1, now);
-  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+  while (!isWorkday(d)) d.setDate(d.getDate() + 1);
   return d;
 }
 
@@ -1111,6 +1168,56 @@ function codeNoun(ls: Landed[]) {
 
 function landedBadge(ls: Landed[]) {
   return { mr: `${codeNoun(ls)} merged`, jira: "Ticket done", both: "Merged / done" }[refKinds(ls)];
+}
+
+/** Cards asked more than this many workdays ago stop counting against the total and go on the one stale card. */
+export const STALE_WORKDAYS = 3;
+const STALE_KEY = "stale";
+const STALE_KEPT_KEY = "stale:kept";
+const STALE_KEEP_LABEL = "Keep them";
+/** At most one new stale card a day: closing some and leaving the rest shouldn't redraw it on the next tick. */
+const STALE_COOLDOWN_MIN = 20 * 60;
+
+/** The moment `n` workdays (Mon–Fri) before `now`, same time of day. */
+export function workdaysAgo(n: number, now = new Date()) {
+  const d = new Date(now);
+  for (let left = n; left > 0; ) {
+    d.setDate(d.getDate() - 1);
+    if (isWorkday(d)) left--;
+  }
+  return d;
+}
+
+/** Cards asked before this (ms) are stale. */
+export const staleBefore = (now: Date) => workdaysAgo(STALE_WORKDAYS, now).getTime();
+const deferred = (q: Pick<Question, "notBefore">, now: Date) => Boolean(q.notBefore) && Date.parse(q.notBefore!) > now.getTime();
+const isProposalCard = (q: Pick<Question, "key">) => q.key.startsWith("proposal:");
+/** Older than STALE_WORKDAYS, and not a card with its own slots or the stale card itself. */
+const isStale = (q: Pick<Question, "key" | "createdAt">, before: number) => q.key !== STALE_KEY && !isProposalCard(q) && Date.parse(q.createdAt) < before;
+
+/** The stale card lists the oldest this many; the rest join as those close. */
+const STALE_PICKS = 20;
+const DAY_FMT = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short" });
+
+/** "N cards older than 3 workdays": tick the ones to close (the oldest STALE_PICKS). Pick id = question id. */
+export function staleCard(cards: Array<Pick<Question, "id" | "prompt" | "badge" | "kind" | "createdAt">>) {
+  const n = cards.length;
+  const shown = cards.slice(0, STALE_PICKS);
+  const day = (iso: string) => DAY_FMT.format(new Date(iso));
+  const picks: QuestionPick[] = shown.map((q) => ({ id: q.id, label: excerpt(plain(q.prompt), 120) ?? q.prompt, hint: `${q.badge ?? q.kind} · asked ${day(q.createdAt)}` }));
+  return {
+    kind: "state" as const,
+    badge: "Stale cards",
+    priority: 40,
+    prompt: n === 1 ? `1 card older than ${STALE_WORKDAYS} workdays: close it or keep it?` : `${n} cards older than ${STALE_WORKDAYS} workdays: close or keep?`,
+    context: `They no longer count against the card limit. Close the ones that don't matter any more. Kept cards stay open and don't come back here.${n > shown.length ? ` Showing the oldest ${shown.length}; the rest join as these go (Keep keeps these ${shown.length}).` : ""}`,
+    picks,
+    options: [
+      opt("close", "Close ticked", { type: "closePicks" }, "primary"),
+      opt("all", n === 1 ? "Close it" : n > shown.length ? `Close these ${shown.length}` : `Close all ${n}`, { type: "closePicks", all: true }, "danger"),
+      opt("keep", STALE_KEEP_LABEL, { type: "noop" }, "quiet"),
+    ] satisfies QuestionOption[],
+  };
 }
 
 const MERGED_KEY = "wait:merged";

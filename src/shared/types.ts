@@ -174,6 +174,8 @@ export type Effect =
   | { type: "noop" }
   /** Run `cloudflared access login <app>` for the model gateway pi uses (one browser tab). */
   | { type: "gatewayLogin"; app: string }
+  /** Run `cloudflared access login <app>` for any other Access app a local job needs (`whq access-login`). */
+  | { type: "accessLogin"; app: string }
   /** Run triage again on words a failed triage kept (command bar, 🍍, review notes). */
   | { type: "triage"; text: string; mode: "chat" | "pineapple" | "review" }
   /** Morning plan: the items picked on the card (sent with the answer as `itemIds`) go to today. */
@@ -182,6 +184,8 @@ export type Effect =
   | { type: "prepMeetings" }
   /** Recheck card: mark done each item ticked in the card's `picks` (pick id = item id, hint = what landed), or every pick with `all`. */
   | { type: "donePicks"; all?: boolean }
+  /** Stale card: close each card ticked in `picks` (pick id = question id), or every pick with `all`. */
+  | { type: "closePicks"; all?: boolean }
   /** Write the journal to memory now (wrap-up). */
   | { type: "flushJournal" }
   /** Run a sweep now ("Scan the transcript now"). */

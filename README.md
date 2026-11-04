@@ -198,6 +198,8 @@ JSON
 bin/whq say "PAY-2198 is closed"           # same as the command bar
 bin/whq pineapple "…what was just said…"   # capture from any terminal
 bin/whq journal "learn: tightened the gchat skill"   # a journal line from any agent, no triage
+bin/whq access-login https://app.example.com "nightly job skipped"   # one "Log in now" card per app per day, no triage
+bin/whq access-ok https://app.example.com    # the job got through: close that card
 ```
 
 For the details and what could move to the cloud later, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
