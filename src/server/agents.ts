@@ -421,7 +421,7 @@ export class Agents implements Dispatcher {
     const useCmux = this.cmuxDeps.available();
     const title = `Boss check \u00b7 ${cards.length} agent card${cards.length === 1 ? "" : "s"}${sessions.length ? `, ${sessions.length} live` : ""}`;
     const job = this.newJob("action", "boss", title, useCmux ? "cmux" : "headless");
-    this.hub.journal(`Boss check sent: ${cards.length} cards, ${sessions.length} live sessions`);
+    this.hub.journal(`Boss check sent: ${cards.length} cards, ${sessions.length} live sessions`, { who: "hq" });
     if (config.demo) {
       this.patch(job.id, { status: "done", startedAt: nowIso(), finishedAt: nowIso(), summary: `Demo: would check ${cards.length} cards and ${sessions.length} sessions` });
       return this.hub.store.job(job.id);
@@ -940,7 +940,9 @@ export class Agents implements Dispatcher {
       const { id, note, ...patch } = u;
       if (patch.scheduledFor && !patch.status) patch.status = "scheduled";
       if (patch.status) applied++; // a detail-only edit doesn't back "Marked … done"
-      if (patch.status) this.hub.setStatus(id, patch.status, note);
+      // 11-01: a 🍍 capture's status change is the triage model's call, not words the owner typed, so it
+      // journals as hq. Confirmation is unchanged (true): the owner captured it, and dedupe/re-ask rely on it.
+      if (patch.status) this.hub.setStatus(id, patch.status, note, mode === "pineapple" ? "hq" : "you", true);
       const { status: _s, ...rest } = patch;
       if (Object.keys(rest).length) this.hub.updateItem(id, { ...rest, confirmedAt: nowIso() });
     }
@@ -987,7 +989,7 @@ export class Agents implements Dispatcher {
       const id = c.id.startsWith("new:") ? created[Number(c.id.slice(4))]?.id : c.id;
       const item = id ? this.hub.store.item(id) : undefined;
       if (!item || !c.start || Number.isNaN(Date.parse(c.start))) continue;
-      if (item.scheduledFor !== c.start) this.hub.schedule(item.id, c.start, item.when ?? new Date(c.start).toLocaleString());
+      if (item.scheduledFor !== c.start) this.hub.schedule(item.id, c.start, item.when ?? new Date(c.start).toLocaleString(), mode === "pineapple" ? "hq" : "you");
       void this.calendarBlock(item.id, c.start, c.durationMin ?? 30);
     }
     return { missed, applied, bulkDispatched };

@@ -219,18 +219,20 @@ export class Hub {
     return next;
   }
 
-  /** A human-driven change. Records confirmation + journal. */
-  setStatus(id: string, status: ItemStatus, note?: string, who: JournalEntry["who"] = "you") {
-    const item = this.updateItem(id, { status, confirmedAt: who === "you" ? nowIso() : undefined });
+  /** A status change + journal line. `who` is who decided (the journal reads `you` as the owner's own words);
+   *  `confirm` stamps confirmedAt (defaults to who === "you"; false leaves any earlier stamp alone). A 🍍 triage
+   *  move is who "hq" with confirm true: the owner captured it, the model picked the status. */
+  setStatus(id: string, status: ItemStatus, note?: string, who: JournalEntry["who"] = "you", confirm = who === "you") {
+    const item = this.updateItem(id, { status, confirmedAt: confirm ? nowIso() : undefined });
     this.journal(`${label(status)}: ${item.title}${note ? ` — ${note}` : ""}`, { itemId: id, who });
     // Anything open about this item is now moot.
     if (["done", "dropped"].includes(status)) this.closeQuestionsFor(id, `item ${status}`);
     return item;
   }
 
-  schedule(id: string, at: string, labelText: string) {
+  schedule(id: string, at: string, labelText: string, who: JournalEntry["who"] = "you") {
     const item = this.updateItem(id, { status: "scheduled", scheduledFor: at, when: labelText, confirmedAt: nowIso() });
-    this.journal(`Scheduled ${labelText}: ${item.title}`, { itemId: id });
+    this.journal(`Scheduled ${labelText}: ${item.title}`, { itemId: id, who });
     return item;
   }
 

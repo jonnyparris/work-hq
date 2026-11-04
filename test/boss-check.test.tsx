@@ -85,6 +85,8 @@ test("bossCheck sends one item-less job whose prompt lists each agent card with 
   expect(launched[0]).toContain("Asked by job job_asker (work, now done): Opened #150");
   expect(launched[0]).toContain("closeQuestions");
   expect(launched[0]).not.toContain("Not an agent card");
+  // A system line, not something the owner said (11-01: the reflection read `you` lines as first-hand).
+  expect(hub.store.journal().find((e) => e.text.startsWith("Boss check sent"))?.who).toBe("hq");
   // A second click while it runs hands back the same job.
   hub.store.putJob({ ...hub.store.job(job.id)!, status: "running" });
   expect((await agents.bossCheck())!.id).toBe(job.id);

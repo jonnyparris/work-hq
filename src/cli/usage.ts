@@ -282,7 +282,7 @@ for (const q of dead.sort((a, b) => a.answeredAt!.localeCompare(b.answeredAt!)))
 p();
 
 // ── what the owner typed that wasn't an answer ─────────────────────────────
-const structured = /^(Note on |Re "|Done:|Dropped:|Waiting:|Scheduled |Will do |Already booked |Proposed:|Committed today:|Started:|Captured:|Dispatched |Corrected:|Added:|Batch |Tried to schedule)/;
+const structured = /^(Note on |Re "|Done:|Dropped:|Waiting:|Scheduled[: ]|Will do |Already booked |Proposed:|Committed today:|Started:|Captured:|Dispatched |Corrected:|Added:|Batch |Tried to schedule)/;
 const said = journal.filter((j) => j.who === "you" && !structured.test(j.text) && !/ → /.test(j.text));
 p("## Typed into the command bar");
 if (!said.length) p("None.");
