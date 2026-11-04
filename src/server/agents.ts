@@ -32,6 +32,24 @@ export function checkStoppedOption(job: Pick<Job, "id" | "title" | "status" | "s
   return { id: "check", label: "Check for me", hint: "An agent reads its transcript, commits, MRs", effect: { type: "dispatch", action: "verify", note: stoppedJobNote(job) } };
 }
 
+/**
+ * A stopped job's after-card leads with "Check for me" (primary) and puts "Done" last, quiet: Done claims the work
+ * landed, and a stopped job is the one case that's least likely. 10-29: five stopped cards got "Done" within 5s,
+ * two hadn't landed; 11-02 the same tap closed CF Access. Order matters twice over: the focus card's 1-key and the
+ * deck row both take options in order. One primary per card, and the check takes it ("Still mine today" loses its
+ * primary tone). Idempotent; no check option → unchanged.
+ */
+export function leadWithCheck(options: QuestionOption[]): QuestionOption[] {
+  const check = options.find((o) => o.id === "check");
+  if (!check) return options;
+  const done = options.filter((o) => o.id === "done").map((o) => ({ ...o, tone: "quiet" as const }));
+  const look = options.filter((o) => o.id === "look");
+  const rest = options
+    .filter((o) => !["check", "done", "look"].includes(o.id))
+    .map(({ tone, ...o }) => (tone === "primary" ? o : { ...o, tone }));
+  return [{ ...check, tone: "primary" }, ...rest, ...done, ...look];
+}
+
 /** Open cards an agent raised (or raised about an agent): what the boss check verifies. */
 export function bossCards(hub: Hub): BossCard[] {
   const jobs = hub.store.jobs(500);
@@ -192,7 +210,7 @@ export class Agents implements Dispatcher {
   constructor(private hub: Hub, private cmuxDeps: CmuxDeps = realCmux) {
     hub.dispatcher = this;
     ensureSiteLink();
-    this.addCheckToAfterCards();
+    this.migrateAfterCards();
     // One `cmux tree` for every job the restart caught, not one per job: it's a blocking CLI call at boot.
     // Only a successful tree is cached: a failed call falls back to a per-job lookup rather than "no workspace".
     let tree: Map<string, string> | undefined;
@@ -223,16 +241,24 @@ export class Agents implements Dispatcher {
     }
   }
 
-  /** After-cards drawn before "Check for me" existed get it. Idempotent; drop once no pre-10-29 card can be open. */
-  private addCheckToAfterCards() {
+  /**
+   * Old open after-cards get today's shape: ones drawn before "Check for me" existed (10-29) get it, and stopped-job
+   * ones drawn before 11-03 lead with it (leadWithCheck). Idempotent; drop the whole thing once no after-card from
+   * before 11-03 can be open.
+   */
+  private migrateAfterCards() {
     for (const q of this.hub.store.questions("open")) {
-      if (!q.key.startsWith("after:") || q.options.some((o) => o.id === "check")) continue;
+      if (!q.key.startsWith("after:")) continue;
       const job = this.hub.store.job(q.key.slice("after:".length));
       if (!job) continue;
-      const at = q.options.findIndex((o) => o.id === "look");
-      const options = [...q.options];
-      options.splice(at < 0 ? options.length : at, 0, checkStoppedOption(job));
-      this.hub.store.putQuestion({ ...q, options });
+      let options = q.options;
+      if (!options.some((o) => o.id === "check")) {
+        const at = options.findIndex((o) => o.id === "look");
+        options = [...options];
+        options.splice(at < 0 ? options.length : at, 0, checkStoppedOption(job));
+      }
+      if (job.status === "failed") options = leadWithCheck(options);
+      if (JSON.stringify(options) !== JSON.stringify(q.options)) this.hub.store.putQuestion({ ...q, options });
     }
   }
 
@@ -737,6 +763,14 @@ export class Agents implements Dispatcher {
     // If the agent didn't settle the item (and didn't ask its own question), ask the owner.
     const agentAsked = this.hub.store.questions("open").some((q) => q.itemId === item?.id && q.key.startsWith("agent:"));
     if (item && item.status === "doing" && !agentAsked) {
+      const options: QuestionOption[] = [
+        { id: "done", label: "Done", tone: "good", effect: { type: "status", status: "done" } },
+        { id: "wait", label: "Waiting on someone", effect: { type: "status", status: "waiting" } },
+        { id: "today", label: "Still mine today", tone: "primary", effect: { type: "status", status: "today" } },
+        { id: "when", label: "Scheduled for…", hint: "say when", effect: { type: "when" } },
+        checkStoppedOption({ ...after, status: r.ok ? "done" : "failed", error: r.error }),
+        ...(job.workspace ? [{ id: "look", label: "Show me the session", tone: "quiet" as const, effect: { type: "focusSession" as const, keep: true } }] : []),
+      ];
       this.hub.ask({
         kind: "state",
         itemId: item.id,
@@ -745,14 +779,7 @@ export class Agents implements Dispatcher {
         priority: 75,
         prompt: `${r.ok ? "Agent finished" : "Agent stopped"}: ${item.title}. Where does it stand?`,
         context: after.summary ?? r.error,
-        options: [
-          { id: "done", label: "Done", tone: "good", effect: { type: "status", status: "done" } },
-          { id: "wait", label: "Waiting on someone", effect: { type: "status", status: "waiting" } },
-          { id: "today", label: "Still mine today", tone: "primary", effect: { type: "status", status: "today" } },
-          { id: "when", label: "Scheduled for…", hint: "say when", effect: { type: "when" } },
-          checkStoppedOption({ ...after, status: r.ok ? "done" : "failed", error: r.error }),
-          ...(job.workspace ? [{ id: "look", label: "Show me the session", tone: "quiet" as const, effect: { type: "focusSession" as const, keep: true } }] : []),
-        ],
+        options: r.ok ? options : leadWithCheck(options),
       });
     }
     this.hub.emit({ type: "notify", data: { title: r.ok ? "Agent finished" : "Agent failed", body: job.title } });

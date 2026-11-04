@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { Agents, type CmuxDeps } from "../src/server/agents.ts";
+import { Agents, type CmuxDeps, leadWithCheck } from "../src/server/agents.ts";
 import { Store } from "../src/server/db.ts";
 import { Hub } from "../src/server/hub.ts";
 import { stoppedJobNote, transcriptSearch } from "../src/server/prompts.ts";
@@ -107,5 +107,56 @@ test("an after-card drawn before the option existed gets it at boot, before Show
   new Agents(hub, noCmux);
   new Agents(hub, noCmux);
   const q = hub.store.questions("open").find((x) => x.key === `after:${job.id}`)!;
-  expect(q.options.map((o) => o.id)).toEqual(["done", "check", "look"]);
+  // A failed job's card also leads with the check (see below).
+  expect(q.options.map((o) => o.id)).toEqual(["check", "done", "look"]);
+});
+
+// 10-29: five stopped cards answered "Done" in 5s, two hadn't landed. 11-02: same tap closed CF Access, not done.
+test("a stopped job's after-card leads with Check for me; Done goes last and quiet", () => {
+  const { hub, job } = setup("s", "running");
+  new Agents(hub, noCmux);
+  const q = hub.store.questions("open").find((x) => x.key === `after:${job.id}`)!;
+  expect(q.badge).toBe("Agent stopped");
+  expect(q.options.map((o) => o.id)).toEqual(["check", "wait", "today", "when", "done"]);
+  const tone = Object.fromEntries(q.options.map((o) => [o.id, o.tone]));
+  expect(tone).toEqual({ check: "primary", wait: undefined, today: undefined, when: undefined, done: "quiet" });
+  expect(q.options.filter((o) => o.tone === "primary")).toHaveLength(1);
+});
+
+test("options without a check (a finished job's card shape) pass through untouched", () => {
+  const opts = [
+    { id: "done", label: "Done", tone: "good" as const, effect: { type: "status" as const, status: "done" as const } },
+    { id: "today", label: "Still mine today", tone: "primary" as const, effect: { type: "status" as const, status: "today" as const } },
+  ];
+  expect(leadWithCheck(opts)).toBe(opts);
+});
+
+test("open stopped cards drawn before 11-03 are reordered at boot; finished ones aren't; twice is a no-op", () => {
+  const old = (id: string, status: Job["status"]) => {
+    const s = setup(id, status);
+    s.hub.ask({
+      kind: "state",
+      itemId: s.item.id,
+      key: `after:${s.job.id}`,
+      priority: 75,
+      prompt: "Agent stopped: Fix the thing. Where does it stand?",
+      options: [
+        { id: "done", label: "Done", tone: "good", effect: { type: "status", status: "done" } },
+        { id: "today", label: "Still mine today", tone: "primary", effect: { type: "status", status: "today" } },
+        { id: "check", label: "Check for me", effect: { type: "dispatch", action: "verify", note: "n" } },
+        { id: "look", label: "Show me the session", tone: "quiet", effect: { type: "focusSession", keep: true } },
+      ],
+    });
+    return s;
+  };
+  const failed = old("f", "failed");
+  new Agents(failed.hub, noCmux);
+  new Agents(failed.hub, noCmux);
+  const fq = failed.hub.store.questions("open").find((x) => x.key === `after:${failed.job.id}`)!;
+  expect(fq.options.map((o) => [o.id, o.tone])).toEqual([["check", "primary"], ["today", undefined], ["done", "quiet"], ["look", "quiet"]]);
+
+  const finished = old("d", "done");
+  new Agents(finished.hub, noCmux);
+  const dq = finished.hub.store.questions("open").find((x) => x.key === `after:${finished.job.id}`)!;
+  expect(dq.options.map((o) => o.id)).toEqual(["done", "today", "check", "look"]);
 });
