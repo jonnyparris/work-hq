@@ -315,11 +315,15 @@ export class Prompter {
     // Asked before noon only, but an open card keeps following the calendar all day (drops started meetings, expires).
     if (workday && hour >= dayStart && (hour < 12 || this.hub.store.openQuestionByKey(`prep:${today}`))) this.askPrep(now, today);
 
-    // 4. Wrap-up, once per workday, 90 min before the end of the day.
-    if (workday && hour >= dayEnd - 1.5 && hour < dayEnd + 3) {
+    // 4. Wrap-up, once per workday, 90 min before the end of the day. Ignored two days running → back off (wrapDue).
+    // The journal still flushes on the scheduler's cadence on a skipped day; only the "is this the truth" check is lost.
+    // Today's card already exists: ask() won't re-ask it (once), so skip the history query on every later tick.
+    const wrapKey = `wrap:${today}`;
+    const wrapAsked = () => !!(this.hub.store.openQuestionByKey(wrapKey) || this.hub.store.lastAnswered(wrapKey));
+    if (workday && hour >= dayEnd - 1.5 && hour < dayEnd + 3 && (wrapAsked() || wrapDue(this.hub.store.closedByPrefix("wrap:", 100), today))) {
       this.ask({
         kind: "wrap",
-        key: `wrap:${today}`,
+        key: wrapKey,
         once: true,
         priority: 88,
         prompt: "Wrap up. What actually happened today?",
@@ -981,6 +985,31 @@ export function reviewUtterance(q: Pick<Question, "prompt" | "key" | "context">,
 }
 
 const PUSH_1H = "Push 1 hour";
+
+/**
+ * Should today's wrap-up be asked? `closed`: closed `wrap:<date>` questions, any order (the caller passes the 100
+ * most recently closed; only the trailing run of ignored days matters). A day counts as answered when one of its
+ * cards got a real answer: a bare "Ask me in an hour" whose follow-up then expired is still an ignored day, but a
+ * snooze with typed text counts (deliberate: he wrote something, so he's reading the card). One ignored day is forgiven (busy,
+ * OOO). Two in a row: wait 2 calendar days after the last card; three or more: 4 (a Thursday miss skips to Monday).
+ * An answer resets it to daily. 10-26..10-30 every card expired unanswered; with this, that week asks 10-26, 10-27
+ * and 10-29 only, and 11-02 (answered) still gets its card.
+ */
+export function wrapDue(closed: Pick<Question, "key" | "status" | "answer" | "options">[], today: string) {
+  const days = new Map<string, boolean>();
+  for (const q of closed) {
+    const day = q.key.slice("wrap:".length);
+    if (!q.key.startsWith("wrap:") || day >= today) continue;
+    const snoozed = q.options.some((o) => o.effect.type === "snooze" && o.label === q.answer);
+    days.set(day, (days.get(day) ?? false) || (q.status === "answered" && !snoozed));
+  }
+  const past = [...days].sort(([a], [b]) => b.localeCompare(a));
+  let ignored = 0;
+  while (ignored < past.length && !past[ignored]![1]) ignored++;
+  if (ignored < 2) return true;
+  const gap = ignored === 2 ? 2 : 4;
+  return (Date.parse(today) - Date.parse(past[0]![0])) / DAY >= gap;
+}
 
 /** Next workday at 09:30: tomorrow, or Monday from Friday/the weekend. */
 export function nextWorkMorning(now: Date) {

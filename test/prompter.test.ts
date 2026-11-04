@@ -434,6 +434,54 @@ test("yesterday's snoozed wrap-up expires instead of doubling up", async () => {
   expect(wrap().map((q) => q.key)).toEqual(["wrap:2026-09-24"]);
 });
 
+// 10-26..10-30: five workdays, every wrap-up expired unanswered. Back off: three cards that week, not five.
+test("wrap-up backs off after two ignored days, and an answer resets it", async () => {
+  const [, end] = (await import("../src/server/config.ts")).config.sweeps.workHours;
+  const wrapOn = (m: number, d: number) => {
+    p.tick(new Date(2026, m, d, end - 1)); // also expires yesterday's open card ("day moved on")
+    return hub.store.openQuestionByKey(`wrap:2026-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`);
+  };
+  expect([26, 27, 28, 29, 30].map((d) => !!wrapOn(9, d))).toEqual([true, true, false, true, false]);
+  const mon = wrapOn(10, 2)!;
+  expect(mon).toBeTruthy(); // four days after 10-29
+  await hub.answer(mon.id, "flush");
+  expect(!!wrapOn(10, 3)).toBe(true); // answered → daily again
+});
+
+test("a snooze whose follow-up expires is still an ignored day", async () => {
+  const [, end] = (await import("../src/server/config.ts")).config.sweeps.workHours;
+  const day = (d: number) => new Date(2026, 9, d, end - 1);
+  const open = (d: number) => hub.store.openQuestionByKey(`wrap:2026-10-${d}`);
+  p.tick(day(26));
+  await hub.answer(open(26)!.id, "later");
+  p.tick(day(27));
+  expect(open(27)).toBeTruthy(); // one ignored day is forgiven
+  p.tick(day(28));
+  expect(open(28)).toBeUndefined();
+});
+
+test("wrapDue: one ignored day is forgiven, then 2- and 4-day gaps", async () => {
+  const { wrapDue } = await import("../src/server/prompter.ts");
+  const opts = [
+    { id: "flush", label: "That's the truth — save it", effect: { type: "flushJournal" as const } },
+    { id: "later", label: "Ask me in an hour", effect: { type: "snooze" as const, minutes: 60 } },
+  ];
+  const q = (day: string, status: "answered" | "expired", answer = status === "answered" ? opts[0]!.label : "day moved on") => ({ key: `wrap:${day}`, status, answer, options: opts });
+  const x = (...days: string[]) => days.map((d) => q(d, "expired"));
+  expect(wrapDue([], "2026-10-28")).toBe(true);
+  expect(wrapDue(x("2026-10-27"), "2026-10-28")).toBe(true);
+  expect(wrapDue(x("2026-10-27", "2026-10-26"), "2026-10-28")).toBe(false);
+  expect(wrapDue(x("2026-10-27", "2026-10-26"), "2026-10-29")).toBe(true);
+  expect(wrapDue(x("2026-10-29", "2026-10-27", "2026-10-26"), "2026-11-01")).toBe(false);
+  expect(wrapDue(x("2026-10-29", "2026-10-27", "2026-10-26"), "2026-11-02")).toBe(true);
+  // Answered (a typed note on the snooze counts too) breaks the streak; a bare snooze doesn't.
+  expect(wrapDue([...x("2026-10-27"), q("2026-10-27", "answered"), ...x("2026-10-26")], "2026-10-28")).toBe(true);
+  expect(wrapDue([...x("2026-10-27"), q("2026-10-27", "answered", "Ask me in an hour — busy"), ...x("2026-10-26")], "2026-10-28")).toBe(true);
+  expect(wrapDue([...x("2026-10-27"), q("2026-10-27", "answered", "Ask me in an hour"), ...x("2026-10-26")], "2026-10-28")).toBe(false);
+  // Today's own card never counts against today.
+  expect(wrapDue(x("2026-10-28", "2026-10-27"), "2026-10-28")).toBe(true);
+});
+
 test("morning plan not re-asked after it's answered", async () => {
   p.tick(at(10));
   const plan = () => hub.store.questions("open").filter((q) => q.kind === "plan");
