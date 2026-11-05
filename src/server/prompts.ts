@@ -121,7 +121,7 @@ function itemBlock(it: Item) {
     it.post?.wikiDraft ? `Wiki draft: ${it.post.wikiDraft}` : "",
     it.post?.siteDraft ? `Site draft: ${it.post.siteDraft}` : "",
     it.detail ? `\nDetail:\n${it.detail}` : "",
-    it.notes?.length ? `\n${owner.name}'s notes on it (newest last):\n${it.notes.map((n) => `- ${n.at.slice(0, 10)}${n.who === "hq" ? " (Work HQ's reply)" : ""}: ${n.text}`).join("\n")}` : "",
+    it.notes?.length ? `\n${owner.name}'s notes on it (newest last):\n${it.notes.map((n) => `- ${n.at.slice(0, 10)}${n.who === "hq" ? " (Work HQ's reply)" : n.who === "agent" ? " (an agent's note)" : ""}: ${n.text}`).join("\n")}` : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -558,7 +558,7 @@ function laterThisWeek(now: Date) {
 
 /** "Explain simply" in the item drawer. No tools: it explains only what the item already says. */
 export function explainPrompt(it: Item, ctx: { now: Date }) {
-  const notes = (it.notes ?? []).slice(-5).map((n) => `- ${n.who === "hq" ? "Work HQ" : owner.name}: ${n.text}`).join("\n");
+  const notes = (it.notes ?? []).slice(-5).map((n) => `- ${n.who === "hq" ? "Work HQ" : n.who === "agent" ? "An agent" : owner.name}: ${n.text}`).join("\n");
   return `You explain an item from ${owner.name}'s work list in plain English. They opened it and the text below is not clear to them.
 Now: ${ctx.now.toString()}
 

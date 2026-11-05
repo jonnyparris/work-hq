@@ -385,8 +385,9 @@ JSON can be an agent, anywhere.
 
 `bin/work-hq usage [--since] [--until] [--db]` reads the database read-only and prints markdown for a reflection
 to work from. The "nothing happened" check looks for a state change, schedule or dispatch on the same item within
-5 minutes of a note typed while its card was open. Notes added from the item drawer, or posted by an agent
-with no card open, are reported as context.
+5 minutes of a note typed while its card was open. Notes added from the item drawer with no card open are
+reported as context. Lines an agent posted (`PATCH /api/items/:id` with `who: "agent"`) journal as `agent`, so
+the digest's typed-input sections leave them out.
 
 ## Files
 

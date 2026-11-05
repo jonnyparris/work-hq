@@ -74,7 +74,8 @@ export interface Item {
   post?: PostInfo;
   /** Last time the owner confirmed the state themselves. The whole point of the app. */
   confirmedAt?: string;
-  /** What the owner typed about it. Kept apart from `detail` so memory re-imports never wipe it. */
+  /** What the owner typed about it (plus Work HQ's replies and agents' notes, marked by `who`). Kept apart from
+   *  `detail` so memory re-imports never wipe it. */
   notes?: ItemNote[];
   /**
    * Set when a reflection proposal merged into this item (same title as an active-todos line, or a twin from
@@ -105,8 +106,9 @@ export interface ItemExplain {
 export interface ItemNote {
   at: string;
   text: string;
-  /** "hq" = Work HQ's own reply to a note (an ELI5, an answer). Absent = the owner typed it. */
-  who?: "hq";
+  /** "hq" = Work HQ's own reply to a note (an ELI5, an answer). "agent" = an agent posted it (PATCH with
+   *  who "agent"). Absent = the owner typed it. */
+  who?: "hq" | "agent";
 }
 
 /** What a typed note on a question means. Produced by the note reader (pi) or the cheap pattern match. */

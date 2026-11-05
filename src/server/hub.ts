@@ -237,6 +237,36 @@ export class Hub {
     return item;
   }
 
+  /**
+   * PATCH /api/items/:id. `who: "agent"` in the body marks a change an agent made over the API outside a job
+   * (a nightly reflection dropping a killed item with curl, an agent jotting context): its journal lines and notes read `agent`, not
+   * `you`, and a note stays context instead of going to the note reader (an agent's "check the logs" isn't the
+   * owner's instruction). Attribution only: confirmedAt is still stamped, as before, so a quiet memory re-import
+   * can't revive an item an agent dropped (updateItem). Absent or "you" = the drawer, unchanged.
+   * 10-26 proposals: agent notes and drops journalled as `you`, so the digest counted them as the owner's typed notes.
+   */
+  async patchItem(
+    id: string,
+    b: { status?: ItemStatus; note?: string; who?: string | null; title?: string; detail?: string; kind?: Item["kind"]; project?: string },
+  ): Promise<Item> {
+    const { status, note, who: rawWho, ...rest } = b;
+    if (rawWho != null && rawWho !== "you" && rawWho !== "agent") throw new Error(`who must be "you" or "agent", not ${JSON.stringify(String(rawWho).slice(0, 40))}`);
+    const who = rawWho === "agent" ? "agent" : "you";
+    let item = this.store.item(id);
+    if (!item) throw new Error("no such item");
+    if (Object.keys(rest).length) {
+      item = this.updateItem(item.id, { ...rest, confirmedAt: nowIso() });
+      this.journal(`Corrected: ${item.title}${rest.kind ? ` (now a ${rest.kind})` : ""}`, { itemId: item.id, who });
+    }
+    if (status) {
+      if (note?.trim()) item = this.updateItem(item.id, { notes: appendNote(item, note.trim(), who === "agent" ? "agent" : undefined) });
+      return this.setStatus(item.id, status, note, who, true);
+    }
+    // No status: an owner's instruction goes to the note reader like a card note; background stays on the item.
+    if (note?.trim()) await this.itemNote(item.id, note, who);
+    return this.store.item(item.id) ?? item;
+  }
+
   schedule(id: string, at: string, labelText: string, who: JournalEntry["who"] = "you") {
     const item = this.updateItem(id, { status: "scheduled", scheduledFor: at, when: labelText, confirmedAt: nowIso() });
     this.journal(`Scheduled ${labelText}: ${item.title}`, { itemId: id, who });
@@ -733,7 +763,7 @@ export class Hub {
     if (!t) throw new Error("empty note");
     const item = q.itemId ? this.store.item(q.itemId) : undefined;
     const noteId = this.journal(item ? `Note on ${item.title}: ${t}` : `Re "${q.prompt}": ${t}`, { itemId: item?.id, questionId: q.id }).id;
-    if (item) this.updateItem(item.id, { notes: [...(item.notes ?? []), { at: nowIso(), text: t }].slice(-20), confirmedAt: nowIso() });
+    if (item) this.updateItem(item.id, { notes: appendNote(item, t), confirmedAt: nowIso() });
     this.park(q, new Date(Date.now() + 15 * 60_000).toISOString());
 
     const quick = quickNote(t, q);
@@ -768,16 +798,17 @@ export class Hub {
    * kept on the item, journalled, nothing runs. An instruction ("do it", "ask Bernardo", "check the logs") goes
    * through the same reader as a card note: on the item's open card if it has one, else on a hidden one-off
    * `drawer:` card that expires if the reader calls it context. 10-15 14:58: "do it" on it_mv7a0vsjsewtj was
-   * filed as context and the item sat in today for six days.
+   * filed as context and the item sat in today for six days. `who: "agent"` (an agent's PATCH) is always context.
    */
-  async itemNote(itemId: string, text: string): Promise<{ pending: boolean; routed: boolean }> {
+  async itemNote(itemId: string, text: string, who: "you" | "agent" = "you"): Promise<{ pending: boolean; routed: boolean }> {
     const item = this.store.item(itemId);
     if (!item) throw new Error("no such item");
     const t = text.trim();
     if (!t) throw new Error("empty note");
-    if (!isInstruction(t) || ["done", "dropped"].includes(item.status)) {
-      this.updateItem(item.id, { notes: [...(item.notes ?? []), { at: nowIso(), text: t }].slice(-20) });
-      this.journal(`Note on ${item.title}: ${t}`, { itemId: item.id });
+    // An agent's note is always context: the reader acts on the owner's instructions only.
+    if (who === "agent" || !isInstruction(t) || ["done", "dropped"].includes(item.status)) {
+      this.updateItem(item.id, { notes: appendNote(item, t, who === "agent" ? "agent" : undefined) });
+      this.journal(`Note on ${item.title}: ${t}`, { itemId: item.id, who });
       return { pending: false, routed: false };
     }
     const card = this.store
@@ -1307,6 +1338,11 @@ export function openLocal(url: string) {
   try {
     Bun.spawn([process.env.WORK_HQ_OPEN_BIN || "open", url], { stdout: "ignore", stderr: "ignore" });
   } catch {}
+}
+
+/** Item notes keep the last 20. `who` absent = the owner's words; "agent" = an agent posted it over the API. */
+export function appendNote(item: Pick<Item, "notes">, text: string, who?: "agent"): Item["notes"] {
+  return [...(item.notes ?? []), { at: nowIso(), text, ...(who ? { who } : {}) }].slice(-20);
 }
 
 export function label(s: ItemStatus) {

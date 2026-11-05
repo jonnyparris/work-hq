@@ -207,6 +207,9 @@ bin/whq access-login https://app.example.com "nightly job skipped"   # one "Log 
 bin/whq access-ok https://app.example.com    # the job got through: close that card
 ```
 
+An agent outside a job that changes an item directly sends `who: "agent"`, so the journal doesn't read it as your words:
+`curl -X PATCH localhost:7717/api/items/it_… -d '{"status":"dropped","note":"killed 11-07","who":"agent"}'`.
+
 For the details and what could move to the cloud later, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Safety

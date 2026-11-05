@@ -331,8 +331,8 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
       {/* A card with tick-boxes repeats its list in the context for typed notes; show only the lead line. */}
       {q.context && <Md className="ctx md" text={q.picks?.length ? q.context.split("\n")[0]! : q.context} />}
       {item?.notes?.some((n) => !(n.who === "hq" && q.context?.includes(n.text))) ? (
-        <div className="ctx prior-notes" title="What you said about this before">
-          {item.notes.filter((n) => !(n.who === "hq" && q.context?.includes(n.text))).slice(-2).map((n, i) => <div key={`${n.at}-${i}`}>{n.who === "hq" ? "↳ HQ" : "✎"} <span className="when">{relDay(n.at)}</span> {n.text}</div>)}
+        <div className="ctx prior-notes" title="Notes on this before (✎ yours)">
+          {item.notes.filter((n) => !(n.who === "hq" && q.context?.includes(n.text))).slice(-2).map((n, i) => <div key={`${n.at}-${i}`}>{n.who === "hq" ? "↳ HQ" : n.who === "agent" ? "↳ agent" : "✎"} <span className="when">{relDay(n.at)}</span> {n.text}</div>)}
         </div>
       ) : null}
       {q.kind === "plan" && <Planner items={items} picked={picked} setPicked={setPicked} />}

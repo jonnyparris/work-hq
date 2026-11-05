@@ -94,23 +94,8 @@ const server = Bun.serve({
           return item;
         }),
       PATCH: (req) =>
-        handle(async () => {
-          const b = await body<{ status?: ItemStatus; note?: string; title?: string; detail?: string; kind?: any; project?: string }>(req);
-          const { status, note, ...rest } = b;
-          let item = hub.store.item(req.params.id);
-          if (!item) throw new Error("no such item");
-          if (Object.keys(rest).length) {
-            item = hub.updateItem(item.id, { ...rest, confirmedAt: nowIso() });
-            hub.journal(`Corrected: ${item.title}${rest.kind ? ` (now a ${rest.kind})` : ""}`, { itemId: item.id });
-          }
-          if (status) {
-            if (note?.trim()) item = hub.updateItem(item.id, { notes: [...(item.notes ?? []), { at: nowIso(), text: note.trim() }].slice(-20) });
-            return hub.setStatus(item.id, status, note);
-          }
-          // No status: an instruction goes to the note reader like a card note; background stays on the item.
-          if (note?.trim()) await hub.itemNote(item.id, note);
-          return hub.store.item(item.id) ?? item;
-        }),
+        // Agents pass `who: "agent"` so their changes don't journal as the owner's typing (hub.patchItem).
+        handle(async () => hub.patchItem(req.params.id, await body<{ status?: ItemStatus; note?: string; who?: string; title?: string; detail?: string; kind?: any; project?: string }>(req))),
     },
 
     // "Explain simply" in the drawer: waits for the plain-English read (a few seconds, no tools) and returns the item.
