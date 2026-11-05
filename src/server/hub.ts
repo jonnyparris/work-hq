@@ -15,6 +15,7 @@ import { newId, nowIso, type Store } from "./db.ts";
 import { findTwin, isOpen } from "./dedupe.ts";
 import { LoadLog, loadNow } from "./load.ts";
 import { stoppedJobNote } from "./prompts.ts";
+import { pruneReviews } from "./review-fold.ts";
 import { foldRest } from "./stopped-fold.ts";
 
 type Listener = (e: ServerEvent) => void;
@@ -32,7 +33,7 @@ export interface Dispatcher {
   gatewayLogin?(app: string): Promise<void>;
   accessLogin?(app: string): Promise<void>;
   triage?(text: string, mode: "chat" | "pineapple" | "review"): Promise<unknown>;
-  sweep?(name: "transcripts" | "calendar"): Promise<unknown>;
+  sweep?(name: "transcripts" | "calendar", opts?: { since?: string }): Promise<unknown>;
   /** Focus a job's cmux workspace. */
   focus?(jobId: string): unknown;
 }
@@ -648,7 +649,7 @@ export class Hub {
         if (q && !itemId) answerLine();
         break;
       case "sweep":
-        void this.dispatcher?.sweep?.(effect.name)?.catch((e) => this.toast(`Sweep failed: ${errText(e)}`, "warn"));
+        void this.dispatcher?.sweep?.(effect.name, effect.since ? { since: effect.since } : undefined)?.catch((e) => this.toast(`Sweep failed: ${errText(e)}`, "warn"));
         if (q && !itemId) answerLine();
         break;
       case "focusSession": {
@@ -1044,26 +1045,45 @@ export class Hub {
   // ── meetings the transcript sweep has read ──────────────────────────────
   /**
    * Remember which meetings a transcript sweep covered and close their "just ended" questions:
-   * once the notes are scanned, asking "anything you committed to?" is noise.
+   * once the notes are scanned, asking "anything you committed to?" is noise. Called after every successful
+   * transcript sweep, even one that read nothing: the folded "Yesterday's meetings" card loses those meetings, closes
+   * once none are left, and is redrawn against the sweeps' coverage (review-fold.ts). Returns the cards it closed,
+   * per-meeting and folded.
    */
   markScanned(meetings: Array<{ title: string; start?: string; url?: string }>, now = new Date()) {
-    if (!meetings.length) return 0;
     const keep = now.getTime() - 3 * 86400_000;
     const at = now.toISOString();
     const list = [...this.scannedMeetings(), ...meetings.filter((m) => m.title?.trim()).map((m) => ({ title: m.title.trim(), start: m.start, at }))]
       .filter((m) => Date.parse(m.at) > keep)
       .slice(-200);
     this.store.setKv("scannedMeetings", JSON.stringify(list));
+    const scanned = (ev: Pick<CalendarEvent, "title" | "start">) => list.some((m) => meetingMatches(m, ev));
     let closed = 0;
     for (const q of this.store.questions("open")) {
       if (q.kind !== "review" || !q.eventId) continue;
       const ev = this.store.events().find((e) => e.id === q.eventId);
-      if (ev && this.wasScanned(ev)) {
+      if (ev && scanned(ev)) {
         this.expireQuestion(q.id, "transcript scanned");
         closed++;
       }
     }
-    return closed;
+    return closed + pruneReviews(this, scanned, now);
+  }
+
+  /** Record what a successful transcript sweep read (review-fold.ts: noNotes). Kept 4 days, like the folds that use it. */
+  noteSweepWindow(since: string, at: string, now = new Date()) {
+    const keep = now.getTime() - 4 * 86400_000;
+    const list = [...this.sweepWindows(), { since, at }].filter((w) => Date.parse(w.at) > keep).slice(-200);
+    this.store.setKv("transcriptWindows", JSON.stringify(list));
+  }
+
+  sweepWindows(): Array<{ since: string; at: string }> {
+    try {
+      const v = JSON.parse(this.store.kv("transcriptWindows") ?? "[]");
+      return Array.isArray(v) ? v : [];
+    } catch {
+      return [];
+    }
   }
 
   scannedMeetings(): Array<{ title: string; start?: string; at: string }> {

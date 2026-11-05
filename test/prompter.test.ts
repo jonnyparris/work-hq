@@ -609,6 +609,92 @@ describe("meeting-ended cards from earlier days", () => {
     expect(open[0]!.prompt).toBe("Yesterday's meetings (2): anything you committed to?");
   });
 
+  // 10-28..11-04: every folded card got "Scan the transcripts now", and a scan never touched it (no eventId).
+  test("a transcript scan takes its meetings off the folded card, and closes it when none are left", () => {
+    hub.setEvents([ev("a", "Design sync", 9), ev("b", "Jo / Alex", 14)], "2026-09-23");
+    p.tick(at(9, 40));
+    p.tick(at(14, 40));
+    p.tick(thu(7));
+    const d = hub.store.questions("open").find((q) => q.key === "reviews:2026-09-24")!;
+    expect(d.prompt).toBe("Yesterday's meetings (2): anything you committed to?");
+    expect(hub.markScanned([{ title: "Design sync", start: new Date(2026, 8, 23, 9).toISOString() }], thu(9))).toBe(0);
+    const after = hub.store.question(d.id)!;
+    expect(after.status).toBe("open");
+    expect(after.prompt).toBe("Yesterday's meetings (1): anything you committed to?");
+    expect(after.context).toBe("- Jo / Alex");
+    expect(JSON.parse(hub.store.kv("reviews:2026-09-24")!).map((m: any) => m.title)).toEqual(["Jo / Alex"]);
+    // Same title on another day (a weekly) isn't this meeting.
+    hub.markScanned([{ title: "Jo / Alex", start: new Date(2026, 8, 16, 14).toISOString() }], thu(9, 30));
+    expect(hub.store.question(d.id)!.status).toBe("open");
+    expect(hub.markScanned([{ title: "Jo / Alex - 2026/09/23 14:00 WEST - Notes by Gemini", start: new Date(2026, 8, 23, 14).toISOString() }], thu(10))).toBe(1);
+    expect(hub.store.question(d.id)).toMatchObject({ status: "expired", answer: "transcript scanned" });
+    // No new folded card on the next ticks.
+    p.tick(thu(10, 5));
+    expect(hub.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(0);
+  });
+
+  test("a meeting a sweep already read doesn't fold", () => {
+    hub.setEvents([ev("a", "Design sync", 9), ev("b", "Jo / Alex", 14)], "2026-09-23");
+    p.tick(at(9, 40));
+    p.tick(at(14, 40));
+    // Read after the day rolled over, before the fold tick: the per-meeting cards are still open.
+    hub.store.setKv("scannedMeetings", JSON.stringify([{ title: "Design sync", start: new Date(2026, 8, 23, 9).toISOString(), at: thu(6).toISOString() }]));
+    p.tick(thu(7));
+    const open = hub.store.questions("open").filter((q) => q.kind === "review");
+    expect(open.map((q) => q.context)).toEqual(["- Jo / Alex"]);
+  });
+
+  // The scan used to sweep from the cursor (today's midnight), so it never read the meetings on the card.
+  test("the folded card's scan reads from the earliest folded day", async () => {
+    const { reviewDigest } = await import("../src/server/review-fold.ts");
+    const d = reviewDigest([{ title: "Design sync", day: "2026-09-22" }, { title: "Jo / Alex", day: "2026-09-23" }], thu(7));
+    expect(d.prompt).toBe("Earlier meetings (2): anything you committed to?");
+    expect(d.options[0]!.effect).toEqual({ type: "sweep", name: "transcripts", since: new Date(2026, 8, 22).toISOString() });
+  });
+
+  test("the scan passes its start to the sweep", async () => {
+    const calls: unknown[] = [];
+    hub.dispatcher = { dispatch: async () => undefined, scheduleFromWords: async () => {}, sweep: async (...a: unknown[]) => void calls.push(a) } as any;
+    hub.setEvents([ev("a", "Design sync", 9)], "2026-09-23");
+    p.tick(at(9, 40));
+    p.tick(thu(9));
+    const d = hub.store.questions("open").find((q) => q.key === "reviews:2026-09-24")!;
+    await hub.answer(d.id, "scan");
+    expect(calls).toEqual([["transcripts", { since: new Date(2026, 8, 23).toISOString() }]]);
+  });
+
+  test("'Nothing new' leads once sweeps have read past every meeting and found no notes", () => {
+    const setup = () => {
+      const h = new Hub(new Store(":memory:"));
+      h.setEvents([ev("a", "Design sync", 9), ev("b", "Jo / Alex", 14)], "2026-09-23");
+      const pr = new Prompter(h);
+      pr.tick(at(9, 40));
+      pr.tick(at(14, 40));
+      return { h, pr };
+    };
+    const card = (h: Hub) => h.store.questions("open").find((q) => q.key === "reviews:2026-09-24")!;
+    // Yesterday's sweeps read from 08:00 to 14:50: Jo / Alex ended 14:30, its notes could land until 15:00. Scan leads.
+    const gap = setup();
+    gap.h.noteSweepWindow(at(8).toISOString(), at(12).toISOString(), thu(7));
+    gap.h.noteSweepWindow(at(11, 55).toISOString(), at(14, 50).toISOString(), thu(7));
+    // A morning sweep reads from today's midnight only: it covers nothing on the card (11-05 review F1).
+    gap.h.noteSweepWindow(thu(0).toISOString(), thu(6, 30).toISOString(), thu(7));
+    gap.pr.tick(thu(7));
+    expect(card(gap.h).options.map((o) => [o.id, o.tone])).toEqual([["scan", "primary"], ["none", "quiet"]]);
+    expect(card(gap.h).context).not.toContain("No meeting notes");
+    // Joined end to end the windows run past 15:00: nothing found, so "Nothing new" leads.
+    const full = setup();
+    full.h.noteSweepWindow(at(8).toISOString(), at(12).toISOString(), thu(7));
+    full.h.noteSweepWindow(at(11, 55).toISOString(), at(18).toISOString(), thu(7));
+    full.pr.tick(thu(7));
+    expect(card(full.h).options.map((o) => [o.id, o.tone])).toEqual([["none", "primary"], ["scan", "quiet"]]);
+    expect(card(full.h).context).toBe("- Design sync\n- Jo / Alex\nNo meeting notes found for these.");
+    // The gap card flips after a sweep that reads the missing stretch and finds nothing (markScanned with no meetings).
+    gap.h.noteSweepWindow(at(0).toISOString(), thu(9).toISOString(), thu(9));
+    expect(gap.h.markScanned([], thu(9))).toBe(0);
+    expect(card(gap.h).options.map((o) => [o.id, o.tone])).toEqual([["none", "primary"], ["scan", "quiet"]]);
+  });
+
   test("reviewUtterance carries the meeting list for a folded card only", async () => {
     const { reviewUtterance } = await import("../src/server/prompter.ts");
     expect(reviewUtterance({ prompt: "X just ended.", key: "review:e1", context: "Type it" }, "will do Y")).toBe("X just ended.\nwill do Y");

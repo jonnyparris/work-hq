@@ -27,6 +27,7 @@ import {
 } from "./prompts.ts";
 import { cleanupWorktree, createWorktree, repoFor, type WorktreeResult } from "./worktrees.ts";
 import { foldStopped, isFoldCard } from "./stopped-fold.ts";
+import { BACKFILL_DAYS } from "./review-fold.ts";
 
 /** The after-card's "Check for me": a verify agent reads what the stopped job left (see stoppedJobNote). */
 export function checkStoppedOption(job: Pick<Job, "id" | "title" | "status" | "summary" | "error" | "session">): QuestionOption {
@@ -849,10 +850,20 @@ export class Agents implements Dispatcher {
 
   // ── sweeps (headless) ──────────────────────────────────────────────────
   private sweeping = new Set<string>();
+  private pendingSince = new Map<string, string>();
 
   /** `{ rerun: true }`: failed after the laptop slept mid-run; the scheduler runs it again on its next awake tick. */
   async sweep(name: "transcripts" | "calendar", opts: { since?: string } = {}): Promise<{ rerun?: boolean } | undefined> {
-    if (this.sweeping.has(name)) return;
+    if (this.sweeping.has(name)) {
+      // A backfill tapped mid-sweep (the folded card's scan; that card is already answered) rides the next
+      // scheduled sweep, which goes through the scheduler's restart hold and wake grace.
+      const next = opts.since && earlierIso(this.pendingSince.get(name), opts.since);
+      if (next) {
+        this.pendingSince.set(name, next);
+        this.hub.toast("A transcript scan is already running: the earlier days go with the next one.", "info");
+      }
+      return;
+    }
     if (config.demo) {
       this.sweeping.add(name);
       return this.demoSweep(name).then(() => undefined).finally(() => this.sweeping.delete(name));
@@ -866,10 +877,18 @@ export class Agents implements Dispatcher {
       const job = this.newJob("sweep", name, name === "transcripts" ? "Scan meeting transcripts" : "Read the calendar", "headless");
       let prompt: string;
       let through: string | undefined;
+      let since = "";
+      const startedAt = nowIso();
+      // A backfill: the folded card's scan, or one queued while another sweep ran (or put back after a sleep).
+      const backfillFrom = name === "transcripts" ? earlierIso(opts.since, this.pendingSince.get(name)) : undefined;
+      if (name === "transcripts") this.pendingSince.delete(name);
       if (name === "transcripts") {
         const midnight = new Date(day);
         midnight.setHours(0, 0, 0, 0);
-        const since = opts.since ?? (state.cursor && state.cursor > midnight.toISOString() ? state.cursor : midnight.toISOString());
+        // A backfill reads at most BACKFILL_DAYS back, however long the folded card sat open.
+        since = backfillFrom
+          ? laterIso(backfillFrom, new Date(day.getTime() - BACKFILL_DAYS * 86400_000).toISOString())!
+          : state.cursor && state.cursor > midnight.toISOString() ? state.cursor : midnight.toISOString();
         const known = this.hub.store.items().filter((i) => i.source.type === "transcript" || i.status !== "dropped").map((i) => i.title);
         prompt = transcriptSweepPrompt(job.id, since, known);
       } else {
@@ -883,19 +902,25 @@ export class Agents implements Dispatcher {
         this.patch(job.id, { status: "failed", error, finishedAt: nowIso() });
         this.hub.putSync({ ...this.hub.store.syncState(name), error });
         if (r.slept && !this.cancelled(job.id)) {
+          // The rerun carries the backfill too (the card that asked for it is already answered).
+          if (backfillFrom) this.pendingSince.set(name, earlierIso(this.pendingSince.get(name), backfillFrom)!);
           this.line(job.id, "\u21bb slept mid-run: rerunning on the next awake tick");
           return { rerun: true };
         }
         return;
       }
       const { created } = this.hub.ingestReport({ ...report, jobId: job.id, eventsThrough: through }, name === "transcripts" ? "transcript" : "calendar");
-      if (name === "transcripts") this.hub.markScanned(scannedFrom(report, this.hub.store.items().filter((i) => created.includes(i.id))));
+      if (name === "transcripts") {
+        this.hub.noteSweepWindow(since, startedAt);
+        this.hub.markScanned(scannedFrom(report, this.hub.store.items().filter((i) => created.includes(i.id)), Boolean(backfillFrom)));
+      }
       this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: report.summary });
       this.hub.putSync({
         ...this.hub.store.syncState(name),
         lastOkAt: nowIso(),
         error: undefined,
-        cursor: name === "transcripts" ? report.cursor ?? state.cursor : `${report.events?.length ?? 0} events`,
+        // A backfill (`since`, the folded card's scan) reads older docs: its newest can be behind the cursor.
+        cursor: name === "transcripts" ? (backfillFrom ? laterIso(report.cursor, state.cursor) ?? state.cursor : report.cursor ?? state.cursor) : `${report.events?.length ?? 0} events`,
         through: name === "calendar" && report.events ? through : state.through,
       });
       if (created.length) this.hub.toast(`${created.length} new from transcripts`, "good");
@@ -1647,9 +1672,13 @@ export function gatewayAuthError(text: string): { provider: string; app?: string
   return { provider: (m[1] ?? m[2])!, app };
 }
 
-/** Meetings a transcript sweep read: what it says it read, plus the meeting named on each item it made ("Delta Weekly 15:00"). */
-export function scannedFrom(report: AgentReport, created: Item[]): Array<{ title: string; start?: string }> {
+/**
+ * Meetings a transcript sweep read: what it says it read, plus the meeting named on each item it made ("Delta Weekly
+ * 15:00", placed today). `backfill`: the sweep read earlier days, so a bare time can't be placed; its own list only.
+ */
+export function scannedFrom(report: AgentReport, created: Item[], backfill = false): Array<{ title: string; start?: string }> {
   const out: Array<{ title: string; start?: string }> = [...(report.meetings ?? [])];
+  if (backfill) return out;
   for (const i of created) {
     const m = /^(.*\S)\s+(\d{1,2}):(\d{2})$/.exec(i.source.label ?? "");
     if (!m) continue;
@@ -1659,6 +1688,22 @@ export function scannedFrom(report: AgentReport, created: Item[]): Array<{ title
     out.push({ title: m[1]!, start: d.toISOString() });
   }
   return out;
+}
+
+/** The later of two ISO times; an unparseable or missing one loses, both → undefined. */
+export function laterIso(a?: string, b?: string) {
+  return pickIso(a, b, (x, y) => y > x);
+}
+
+/** The earlier of two ISO times; an unparseable or missing one loses, both → undefined. */
+export function earlierIso(a?: string, b?: string) {
+  return pickIso(a, b, (x, y) => y < x);
+}
+
+function pickIso(a: string | undefined, b: string | undefined, takeB: (ta: number, tb: number) => boolean) {
+  const ta = Date.parse(a ?? ""), tb = Date.parse(b ?? "");
+  if (!Number.isFinite(ta)) return Number.isFinite(tb) ? b : undefined;
+  return Number.isFinite(tb) && takeB(ta, tb) ? b : a;
 }
 
 function localDay(d: Date) {

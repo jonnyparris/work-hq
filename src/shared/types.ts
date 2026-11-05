@@ -195,8 +195,8 @@ export type Effect =
   | { type: "stoppedPicks"; act: "check" | "rerun"; all?: boolean; jobs: Record<string, string> }
   /** Write the journal to memory now (wrap-up). */
   | { type: "flushJournal" }
-  /** Run a sweep now ("Scan the transcript now"). */
-  | { type: "sweep"; name: "transcripts" | "calendar" }
+  /** Run a sweep now ("Scan the transcript now"). `since` (ISO, transcripts only): read from there, not the cursor (the folded card's earlier days). */
+  | { type: "sweep"; name: "transcripts" | "calendar"; since?: string }
   /**
    * Focus the cmux session of the question's item's latest job; toast if it was closed. `keep`: the card stays
    * open, like `open` with keep — looking at the session isn't an answer (10-19: the after-card closed, item stuck on doing).

@@ -14,6 +14,7 @@ import { plain } from "./parse.ts";
 import { type PrRef, PrStates, prRefs } from "./pr-state.ts";
 import { openUrl } from "./prompts.ts";
 import { cardItemIds, isFoldCard, pruneFold } from "./stopped-fold.ts";
+import { readMeetings, redrawReviews, REVIEWS_PREFIX, reviewDigest, type StaleMeeting } from "./review-fold.ts";
 
 const MIN = 60_000;
 const DAY = 86_400_000;
@@ -753,24 +754,19 @@ export class Prompter {
   private foldReviews(stale: StaleMeeting[], now: Date) {
     if (!stale.length) return;
     const today = localDate(now);
-    const key = `reviews:${today}`;
+    const key = `${REVIEWS_PREFIX}${today}`;
     const prev = this.hub.store.openQuestionByKey(key);
-    let seen: StaleMeeting[] = [];
-    try {
-      if (prev) seen = JSON.parse(this.hub.store.kv(key) ?? "[]");
-    } catch {}
+    const seen = prev ? readMeetings(this.hub, key) : [];
+    // A sweep already read its notes (after the day rolled over, before this tick): nothing to ask about it.
+    const fresh = stale.filter((m) => !m.start || !this.hub.wasScanned({ title: m.title, start: m.start }));
     // Chronological, not the order the open questions came back in (ORDER BY updated ties within a ms).
-    const meetings = [...seen, ...stale]
+    const meetings = [...seen, ...fresh]
       .filter((m, i, all) => all.findIndex((x) => x.title === m.title && x.day === m.day) === i)
       .sort((a, b) => (a.start ?? a.day).localeCompare(b.start ?? b.day));
+    if (prev) return redrawReviews(this.hub, prev, meetings, now);
+    if (!meetings.length) return;
     this.hub.store.setKv(key, JSON.stringify(meetings));
-    const q = reviewDigest(meetings, now);
-    if (prev) {
-      Object.assign(prev, { prompt: q.prompt, context: q.context });
-      this.hub.store.putQuestion(prev);
-      this.hub.emit({ type: "question", data: prev });
-      return;
-    }
+    const q = reviewDigest(meetings, now, this.hub.sweepWindows());
     const [h] = config.sweeps.workHours;
     const start = atLocal(Math.floor(h), Math.round((h % 1) * 60), 0, now);
     this.ask({ ...q, key, ...(now < start ? { notBefore: start.toISOString() } : {}) });
@@ -920,7 +916,7 @@ export class Prompter {
         }
         if (day >= today) continue;
         this.hub.expireQuestion(q.id, "day moved on");
-        stale.push({ title: ev?.title ?? q.prompt.replace(/ just ended\. Anything you committed to\?$/, ""), day, start: start.toISOString() });
+        stale.push({ title: ev?.title ?? q.prompt.replace(/ just ended\. Anything you committed to\?$/, ""), day, start: start.toISOString(), ...(ev?.end ? { end: ev.end } : {}) });
       }
     }
     return stale;
@@ -1026,30 +1022,9 @@ export function prepCard(picks: QuestionPick[]) {
   };
 }
 
-/** A meeting-ended card folded into the morning digest. `start` (ISO) orders the list; absent on older kv rows. */
-type StaleMeeting = { title: string; day: string; start?: string };
-
-/** The folded "earlier meetings" card. Titles live in the context so a typed note triages with them. */
-export function reviewDigest(meetings: Array<{ title: string; day: string }>, now = new Date()) {
-  const days = [...new Set(meetings.map((m) => m.day))].sort();
-  const yesterday = localDate(new Date(now.getTime() - DAY));
-  const when =
-    days.length > 1 ? "Earlier meetings" : days[0] === yesterday ? "Yesterday's meetings" : `${new Date(`${days[0]}T12:00:00`).toLocaleDateString("en-GB", { weekday: "long" })}'s meetings`;
-  return {
-    kind: "review" as const,
-    priority: 70,
-    prompt: `${when} (${meetings.length}): anything you committed to?`,
-    context: meetings.map((m) => `- ${days.length > 1 ? `${m.day.slice(5)} · ` : ""}${m.title}`).join("\n"),
-    options: [
-      opt("scan", "Scan the transcripts now", { type: "sweep", name: "transcripts" }, "primary"),
-      opt("none", "Nothing new", { type: "noop" }, "quiet"),
-    ],
-  };
-}
-
 /** What a review card's typed note goes to triage with: the question, plus the meeting list for a folded card. */
 export function reviewUtterance(q: Pick<Question, "prompt" | "key" | "context">, note: string) {
-  return [q.prompt, q.key.startsWith("reviews:") ? q.context : "", note].filter(Boolean).join("\n");
+  return [q.prompt, q.key.startsWith(REVIEWS_PREFIX) ? q.context : "", note].filter(Boolean).join("\n");
 }
 
 const PUSH_1H = "Push 1 hour";
