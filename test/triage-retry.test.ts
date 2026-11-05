@@ -8,7 +8,8 @@ import { Hub } from "../src/server/hub.ts";
 import type { Job } from "../src/shared/types.ts";
 
 // 10-15 09:50Z: a command-bar ask hit a pi crash. The reply said "kept your words in the journal",
-// nothing retried, and the ask sat unseen for 35 hours. Crashes get one rerun; failures get a card.
+// nothing retried, and the ask sat unseen for 35 hours. Crashes and quick network blips get one
+// rerun; failures get a card.
 
 const noCmux: CmuxDeps = { available: () => false, launch: () => ({ workspace: "", statusPath: "/dev/null" }) };
 const ok = (text: string) => ({ ok: true, text });
@@ -18,6 +19,7 @@ const GOOD = JSON.stringify({ reply: "Added.", items: [{ title: "Chase the vendo
 function setup(runs: Array<{ ok: boolean; text: string; error?: string }>) {
   const hub = new Hub(new Store(":memory:"));
   const agents = new Agents(hub, noCmux);
+  agents.triageBlipRetryMs = 1;
   const calls = { run: 0, apply: 0 };
   const a = agents as any;
   a.runHeadless = async () => runs[calls.run++] ?? crash;
@@ -54,11 +56,79 @@ test("crashes twice: no third run, words come back on a Retry / Drop card", asyn
   expect(q?.options[0]?.effect).toEqual({ type: "triage", text: words, mode: "pineapple" });
 });
 
-test("non-crash failure (timeout, bad JSON) isn't rerun but still gets the card", async () => {
+test("bad JSON isn't rerun but still gets the card", async () => {
   const { hub, agents, calls } = setup([ok("not json at all")]);
   await agents.triage("book the room");
   expect(calls.run).toBe(1);
   expect(hub.store.questions("open")[0]?.options[0]?.effect).toEqual({ type: "triage", text: "book the room", mode: "chat" });
+});
+
+// 10-26, 10-27, 11-04: 🍍 asks right after wake failed on "Connection error." / "Request timed out."
+// and sat on a triage-failed card until a Retry tap. A blip gets one rerun after a short wait.
+const blip = { ok: false, text: "", error: "Connection error." };
+
+test("network blip, then answers: rerun once after the wait, job done, no card", async () => {
+  const { hub, agents, calls } = setup([blip, ok(GOOD)]);
+  const r = await agents.triage("remind me to chase the vendor", "pineapple");
+  expect(calls.run).toBe(2);
+  expect(calls.apply).toBe(1);
+  expect(r.reply).toBe("Added.");
+  expect(hub.store.job(r.jobId)!.status).toBe("done");
+  expect(hub.store.questions("open").filter((q) => q.key?.startsWith("triage-failed:"))).toHaveLength(0);
+  expect(hub.store.journal().some((j) => j.text.includes("network blip (Connection error.)"))).toBe(true);
+});
+
+test("blips twice (timeout): no third run, words come back on the card", async () => {
+  const timeout = { ok: false, text: "", error: "Request timed out." };
+  const { hub, agents, calls } = setup([timeout, timeout, ok(GOOD)]);
+  const r = await agents.triage("book the room");
+  expect(calls.run).toBe(2);
+  expect(calls.apply).toBe(0);
+  expect(hub.store.job(r.jobId)!.status).toBe("failed");
+  expect(hub.store.questions("open")[0]?.key).toBe(`triage-failed:${r.jobId}`);
+});
+
+test("blip that took too long to surface isn't rerun: straight to the card", async () => {
+  const { hub, agents, calls } = setup([blip, ok(GOOD)]);
+  agents.triageBlipMaxFirstMs = 20;
+  const a = agents as any;
+  const stub = a.runHeadless;
+  a.runHeadless = async () => (await Bun.sleep(40), stub());
+  await agents.triage("book the room");
+  expect(calls.run).toBe(1);
+  expect(hub.store.questions("open")).toHaveLength(1);
+});
+
+test("machine sleep during the attempt doesn't count against the blip window", async () => {
+  const { hub, agents, calls } = setup([]);
+  agents.triageBlipMaxFirstMs = 20;
+  const runs = [{ ...blip, slept: 1000 }, ok(GOOD)];
+  (agents as any).runHeadless = async () => (calls.run === 0 && (await Bun.sleep(40)), runs[calls.run++]);
+  const r = await agents.triage("book the room");
+  expect(calls.run).toBe(2);
+  expect(hub.store.job(r.jobId)!.status).toBe("done");
+});
+
+test("Stop during the blip wait: no rerun, no card, reply says cancelled", async () => {
+  const { hub, agents, calls } = setup([blip, ok(GOOD)]);
+  agents.triageBlipRetryMs = 500;
+  const pending = agents.triage("book the room");
+  const job = () => hub.store.jobs().find((j) => j.kind === "triage");
+  for (let i = 0; i < 200 && !job()?.tail.some((l) => l.includes("retrying once in")); i++) await Bun.sleep(1);
+  expect(job()!.tail.some((l) => l.includes("retrying once in"))).toBe(true);
+  agents.cancel(job()!.id);
+  const r = await pending;
+  expect(calls.run).toBe(1);
+  expect(r.reply).toBe("Triage cancelled.");
+  expect(hub.store.job(r.jobId)!.error).toBe("cancelled");
+  expect(hub.store.questions("open")).toHaveLength(0);
+});
+
+test("rate limit isn't a blip: no rerun, straight to the card", async () => {
+  const { hub, agents, calls } = setup([{ ok: false, text: "", error: "429 Too Many Requests: rate limit exceeded" }, ok(GOOD)]);
+  await agents.triage("book the room");
+  expect(calls.run).toBe(1);
+  expect(hub.store.questions("open")).toHaveLength(1);
 });
 
 test("Retry on the card runs triage again with the same words", async () => {

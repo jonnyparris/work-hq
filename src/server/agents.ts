@@ -82,6 +82,13 @@ export const CMUX_TOKEN_TTL_MS = 24 * 3600_000;
 const RESUME_NUDGE = "Your last request failed on a provider rate limit. Carry on from where you stopped.";
 /** A cmux turn that ended on a network blip (isTransient) gets one nudge this long after it settled. */
 export const TRANSIENT_RETRY_MS = 60_000;
+/** A tool-less triage that failed on a network blip waits this long before its one rerun (right after wake, Wi-Fi needs a moment). */
+export const TRIAGE_BLIP_RETRY_MS = 10_000;
+/**
+ * A blip whose attempt ran longer than this (machine sleep excluded, rate-limit backoff included) isn't
+ * rerun: the ask's request is still open, and a late blip plus a full 4-min rerun could hold it 8+ min.
+ */
+export const TRIAGE_BLIP_MAX_FIRST_MS = 60_000;
 const TRANSIENT_NUDGE = "Your last request failed on a network error (timeout or dropped connection). Carry on from where you stopped.";
 const NUDGE = { rate: RESUME_NUDGE, transient: TRANSIENT_NUDGE } as const;
 
@@ -200,6 +207,9 @@ type TriageMode = "chat" | "pineapple" | "review";
 
 export class Agents implements Dispatcher {
   private running = new Map<string, Running>();
+  /** Tests shorten these. */
+  triageBlipRetryMs = TRIAGE_BLIP_RETRY_MS;
+  triageBlipMaxFirstMs = TRIAGE_BLIP_MAX_FIRST_MS;
   /** Every pi launch goes through here, so bursts can't trip per-minute provider limits. */
   readonly gate = new LaunchGate(() => config.pi.launchSpacingSec * 1000);
   /** At most `pi.maxRunningJobs` action jobs working at once, none while load > `pi.maxLoad`; the rest wait as "queued". */
@@ -897,25 +907,37 @@ export class Agents implements Dispatcher {
   // ── triage (headless, no tools) ────────────────────────────────────────
   /**
    * A crash (pi died, signal, restart) gets one silent rerun: triage has no tools, so a rerun can't
-   * repeat side effects. If it still fails, the words come back as a card with Retry / Drop —
-   * a failed triage must never leave the ask only in the journal (10-15: lost for 35 hours).
+   * repeat side effects. A network blip ("Connection error.", "Request timed out.") that surfaced within
+   * triageBlipMaxFirstMs gets one rerun after triageBlipRetryMs, so Wi-Fi can come back after wake.
+   * If it still fails, the words come back as a card with Retry / Drop — a failed triage must never
+   * leave the ask only in the journal (10-15: lost for 35 hours). 10-26, 10-27, 11-04: 🍍 asks right
+   * after wake failed on blips and needed a Retry tap.
    */
   async triage(utterance: string, mode: TriageMode = "chat"): Promise<TriageResult & { jobId: string }> {
     const job = this.newJob("triage", mode, mode === "pineapple" ? `🍍 ${utterance.slice(-60)}` : utterance.slice(0, 80), "headless");
     writeFileSync(triageFile(job.id), JSON.stringify({ text: utterance, mode }));
     const prompt = triagePrompt(utterance, { now: new Date(), items: this.hub.store.items(), events: this.hub.todayEvents(), questions: this.hub.store.questions("open") }, mode);
     const run = () => this.runHeadless(job.id, prompt, { tools: false, thinking: config.pi.triageThinking, perms: false, timeoutMin: 4 });
+    const started = Date.now();
     let r = await run();
+    const took = Date.now() - started - (r.slept ?? 0);
     if (!r.ok && !this.cancelled(job.id) && isCrash(r.error ?? "")) {
       this.line(job.id, `↻ pi crashed (${r.error}), retrying once`);
       this.hub.journal(`Triage crashed (${r.error}), retrying once`, { who: "hq" });
       r = await run();
+    } else if (!r.ok && !this.cancelled(job.id) && isTransient(r.error) && took <= this.triageBlipMaxFirstMs) {
+      this.line(job.id, `⏳ ${r.error} — retrying once in ${Math.round(this.triageBlipRetryMs / 1000)} s`);
+      this.hub.journal(`Triage hit a network blip (${r.error}), retrying once`, { who: "hq" });
+      await sleep(this.triageBlipRetryMs);
+      if (!this.cancelled(job.id)) r = await run();
     }
     const result = r.ok ? extractJson<TriageResult>(r.text) : undefined;
     if (!r.ok || !result) {
+      // Cancelled (also during the blip wait, when r still holds the blip): cancel() already marked the
+      // job failed/"cancelled"; patching first would overwrite that and raise a card for a stopped ask.
+      if (this.cancelled(job.id)) return { jobId: job.id, reply: "Triage cancelled." };
       const error = r.error ?? "couldn't parse triage output";
       this.patch(job.id, { status: "failed", error, finishedAt: nowIso() });
-      if (this.cancelled(job.id)) return { jobId: job.id, reply: "Triage cancelled." };
       this.reaskTriage(job.id, error, { text: utterance, mode });
       return { jobId: job.id, reply: "Triage failed — your words are on a card to retry." };
     }

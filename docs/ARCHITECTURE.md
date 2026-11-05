@@ -115,6 +115,10 @@
   between the nudge and its turn waits up to 120 s for that turn rather than failing it as a second
   blip. Nudges sent are kept on the job (`job.nudges`) and `bin/work-hq usage` counts them under
   "Agent runs". 10-19 and 10-22: the owner typed "retry" into 13 stalled sessions by hand.
+  Tool-less triage gets one retry too: a blip whose attempt ran under 60 s, machine sleep excluded and
+  rate-limit backoff included (`TRIAGE_BLIP_MAX_FIRST_MS`), reruns once after 10 s (`TRIAGE_BLIP_RETRY_MS`); a second failure
+  puts the words on a Retry / Drop card. No card on the first blip, just a journal and job-log line;
+  not counted in `job.nudges`.
 - **At most 8 action agents work at once.** The launch gate spaces starts but doesn't cap them: on
   10-21 a burst had 20-25 pi sessions working together, load hit 255 on 12 cores and test suites
   everywhere timed out. `RunCap` (`src/server/launch-gate.ts`) holds launches past
