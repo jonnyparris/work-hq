@@ -26,6 +26,7 @@ export class MemorySync {
     try {
       const todos = await this.memory.read(config.memory.todosPath);
       const parsed: ParsedItem[] = todos ? parseActiveTodos(todos, "active-todos", config.projects) : [];
+      const blocker = retireBlocker(todos, parsed.length);
       let proposalsLabel = "";
       const plans = (await this.memory.list(config.memory.proposalsDir))
         .filter((f) => /\d{4}-\d{2}-\d{2}.*improvement-proposals\.md$/.test(f.path))
@@ -53,10 +54,12 @@ export class MemorySync {
       }
       const extra = await this.fillDeadlines(parsed);
       const seen = this.upsert(parsed);
-      const dropped = this.retire(seen);
+      // An empty or broken file says nothing about which to-dos are gone: don't retire on it.
+      const dropped = blocker ? 0 : this.retire(seen);
       this.hub.dedupeExisting();
       this.markMergedProposals(parsed);
-      this.hub.putSync({ ...s, lastOkAt: nowIso(), error: undefined, cursor: `${parsed.length} items · proposals ${proposalsLabel}${extra}` });
+      // A blocked retire is not a good run: keep the last good time, as other syncs do on failure.
+      this.hub.putSync({ ...s, lastOkAt: blocker ? s.lastOkAt : nowIso(), error: blocker, cursor: `${parsed.length} items · proposals ${proposalsLabel}${extra}` });
       return { imported: parsed.length, dropped };
     } catch (e) {
       this.hub.putSync({ ...s, error: String((e as Error).message ?? e) });
@@ -171,6 +174,19 @@ export class MemorySync {
       throw e;
     }
   }
+}
+
+/**
+ * Retire only on an active-todos that reads as a to-do file: front matter or a heading first, and at least one
+ * open to-do. Otherwise returns the sync error to show. A file with every to-do ticked off also blocks (rare, safe).
+ * 11-04 16:58Z an agent wrote the file back wrapped in the MCP read envelope; it parsed to zero to-dos and
+ * retire() dropped ~40 live items at 17:17.
+ */
+export function retireBlocker(body: string | undefined, count: number): string | undefined {
+  if (body === undefined) return "active-todos missing: 0 items, nothing retired";
+  const head = body.trimStart();
+  if (count > 0 && (head.startsWith("---") || /^#{1,6}\s/.test(head))) return undefined;
+  return `active-todos unparseable: ${new TextEncoder().encode(body).length} bytes, ${count} items`;
 }
 
 function clairicFromConfig() {
