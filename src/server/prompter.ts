@@ -195,14 +195,22 @@ export class Prompter {
       if (l && l !== "pending") found.push({ it, l });
     }
     found.sort((a, b) => (a.l.at ?? "").localeCompare(b.l.at ?? "") || a.it.createdAt.localeCompare(b.it.createdAt));
-    const summary = `${items.length} checked · ${found.length} landed${failed ? ` · ${failed} lookup${failed === 1 ? "" : "s"} failed` : ""}`;
+    // GitLab says Merged but the code isn't on the target (a no-op ff merge): never "landed", listed apart.
+    const notLanded = items.flatMap((it) => {
+      const refs = this.mrs.notLanded(it);
+      return refs.length ? [{ id: it.id, title: it.title, status: it.status, line: notLandedLine(refs) }] : [];
+    });
+    const summary =
+      `${items.length} checked · ${found.length} landed` +
+      (notLanded.length ? ` · ${notLanded.length} merged, not on target` : "") +
+      (failed ? ` · ${failed} lookup${failed === 1 ? "" : "s"} failed` : "");
     const prev = store.openQuestionByKey(RECHECK_KEY);
     if (prev) this.hub.expireQuestion(prev.id, "rechecked");
     let question: Question | undefined;
     if (found.length) {
       const merged = store.openQuestionByKey(MERGED_KEY);
       if (merged) this.hub.expireQuestion(merged.id, "folded into recheck");
-      question = this.ask(recheckCard(found));
+      question = this.ask(recheckCard(found, notLanded));
     }
     this.hub.putSync({
       ...store.syncState("recheck"),
@@ -213,7 +221,7 @@ export class Prompter {
     });
     this.hub.toast(found.length ? `Rechecked: ${summary}. One card to tick the done ones.` : `Rechecked: ${summary}. Nothing new landed.`, failed ? "warn" : "info");
     this.hub.journal(`Recheck: ${summary}`, { who: "hq" });
-    return { checked: items.length, landed: found.map((f) => ({ id: f.it.id, title: f.it.title, status: f.it.status, line: mergedLine(f.l) })), failed, question: question?.id };
+    return { checked: items.length, landed: found.map((f) => ({ id: f.it.id, title: f.it.title, status: f.it.status, line: mergedLine(f.l) })), notLanded, failed, question: question?.id };
   }
 
   tick(now = new Date()) {
@@ -1157,6 +1165,11 @@ function mergedLine(l: Landed) {
   return `${parts.join("; ")}.`;
 }
 
+/** "api-worker!1691 merged, not on target (0 of 5 commits on staging)." */
+function notLandedLine(refs: Array<MrRef & { landing?: string }>) {
+  return `${refs.map((r) => `${r.project.split("/").pop()}!${r.iid} merged, not on target${r.landing ? ` (${r.landing})` : ""}`).join("; ")}.`;
+}
+
 /** What the refs on these items are: code (MRs / PRs) only, "jira" only, or "both". */
 function refKinds(ls: Landed[]): "mr" | "jira" | "both" {
   const mr = ls.some((l) => l.mrs.length || l.prs?.length), jira = ls.some((l) => l.tickets.length);
@@ -1269,6 +1282,8 @@ export function mergedCard(found: Array<{ it: Pick<Item, "id" | "title">; mr: La
 export interface RecheckResult {
   checked: number;
   landed: Array<{ id: string; title: string; status: Item["status"]; line: string }>;
+  /** Items with an MR GitLab calls merged whose code isn't on its target branch. Not on the card's picks. */
+  notLanded: Array<{ id: string; title: string; status: Item["status"]; line: string }>;
   failed: number;
   question?: string;
 }
@@ -1278,7 +1293,7 @@ export const RECHECK_VERIFY_NOTE =
   "Everything these items link to has merged or closed. For each one, find out if anything is still left after the merge (a deploy, a rollout, a check, a reply). Don't set any status yourself, even when the evidence is clear: propose it. Propose \"Mark done\" (a question per item) for the ones with nothing left; for the rest, say what's left and who has it.";
 
 /** The recheck card: one tick-box per landed item (pick id = item id), nothing pre-ticked. */
-export function recheckCard(found: Array<{ it: Pick<Item, "id" | "title" | "status">; l: Landed }>) {
+export function recheckCard(found: Array<{ it: Pick<Item, "id" | "title" | "status">; l: Landed }>, notLanded: Array<{ title: string; line: string }> = []) {
   const n = found.length;
   const picks: QuestionPick[] = found.map((f) => ({ id: f.it.id, label: f.it.title, hint: `${f.it.status} · ${mergedLine(f.l)}` }));
   return {
@@ -1288,7 +1303,9 @@ export function recheckCard(found: Array<{ it: Pick<Item, "id" | "title" | "stat
     priority: 70,
     prompt: n === 1 ? `Everything this links to has landed: ${found[0]!.it.title}. Done?` : `${n} open items: everything they link to has landed. Which are done?`,
     // The list is in the context too, so a typed note ("all but the deploy one") reads against it.
-    context: `Tick the done ones. Some ask for what comes after the merge (a deploy, a check).\n${picks.map((p) => `- ${p.label} (${p.hint})`).join("\n")}`,
+    context:
+      `Tick the done ones. Some ask for what comes after the merge (a deploy, a check).\n${picks.map((p) => `- ${p.label} (${p.hint})`).join("\n")}` +
+      (notLanded.length ? `\n\nMerged, not on target (not done: reland them):\n${notLanded.map((n) => `- ${n.title} (${n.line})`).join("\n")}` : ""),
     picks,
     options: [
       opt("done", "Mark ticked done", { type: "donePicks" }, "primary"),
