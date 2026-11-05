@@ -3,7 +3,7 @@
 //   triage  — headless, no tools, fast. Turns the owner's words into state changes.
 //   action  — interactive pi in a cmux workspace. Anything the owner dispatches. Highly visible.
 
-import { type BulkRequest, deferHorizon } from "../shared/batch.ts";
+import { type BulkRequest, deferHorizon, localDay } from "../shared/batch.ts";
 import { isAgentCard, isWaitingSession } from "../shared/boss.ts";
 import { claimsDispatch, claimsStatus } from "../shared/dead-button.ts";
 import { explainKey, sentences } from "../shared/detail.ts";
@@ -93,8 +93,11 @@ export const TRIAGE_BLIP_MAX_FIRST_MS = 60_000;
 const TRANSIENT_NUDGE = "Your last request failed on a network error (timeout or dropped connection). Carry on from where you stopped.";
 const NUDGE = { rate: RESUME_NUDGE, transient: TRANSIENT_NUDGE } as const;
 
-/** `slept`: ms the laptop slept mid-run (rpc runner). A failure after a sleep gets rerun, not counted as a stall. */
-type RunResult = { ok: boolean; text: string; error?: string; session?: string; toolsRan?: boolean; slept?: number };
+/**
+ * `slept`: ms the laptop slept mid-run (rpc runner). A failure after a sleep gets rerun, not counted as a stall.
+ * `sleepCaused`: it failed because of that sleep: a network blip or stall after it, not a timeout or a bad read (see sleepCaused()).
+ */
+type RunResult = { ok: boolean; text: string; error?: string; session?: string; toolsRan?: boolean; slept?: number; sleepCaused?: boolean };
 
 interface Running {
   statusPath?: string;
@@ -855,7 +858,8 @@ export class Agents implements Dispatcher {
    * `{ rerun: true }`: failed after the laptop slept mid-run; the scheduler runs it again on its next awake tick.
    * `since` (transcripts only): a backfill, the folded card's scan. It's capped at BACKFILL_DAYS when asked for and
    * kept in kv (review-fold.ts: queueBackfill) until a sweep that read from it succeeds, so a failed run, a sleep or
-   * a restart doesn't lose it: the next scheduled sweep picks it up. BACKFILL_TRIES runs at most per ask.
+   * a restart doesn't lose it: the next scheduled sweep picks it up. BACKFILL_TRIES tries per ask; a run the laptop's
+   * sleep killed gives its try back (BACKFILL_SLEEPS times at most).
    */
   async sweep(name: "transcripts" | "calendar", opts: { since?: string } = {}): Promise<{ rerun?: boolean } | undefined> {
     const asked = name === "transcripts" && opts.since ? capSince(opts.since) : undefined;
@@ -888,7 +892,7 @@ export class Agents implements Dispatcher {
       if (asked) queueBackfill(this.hub, asked);
       const bf = name === "transcripts" ? startBackfill(this.hub) : {};
       if (bf.dropped) {
-        const msg = `Dropped the queued transcript scan from ${bf.dropped.since.slice(0, 10)}: ${BACKFILL_TRIES} runs failed.`;
+        const msg = `Dropped the queued transcript scan from ${localDay(new Date(bf.dropped.since))}: ${BACKFILL_TRIES} tries failed.`;
         this.line(job.id, `\u2715 ${msg}`);
         this.hub.toast(msg, "warn");
       }
@@ -911,8 +915,9 @@ export class Agents implements Dispatcher {
         this.hub.putSync({ ...this.hub.store.syncState(name), error });
         // A backfill stays queued in kv: the rerun (or the next scheduled sweep) reads it.
         if (r.slept && !this.cancelled(job.id)) {
-          if (backfillFrom) refundBackfill(this.hub); // a sleep isn't a failed read: it doesn't use up a try
-          this.line(job.id, "\u21bb slept mid-run: rerunning on the next awake tick");
+          // A failure the sleep caused isn't a failed read: it gives its try back (capped). Any other failure counts.
+          const kept = backfillFrom && r.sleepCaused && refundBackfill(this.hub);
+          this.line(job.id, `\u21bb slept mid-run: rerunning on the next awake tick${kept ? " (the queued backfill keeps its try)" : ""}`);
           return { rerun: true };
         }
         return;
@@ -1545,7 +1550,7 @@ export class Agents implements Dispatcher {
     if (out.ok) return { ok: true, text: out.text, session, toolsRan, slept };
     const lastStderr = out.stderr.trim().split("\n").pop() ?? "";
     if ((out.timedOut || out.stalled) && lastStderr) this.line(jobId, `stderr: ${lastStderr}`);
-    return { ok: false, text: out.text, session, toolsRan, slept, error: rpcError(out, o.timeoutMin, config.pi.stallMin) };
+    return { ok: false, text: out.text, session, toolsRan, slept, sleepCaused: sleepCaused(out), error: rpcError(out, o.timeoutMin, config.pi.stallMin) };
   }
 
   // ── print runner (`pi -p`): the old path, kept behind pi.runner = "print" ──
@@ -1657,6 +1662,17 @@ export function runError(r: { code: number | null; signal?: string | null; timed
   return r.lastError ?? `pi exited ${r.code}: ${r.stderr.trim().split("\n").pop() ?? ""}`;
 }
 
+/**
+ * A failed run the laptop's sleep likely caused: it slept at some point, and failed on a network blip (isTransient: a
+ * request in flight died on wake) or a stall (a dead connection that never answered; the idle clock is credited the
+ * sleep, so this is awake silence). `sleptMs` covers the whole run, so a blip long after waking counts too; refunds are
+ * capped (BACKFILL_SLEEPS). Not a timeout: pi-rpc credits sleep to the deadline, so a timeout after a sleep means the
+ * run used up its awake time. Not any other error: that's a failed read.
+ */
+export function sleepCaused(out: Pick<RunOutcome, "sleptMs" | "stalled" | "timedOut" | "lastError">): boolean {
+  return Boolean(out.sleptMs && !out.timedOut && (out.stalled || isTransient(out.lastError)));
+}
+
 /** Why an rpc run failed. Our own deadlines first, then a dead process, then the model's error. */
 export function rpcError(r: RunOutcome, timeoutMin: number, stallMin: number): string {
   // Awake time alone ran out, but a sleep in between likely broke pi's in-flight request. Say so: it's not a hang.
@@ -1708,10 +1724,6 @@ function pickIso(a: string | undefined, b: string | undefined, takeB: (ta: numbe
   const ta = Date.parse(a ?? ""), tb = Date.parse(b ?? "");
   if (!Number.isFinite(ta)) return Number.isFinite(tb) ? b : undefined;
   return Number.isFinite(tb) && takeB(ta, tb) ? b : a;
-}
-
-function localDay(d: Date) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 function ensureSiteLink() {

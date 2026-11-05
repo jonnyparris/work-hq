@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { Agents, type CmuxDeps, laterIso, scannedFrom } from "../src/server/agents.ts";
+import { Agents, type CmuxDeps, laterIso, scannedFrom, sleepCaused } from "../src/server/agents.ts";
 import { Store } from "../src/server/db.ts";
 import { Hub } from "../src/server/hub.ts";
-import { BACKFILL_KEY, BACKFILL_TRIES, capSince, covered, NOTES_GRACE_MS, noNotes, outOfReach, pendingBackfill, pruneReviews, queueBackfill, readMeetings, reviewDigest, reviewsSince, settleBackfill } from "../src/server/review-fold.ts";
+import { BACKFILL_KEY, BACKFILL_SLEEPS, BACKFILL_TRIES, capSince, covered, NOTES_GRACE_MS, noNotes, outOfReach, pendingBackfill, pruneReviews, queueBackfill, readMeetings, reviewDigest, reviewsSince, settleBackfill } from "../src/server/review-fold.ts";
 
 const T = (s: string) => Date.parse(s);
 
@@ -104,12 +104,12 @@ describe("transcript sweep with a since (the folded card's scan)", () => {
     expect(prompts[2]).not.toContain(since); // used once
   });
 
-  test("a backfill that slept mid-run is carried by the rerun", async () => {
+  test("a sleep-killed backfill gives its try back and is carried by the rerun", async () => {
     const { agents, prompts } = setup();
     let slept = true;
     (agents as any).runHeadless = async (_id: string, prompt: string) => {
       prompts.push(prompt);
-      if (slept) return (slept = false), { ok: false, slept: true, error: "slept", text: "" };
+      if (slept) return (slept = false), { ok: false, slept: 60_000, sleepCaused: true, error: "slept", text: "" };
       return { ok: true, text: JSON.stringify({ summary: "0", items: [], meetings: [] }) };
     };
     const since = new Date(Date.now() - 86400_000).toISOString();
@@ -199,6 +199,96 @@ describe("queued backfill survives failures and restarts", () => {
     // A new ask starts over.
     await agents.sweep("transcripts", { since: s });
     expect(prompts.at(-1)).toContain(s);
+  });
+
+  test("sleepCaused: a blip or stall after a sleep; not a timeout (sleep is credited to it), not another error, not without a sleep", () => {
+    expect(sleepCaused({ sleptMs: 60_000, lastError: "Connection error." })).toBe(true);
+    expect(sleepCaused({ sleptMs: 60_000, stalled: true })).toBe(true);
+    expect(sleepCaused({ sleptMs: 60_000, timedOut: true })).toBe(false);
+    expect(sleepCaused({ sleptMs: 60_000, lastError: "no JSON in final message" })).toBe(false);
+    expect(sleepCaused({ sleptMs: 60_000 })).toBe(false);
+    expect(sleepCaused({ lastError: "Connection error." })).toBe(false);
+    expect(sleepCaused({ stalled: true })).toBe(false);
+  });
+
+  test("a backfill queued by the previous build (no sleeps count) gets the sleep refund and the cap", async () => {
+    const sleptOut = { ok: false, slept: 60_000, sleepCaused: true, error: "Connection error.", text: "" };
+    const { hub, mk } = setup(Array.from({ length: BACKFILL_SLEEPS + 1 }, () => sleptOut));
+    const s = since();
+    hub.store.setKv(BACKFILL_KEY, JSON.stringify({ since: s, at: new Date().toISOString(), tries: 1 }));
+    const agents = mk();
+    await agents.sweep("transcripts");
+    expect(pendingBackfill(hub)).toMatchObject({ tries: 1, sleeps: 1 });
+    for (let i = 1; i <= BACKFILL_SLEEPS; i++) await agents.sweep("transcripts");
+    expect(pendingBackfill(hub)).toMatchObject({ tries: 2, sleeps: BACKFILL_SLEEPS });
+  });
+
+  test("a sleep gives the try back only when it caused the failure", async () => {
+    // Slept, then failed for another reason (no JSON): the try counts, though the scheduler still reruns.
+    const { hub, mk } = setup([{ ok: false, slept: 60_000, error: "no JSON in final message", text: "" }]);
+    expect(await mk().sweep("transcripts", { since: since() })).toEqual({ rerun: true });
+    expect(pendingBackfill(hub)?.tries).toBe(1);
+  });
+
+  test("sleep refunds are capped, so a backfill whose runs keep sleeping still runs out of tries", async () => {
+    const sleptOut = { ok: false, slept: 60_000, sleepCaused: true, error: "Connection error.", text: "" };
+    const runs = BACKFILL_SLEEPS + BACKFILL_TRIES;
+    const { hub, prompts, mk } = setup(Array.from({ length: runs }, () => sleptOut));
+    const agents = mk();
+    const s = since();
+    await agents.sweep("transcripts", { since: s });
+    for (let i = 1; i < runs; i++) await agents.sweep("transcripts");
+    expect(prompts.every((p) => p.includes(s))).toBe(true);
+    expect(pendingBackfill(hub)).toMatchObject({ tries: BACKFILL_TRIES, sleeps: BACKFILL_SLEEPS });
+    await agents.sweep("transcripts");
+    expect(prompts.at(-1)).not.toContain(s);
+    expect(pendingBackfill(hub)).toBeUndefined();
+  });
+
+  test("the drop toast names the local day the scan was from", async () => {
+    const tz = process.env.TZ;
+    process.env.TZ = "Pacific/Auckland"; // UTC+12/13: 00:30 local is the previous UTC day
+    try {
+      const fail = { ok: false, error: "no JSON", text: "" };
+      const { hub, mk } = setup(Array.from({ length: BACKFILL_TRIES }, () => fail));
+      const toasts: Array<{ text: string; tone: string }> = [];
+      hub.subscribe((e) => e.type === "toast" && toasts.push(e.data as any));
+      const d = new Date();
+      d.setDate(d.getDate() - 2);
+      d.setHours(0, 30, 0, 0);
+      const local = d.toLocaleDateString("en-CA", { timeZone: "Pacific/Auckland" }); // YYYY-MM-DD, not via localDay
+      expect(d.toISOString().slice(0, 10)).not.toBe(local);
+      const agents = mk();
+      await agents.sweep("transcripts", { since: d.toISOString() });
+      for (let i = 0; i < BACKFILL_TRIES; i++) await agents.sweep("transcripts");
+      expect(toasts).toContainEqual({ text: `Dropped the queued transcript scan from ${local}: ${BACKFILL_TRIES} tries failed.`, tone: "warn" });
+    } finally {
+      if (tz === undefined) delete process.env.TZ;
+      else process.env.TZ = tz;
+    }
+  });
+
+  test("a scan tapped mid-sweep gives the queued backfill fresh tries", async () => {
+    const fail = { ok: false, error: "no JSON", text: "" };
+    const { hub, mk } = setup([fail, fail]);
+    const agents = mk();
+    const s = since();
+    await agents.sweep("transcripts", { since: s });
+    await agents.sweep("transcripts");
+    expect(pendingBackfill(hub)?.tries).toBe(2);
+    // Busy path: a sweep is running when the scan is tapped again.
+    let release!: () => void;
+    (agents as any).runHeadless = async () => {
+      await new Promise<void>((r) => (release = r));
+      return { ok: false, slept: 60_000, sleepCaused: true, error: "Connection error.", text: "" }; // would refund, if it could
+    };
+    const running = agents.sweep("transcripts");
+    await Bun.sleep(5);
+    await agents.sweep("transcripts", { since: s });
+    expect(pendingBackfill(hub)).toMatchObject({ since: s, tries: 0, sleeps: 0 });
+    release();
+    expect(await running).toEqual({ rerun: true });
+    expect(pendingBackfill(hub)).toMatchObject({ since: s, tries: 0, sleeps: 0 }); // the in-flight run neither eats nor refunds the fresh tries
   });
 
   test("queueing keeps the earlier; settling keeps one queued earlier than the run read", () => {

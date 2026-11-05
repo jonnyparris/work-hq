@@ -156,13 +156,18 @@ export function pruneReviews(hub: Hub, scanned: (ev: Pick<CalendarEvent, "title"
 
 // ── the card's scan, queued ─────────────────────────────────────────────
 /**
- * kv: a backfill waiting for a transcript sweep (`{ since, at, tries }`), kept until a sweep that read from `since`
- * succeeds, or BACKFILL_TRIES runs have started on it. Cleared by writing "" (the store has no delete).
+ * kv: a backfill waiting for a transcript sweep (`{ since, at, tries, sleeps }`), kept until a sweep that read from
+ * `since` succeeds, or it has used its BACKFILL_TRIES tries. Cleared by writing "" (the store has no delete).
  */
 export const BACKFILL_KEY = "transcriptBackfill";
-/** Runs a queued backfill gets (each a multi-day read) before it's dropped. A new ask resets the count. */
+/** Tries a queued backfill gets (each a multi-day read) before it's dropped. A new ask resets the count. */
 export const BACKFILL_TRIES = 3;
-export type Backfill = { since: string; at: string; tries?: number };
+/**
+ * Tries given back because the laptop's sleep made the run fail. After this many, a sleep-killed run counts as a failed
+ * try. Worst case per ask: BACKFILL_TRIES + BACKFILL_SLEEPS runs (6, each up to 20 min awake).
+ */
+export const BACKFILL_SLEEPS = 3;
+export type Backfill = { since: string; at: string; tries?: number; sleeps?: number };
 
 /** A requested scan start, capped at BACKFILL_DAYS before `now` (the time it was asked for). */
 export function capSince(since: string, now = new Date()) {
@@ -183,10 +188,10 @@ export function pendingBackfill(hub: Hub, now = new Date()): Backfill | undefine
   }
 }
 
-/** Queue an (already capped) backfill; the earlier of it and one already queued wins, with a fresh try count. Returns what's queued. */
+/** Queue an (already capped) backfill; the earlier of it and one already queued wins, with fresh try and sleep counts. Returns what's queued. */
 export function queueBackfill(hub: Hub, since: string, now = new Date()): Backfill {
   const prev = pendingBackfill(hub, now);
-  const next = { since: prev && Date.parse(prev.since) <= Date.parse(since) ? prev.since : since, at: now.toISOString(), tries: 0 };
+  const next = { since: prev && Date.parse(prev.since) <= Date.parse(since) ? prev.since : since, at: now.toISOString(), tries: 0, sleeps: 0 };
   hub.store.setKv(BACKFILL_KEY, JSON.stringify(next));
   return next;
 }
@@ -199,7 +204,7 @@ export function settleBackfill(hub: Hub, since: string, now = new Date()) {
 
 /**
  * A sweep is about to read the queued backfill: count the try (persisted first, so a run killed by a restart counts).
- * `{ run }`: read from `run.since`. `{ dropped }`: it had its BACKFILL_TRIES and is gone. `{}`: none queued.
+ * `{ run }`: read from `run.since`. `{ dropped }`: it used its BACKFILL_TRIES tries and is gone. `{}`: none queued.
  */
 export function startBackfill(hub: Hub, now = new Date()): { run?: Backfill; dropped?: Backfill } {
   const p = pendingBackfill(hub, now);
@@ -213,8 +218,13 @@ export function startBackfill(hub: Hub, now = new Date()): { run?: Backfill; dro
   return { run };
 }
 
-/** The run slept mid-read (not a failed read): give its try back. */
-export function refundBackfill(hub: Hub, now = new Date()) {
+/**
+ * The laptop's sleep made the run fail (agents.ts sleepCaused), not a bad read: give its try back, at
+ * most BACKFILL_SLEEPS times per ask, so a backfill whose runs keep sleeping still runs out of tries. False: not given back.
+ */
+export function refundBackfill(hub: Hub, now = new Date()): boolean {
   const p = pendingBackfill(hub, now);
-  if (p?.tries) hub.store.setKv(BACKFILL_KEY, JSON.stringify({ ...p, tries: p.tries - 1 }));
+  if (!p?.tries || (p.sleeps ?? 0) >= BACKFILL_SLEEPS) return false;
+  hub.store.setKv(BACKFILL_KEY, JSON.stringify({ ...p, tries: p.tries - 1, sleeps: (p.sleeps ?? 0) + 1 }));
+  return true;
 }
