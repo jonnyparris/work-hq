@@ -186,6 +186,11 @@ export type Effect =
   | { type: "donePicks"; all?: boolean }
   /** Stale card: close each card ticked in `picks` (pick id = question id), or every pick with `all`. */
   | { type: "closePicks"; all?: boolean }
+  /**
+   * Stopped-agents card (server/stopped-fold.ts): for each item ticked in `picks` (or every pick with `all`), `check`
+   * sends a verify agent about its stopped job, `rerun` sends that job's action again with its note. `jobs`: item id → job id.
+   */
+  | { type: "stoppedPicks"; act: "check" | "rerun"; all?: boolean; jobs: Record<string, string> }
   /** Write the journal to memory now (wrap-up). */
   | { type: "flushJournal" }
   /** Run a sweep now ("Scan the transcript now"). */

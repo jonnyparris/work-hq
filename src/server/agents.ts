@@ -26,6 +26,7 @@ import {
   stoppedJobNote, transcriptSweepPrompt, triagePrompt, WIKI_DRAFTS,
 } from "./prompts.ts";
 import { cleanupWorktree, createWorktree, repoFor, type WorktreeResult } from "./worktrees.ts";
+import { foldStopped, isFoldCard } from "./stopped-fold.ts";
 
 /** The after-card's "Check for me": a verify agent reads what the stopped job left (see stoppedJobNote). */
 export function checkStoppedOption(job: Pick<Job, "id" | "title" | "status" | "summary" | "error" | "session">): QuestionOption {
@@ -256,7 +257,7 @@ export class Agents implements Dispatcher {
    */
   private migrateAfterCards() {
     for (const q of this.hub.store.questions("open")) {
-      if (!q.key.startsWith("after:")) continue;
+      if (!q.key.startsWith("after:") || isFoldCard(q)) continue;
       const job = this.hub.store.job(q.key.slice("after:".length));
       if (!job) continue;
       let options = q.options;
@@ -809,7 +810,9 @@ export class Agents implements Dispatcher {
     const item = job.itemId ? this.hub.store.item(job.itemId) : undefined;
     // If the agent didn't settle the item (and didn't ask its own question), ask the owner.
     const agentAsked = this.hub.store.questions("open").some((q) => q.itemId === item?.id && q.key.startsWith("agent:"));
-    if (item && item.status === "doing" && !agentAsked) {
+    // Stopped on the same error as other agents just now (a gateway blip, a restart): one card for all of them.
+    const folded = item && item.status === "doing" && !agentAsked && !r.ok && foldStopped(this.hub, this.hub.store.job(jobId)!, item);
+    if (item && item.status === "doing" && !agentAsked && !folded) {
       const options: QuestionOption[] = [
         { id: "done", label: "Done", tone: "good", effect: { type: "status", status: "done" } },
         { id: "wait", label: "Waiting on someone", effect: { type: "status", status: "waiting" } },

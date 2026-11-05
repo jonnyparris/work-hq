@@ -143,6 +143,8 @@ re-asks any whose facts changed, and leaves you the short list. Its prompt keeps
 An **Agent finished / Agent stopped** card has **Check for me**. It sends a read-only verify agent to find out if
 the job's work landed. The agent reads the job's pi transcript, its job folder, its worktree branch and any MRs or
 tickets it names, so it still works after the cmux session was closed. It reports back with a card that proposes the status.
+Agents that stop on the same error within 2 minutes of the first (a gateway blip, a restart) share one **Agents stopped** card:
+check them or send them again, all at once or the ticked ones.
 
 No button fits? Type it in the note field and press **`⌘↵`**: *"drop it"*, *"chase Sam on Thursday"*, *"it's Joan, not Jon,
 and tighten it first"*. The note is the answer. Work HQ picks the matching option, changes the status, schedules it,

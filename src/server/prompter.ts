@@ -13,6 +13,7 @@ import { type MrRef, MrStates, mrRefs } from "./mr-state.ts";
 import { plain } from "./parse.ts";
 import { type PrRef, PrStates, prRefs } from "./pr-state.ts";
 import { openUrl } from "./prompts.ts";
+import { cardItemIds, isFoldCard, pruneFold } from "./stopped-fold.ts";
 
 const MIN = 60_000;
 const DAY = 86_400_000;
@@ -589,7 +590,8 @@ export class Prompter {
    * last sign of life (the item's own update, its latest job, its latest answered card). Oldest first.
    */
   private idleDoing(items: Item[], busy: Set<string | undefined>, now: Date) {
-    const doing = items.filter((i) => i.status === "doing" && !busy.has(i.id) && !this.open.some((q) => q.itemId === i.id));
+    const asked = new Set(this.open.flatMap(cardItemIds));
+    const doing = items.filter((i) => i.status === "doing" && !busy.has(i.id) && !asked.has(i.id));
     if (!doing.length) return [];
     const jobs = this.hub.store.jobs(500);
     const out: { item: Item; since: string; job?: Job }[] = [];
@@ -887,6 +889,7 @@ export class Prompter {
       // The one-item merged card is that item's card now (it blocks its other prompts): gone once it's off `waiting`.
       else if (q.key === MERGED_KEY && it && it.status !== "waiting") this.hub.expireQuestion(q.id, "moved on");
       else if (q.key === RECHECK_KEY) this.pruneRecheck(q, byId);
+      else if (isFoldCard(q)) pruneFold(this.hub, q);
       else if (q.kind === "confirm" && it && it.status !== "inbox") this.hub.expireQuestion(q.id, "triaged");
       else if (q.kind === "post" && it && q.key.endsWith(":idea") && hasDraft(it)) this.hub.expireQuestion(q.id, "drafted");
       else if (q.kind === "prep" && q.eventId && this.startedAgo(q.eventId, now) > 10 * MIN) this.hub.expireQuestion(q.id, "meeting started");

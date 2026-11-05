@@ -416,6 +416,7 @@ export function notePrompt(q: Question, it: Item | undefined, note: string, ctx:
     : e.type === "prepMeetings" ? "send a prep agent for each meeting the note names (or all, if it says all)"
     : e.type === "donePicks" ? "mark done each item the note names (or all, if it says all)"
     : e.type === "closePicks" ? "close cards: needs a tap, never pick this from a note"
+    : e.type === "stoppedPicks" ? (!e.all ? "needs ticks, never pick this from a note" : e.act === "check" ? "send a verify agent for every listed item (the note goes to each)" : "send every listed item's stopped agent again (the note goes to each)")
     : "acknowledge, nothing else";
   const options = q.options.map((o) => `- ${o.id}: "${o.label}" \u2192 ${effect(o.effect)}`).join("\n");
   return `You are Work HQ's note reader. ${me} was shown a question in their dashboard and, instead of pressing a button,

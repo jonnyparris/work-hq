@@ -14,6 +14,8 @@ import { config, memoryOn } from "./config.ts";
 import { newId, nowIso, type Store } from "./db.ts";
 import { findTwin, isOpen } from "./dedupe.ts";
 import { LoadLog, loadNow } from "./load.ts";
+import { stoppedJobNote } from "./prompts.ts";
+import { foldRest } from "./stopped-fold.ts";
 
 type Listener = (e: ServerEvent) => void;
 
@@ -556,6 +558,61 @@ export class Hub {
         else this.toast("Those cards were already closed.", "info");
         break;
       }
+      case "stoppedPicks": {
+        // The stopped-agents card: check or re-send the ticked items (or all). A typed note goes to each agent; it
+        // doesn't pick rows: ticks only, as on the stale card.
+        const listed = q?.picks ?? [];
+        const ticked = Array.isArray(ctx.picks) ? ctx.picks.filter((id) => listed.some((p) => p.id === id)) : [];
+        // "All" reads the card's own map: a one-row card has no tick-boxes.
+        const ids = effect.all ? Object.keys(effect.jobs) : ticked;
+        if (!ids.length) {
+          if (q) this.reopen(q, 0);
+          this.toast("Tick the ones you mean first.", "warn");
+          break;
+        }
+        if (q && !itemId) answerLine();
+        const typed = note?.trim();
+        const busy = new Set(this.store.liveJobs().map((j) => j.itemId).filter(Boolean));
+        const skipped: string[] = [];
+        const failed: string[] = [];
+        // Rows taken care of: sent, closed, or an agent's already on it. The rest come back on the card.
+        const handled: string[] = [];
+        for (const id of ids) {
+          const it = this.store.item(id);
+          if (!it || ["done", "dropped"].includes(it.status)) {
+            handled.push(id); // closed since: nothing to do
+            continue;
+          }
+          const job = effect.jobs[id] ? this.store.job(effect.jobs[id]!) : undefined;
+          // An agent picked it up since the card was drawn (it will report), or nothing to send.
+          if (busy.has(id) || !job || !this.dispatcher) {
+            if (busy.has(id)) handled.push(id);
+            skipped.push(it.title);
+            continue;
+          }
+          const add = (base?: string) => (typed && base ? `${base}\nThey added: ${typed}` : typed || base);
+          const decision = q && opt ? `${q.prompt} → ${opt.label}${typed ? ` — ${typed}` : ""}` : undefined;
+          // One failed send doesn't stop the rest: the card is already answered, so say which to redo.
+          try {
+            if (effect.act === "check") {
+              this.journal(`Dispatched verify: ${it.title}`, { itemId: id });
+              await this.dispatcher.dispatch(id, "verify", add(stoppedJobNote(job)), decision);
+            } else {
+              this.journal(`Sent again (${job.name}): ${it.title}`, { itemId: id });
+              // The same job again: its action, its instructions, and the answer that first sent it.
+              await this.dispatcher.dispatch(id, job.name as ActionKind, add(job.note), job.decision ?? decision);
+            }
+            handled.push(id);
+          } catch (e) {
+            failed.push(`${it.title} (${errText(e)})`);
+          }
+        }
+        if (skipped.length) this.toast(`Left alone (an agent is on ${skipped.length === 1 ? "it" : "them"}, or none can start): ${skipped.join("; ")}`, "info");
+        if (failed.length) this.toast(`Couldn't send: ${failed.join("; ")}. They stay on the card.`, "warn");
+        // Unticked rows, and ones that couldn't be sent, stay on a card: not stranded on doing.
+        if (q) foldRest(this, q, handled);
+        break;
+      }
       case "flushJournal":
         void this.journalFlusher?.().catch((e) => this.toast(`Couldn't save the journal: ${errText(e)}`, "warn"));
         if (q && !itemId) answerLine();
@@ -761,7 +818,8 @@ export class Hub {
 
     const opt = d.pick ? q.options.find((o) => o.id === d.pick) : undefined;
     // The stale card closes cards on ticks or a bare "Close all" tap: a note can't say which, so don't guess.
-    if (opt?.effect.type === "closePicks") {
+    // Same for the stopped-agents card's tick-only options: a note can't pick rows.
+    if (opt?.effect.type === "closePicks" || (opt?.effect.type === "stoppedPicks" && !opt.effect.all)) {
       // note() hid it for 15 min: it's still waiting on a tap, so show it again now.
       const cur = this.store.question(q.id);
       if (cur?.notBefore) {
@@ -769,7 +827,7 @@ export class Hub {
         this.store.putQuestion(cur);
         this.emit({ type: "question", data: cur });
       }
-      this.toast("Tick the cards to close, or tap Close all. A note can't pick them.", "warn");
+      this.toast(opt.effect.type === "closePicks" ? "Tick the cards to close, or tap Close all. A note can't pick them." : "Tick the ones you mean, or tap the button for all of them. A note can't pick them.", "warn");
       return;
     }
     // A card of several items (recheck) with its own agent option: a typed "check them all yourself" goes through
@@ -1182,6 +1240,7 @@ export function effectText(e: Effect): string {
     case "prepMeetings": return "dispatch prep for each ticked meeting";
     case "donePicks": return e.all ? "mark every listed item done" : "mark each ticked item done";
     case "closePicks": return e.all ? "close every listed card" : "close each ticked card";
+    case "stoppedPicks": return `${e.act === "check" ? "dispatch verify" : "dispatch the same action again"} for ${e.all ? "every listed item" : "each ticked item"}`;
     case "flushJournal": return "save the journal to memory";
     case "sweep": return `run the ${e.name} sweep`;
     case "focusSession": return "focus the agent session";
@@ -1310,13 +1369,13 @@ export function sentAgent(action: ActionKind, title: string) {
 /** Effects that hand work to a job that runs after the toast: an agent, the scheduler, triage, a login. */
 export function runsLater(e: Effect): boolean {
   if (e.type === "multi") return e.effects.some(runsLater);
-  return e.type === "dispatch" || e.type === "when" || e.type === "triage" || e.type === "gatewayLogin" || e.type === "accessLogin" || e.type === "sweep" || e.type === "flushJournal";
+  return e.type === "dispatch" || e.type === "stoppedPicks" || e.type === "when" || e.type === "triage" || e.type === "gatewayLogin" || e.type === "accessLogin" || e.type === "sweep" || e.type === "flushJournal";
 }
 
 /** How many items a batched card's options act on (its widest multi of per-item status effects, or the picks a donePicks card acts on). 0 for a normal card. */
 export function batchedItems(q: Pick<Question, "options" | "picks">): number {
   // The recheck card acts on its picks (donePicks), not a multi.
-  const picked = q.options.some((o) => o.effect.type === "donePicks") ? (q.picks?.length ?? 0) : 0;
+  const picked = q.options.some((o) => o.effect.type === "donePicks" || o.effect.type === "stoppedPicks") ? (q.picks?.length ?? 0) : 0;
   return Math.max(picked, ...q.options.map((o) => (o.effect.type === "multi" ? o.effect.effects.filter((e) => e.type === "status" && e.itemId).length : 0)));
 }
 
