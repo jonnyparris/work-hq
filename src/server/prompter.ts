@@ -1270,6 +1270,10 @@ export interface RecheckResult {
   question?: string;
 }
 
+/** What the recheck card's "Check for me" agent is for. Hub.dispatchPicks appends the items. */
+export const RECHECK_VERIFY_NOTE =
+  "Everything these items link to has merged or closed. For each one, find out if anything is still left after the merge (a deploy, a rollout, a check, a reply). Don't set any status yourself, even when the evidence is clear: propose it. Propose \"Mark done\" (a question per item) for the ones with nothing left; for the rest, say what's left and who has it.";
+
 /** The recheck card: one tick-box per landed item (pick id = item id), nothing pre-ticked. */
 export function recheckCard(found: Array<{ it: Pick<Item, "id" | "title" | "status">; l: Landed }>) {
   const n = found.length;
@@ -1286,6 +1290,9 @@ export function recheckCard(found: Array<{ it: Pick<Item, "id" | "title" | "stat
     options: [
       opt("done", "Mark ticked done", { type: "donePicks" }, "primary"),
       opt("all", n === 1 ? mergedLabel(found[0]!.l) : `Mark all ${n} done`, { type: "donePicks", all: true }),
+      // 10-27: "check them all yourself" on this card was parked for a week: it had no agent to send.
+      // One verify job across the ticked items (all of them if none), see Hub.dispatchPicks.
+      { ...opt("check", "Check for me", { type: "dispatch", action: "verify", note: RECHECK_VERIFY_NOTE }), hint: "One agent checks what's left after each merge" },
       opt("keep", "Leave them", { type: "noop" }, "quiet"),
     ],
   };

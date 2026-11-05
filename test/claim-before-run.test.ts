@@ -145,5 +145,5 @@ test("queuedNote: open-and-keep and status picks fall through to the model's rep
   expect(queuedNote(q, { pick: "s" }, "t")).toBeUndefined();
   expect(queuedNote(q, { pick: "m" }, "t")).toBe("Noted → Both");
   expect(queuedNote(q, { pick: "o", dispatch: { action: "verify" } }, "t")).toBe("Sent an agent to check: t");
-  expect(queuedNote(q, { dispatch: { action: "verify" } })).toBeUndefined(); // no item → applyNote can't dispatch
+  expect(queuedNote(q, { dispatch: { action: "verify" } })).toBeUndefined(); // no item and no item picks → applyNote can't dispatch
 });

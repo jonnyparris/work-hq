@@ -428,6 +428,8 @@ export class Hub {
             typed && effect.note ? `${effect.note}\nThey added: ${typed}` : typed || effect.note,
             q && opt ? `${q.prompt} → ${opt.label}${typed ? ` — ${typed}` : ""}` : undefined,
           );
+        } else if (!itemId && q && opt && this.dispatcher && picksDispatchOption(q, effect.action)) {
+          journaled = await this.dispatchPicks(effect, q, opt, note, ctx);
         }
         break;
       case "when":
@@ -505,7 +507,7 @@ export class Hub {
         // "All but the deploy one", "not Bravo": name matching can't subtract, so ask for ticks rather than guess.
         // Fail closed: any word that might leave something out ("skip", "no", "leave", "still") means ticks.
         // Best effort for picking by name; ticks are the real answer.
-        const excludes = /\b(but|except\w*|exclud\w*|not|no|none|never|neither|nothing|without|minus|apart|aside|besides?|others?|rest|else|skip\w*|omit\w*|ignor\w*|leav\w*|bar|save|spar\w*|still|hold|keep\w*|only|just|cannot|ain't|aint|\w+nt(?<=(?:do|is|are|does|did|wo|ca|should|could|would|has|have|was|were)nt))\b|n['’]t\b/i.test(note ?? "");
+        const excludes = leavesOut(note);
         // "Mark all" takes no qualifiers: a note on it ("all but Bravo", "all with the exception of…") might leave
         // something out, and a blocklist can't catch every way of saying so. Only a plain "all" / "done" goes through.
         const plainAll = !note?.trim() || /^(all|every(thing| one)?|all of them|both|yes|yep|done|all done)[.!]*$/i.test(note.trim());
@@ -770,6 +772,18 @@ export class Hub {
       this.toast("Tick the cards to close, or tap Close all. A note can't pick them.", "warn");
       return;
     }
+    // A card of several items (recheck) with its own agent option: a typed "check them all yourself" goes through
+    // it, one agent across the items. 10-27: that note was parked as stranded and the card sat open for a week.
+    // Only when the reader wants what the option does: "chase the reviewer on Bravo" (reply) isn't a check, and still
+    // gets the stranded "open one to act on it". Only when an item is left to check, so the toast below is true.
+    const viaPicks = !opt && !item && this.dispatcher && d.dispatch?.action ? picksDispatchOption(q, d.dispatch.action) : undefined;
+    if (viaPicks && this.pickTargets(q, [], text).length) {
+      // The typed words only: the reader's paraphrase ("check charlie only") would change which items are picked.
+      await this.answer(q.id, viaPicks.id, text);
+      // Fixed words: the agent hasn't started yet, so the model's reply isn't safe here.
+      this.toast(`Noted → ${viaPicks.label}`, "good");
+      return;
+    }
     // "Open the link" keeps the question open; that's not an answer.
     if (opt && !((opt.effect.type === "open" || opt.effect.type === "focusSession") && opt.effect.keep)) {
       const words = opt.effect.type === "when" ? d.when?.trim() || text : note;
@@ -838,6 +852,56 @@ export class Hub {
     this.park(q, back.toISOString());
     // reply-safe: context only, nothing runs; the reply is an answer.
     this.toast(reply ? `${reply} Back ${fmtDay(back)}.` : `Noted. Back ${fmtDay(back)}.`, "info");
+  }
+
+  /**
+   * One agent across a card's item picks (picksDispatchOption): the ticked ones, else the ones the note names, else
+   * all of them. A note that might leave some out takes all of them and passes the words on: the note only asks the
+   * agent to propose (RECHECK_VERIFY_NOTE), so one too many costs a look, never a closure. The job sits on the
+   * first item (dispatch takes one); its note names every item by id, with links, so its report can update each.
+   * Returns true when it journaled the answer line.
+   */
+  private async dispatchPicks(effect: Extract<Effect, { type: "dispatch" }>, q: Question, opt: QuestionOption, note: string | undefined, ctx: AnswerContext): Promise<boolean> {
+    const listed = q.picks ?? [];
+    const typed = note?.trim();
+    const open = this.pickTargets(q, Array.isArray(ctx.picks) ? ctx.picks : [], typed);
+    if (!open.length) {
+      // Don't eat the card (a tap answered it already): put it back and say why.
+      this.reopen(q, 0);
+      this.toast("Nothing left to check there: those items are closed, or an agent is on them.", "info");
+      return false;
+    }
+    this.journal(`${q.prompt} → ${opt.label}${typed ? ` — ${typed}` : ""}`);
+    const hint = (id: string) => listed.find((p) => p.id === id)?.hint;
+    const list = open
+      .map((it) => `- ${it.id} · ${it.title}${hint(it.id) ? ` (${hint(it.id)})` : ""}${it.links?.length ? `\n  links: ${it.links.join(" ")}` : ""}`)
+      .join("\n");
+    const agentNote = [
+      effect.note,
+      `${PICKS_JOB_HEADER} ${open.length} item${open.length === 1 ? "" : "s"}. Report an update (and a question, if one is needed) for each id:\n${list}`,
+      typed ? `They added: ${typed}` : "",
+    ].filter(Boolean).join("\n");
+    this.journal(`Dispatched ${effect.action} across ${open.length} item${open.length === 1 ? "" : "s"}: ${open.map((it) => it.title).join("; ")}`, { itemId: open[0]!.id });
+    await this.dispatcher!.dispatch(open[0]!.id, effect.action, agentNote, `${q.prompt} → ${opt.label}${typed ? ` — ${typed}` : ""}`);
+    return true;
+  }
+
+  /**
+   * The items a picks agent would cover (dispatchPicks): the ticked ones, else the ones the note names, else all;
+   * then only those still open with no agent on them already (it will report). An item another picks job lists in
+   * its note (`- <id> ·`) counts as having an agent: that job sits on its first item only.
+   */
+  private pickTargets(q: Question, ticks: string[], note?: string): Item[] {
+    const listed = q.picks ?? [];
+    const ticked = ticks.filter((id) => listed.some((p) => p.id === id));
+    const typed = note?.trim();
+    // What the note says about the check itself ("check these yourself") doesn't name an item ("Check the staging deploy").
+    const named = typed && !leavesOut(typed) ? picksFromNote(listed, typed.replace(/\b(check(?:s|ed|ing)?|verif(?:y|ies|ied|ying)|them|these|those|yourself|myself)\b/gi, " ")) : [];
+    const ids = ticked.length ? ticked : named.length ? named : listed.map((p) => p.id);
+    // Action agents only: a note reader or a triage run on the item isn't looking at it.
+    const live = this.store.liveJobs().filter((j) => j.kind === "action");
+    const busy = (id: string) => live.some((j) => j.itemId === id || Boolean(j.note?.includes(PICKS_JOB_HEADER) && j.note.includes(`- ${id} · `)));
+    return ids.map((id) => this.store.item(id)).filter((it): it is Item => Boolean(it && !["done", "dropped"].includes(it.status) && !busy(it.id)));
   }
 
   /** Hide an open question until `until`. */
@@ -1125,6 +1189,29 @@ export function effectText(e: Effect): string {
   }
 }
 
+/** Starts the item list in a picks job's note (dispatchPicks); pickTargets reads it back to see which items it covers. */
+const PICKS_JOB_HEADER = "This one job covers";
+
+/**
+ * Might this note leave some of the card's items out ("all but the deploy one", "not Bravo")? Name matching can't
+ * subtract, so callers ask for ticks (donePicks) or take every item and pass the words on (dispatchPicks).
+ * Fails closed: any word that might leave something out ("skip", "no", "leave", "still") counts.
+ */
+export function leavesOut(note?: string): boolean {
+  return /\b(but|except\w*|exclud\w*|not|no|none|never|neither|nothing|without|minus|apart|aside|besides?|others?|rest|else|skip\w*|omit\w*|ignor\w*|leav\w*|bar|save|spar\w*|still|hold|keep\w*|only|just|cannot|ain't|aint|\w+nt(?<=(?:do|is|are|does|did|wo|ca|should|could|would|has|have|was|were)nt))\b|n['’]t\b/i.test(note ?? "");
+}
+
+/**
+ * The agent option of a card whose ticks are items (the recheck card: picks + donePicks), when it has no single
+ * item. Picking it sends one agent across the items (Hub.dispatchPicks). With `action`, only an option doing that
+ * action. Undefined for every other card: the meeting-prep card's picks are events, and a batched card's items are
+ * in its options, not its picks.
+ */
+export function picksDispatchOption(q: Pick<Question, "options"> & Partial<Pick<Question, "picks" | "itemId">>, action?: ActionKind): QuestionOption | undefined {
+  if (q.itemId || !q.picks?.length || !q.options.some((o) => o.effect.type === "donePicks")) return undefined;
+  return q.options.find((o) => o.effect.type === "dispatch" && (!action || o.effect.action === action));
+}
+
 /**
  * The meetings a typed note names on the prep card: "all"/"every" → all of them; otherwise any whose label has a
  * word of 3+ letters from the note ("Kevin", "kuba"). Generic words (prep, sync, meeting) don't count.
@@ -1239,10 +1326,12 @@ export function batchedItems(q: Pick<Question, "options" | "picks">): number {
  * 10-16 20:44: the note job's summary said "Asking Maryna in chat…"; the reply agent started 5 s later.
  * Same class as "Booked" (ff3d07e): the model words the outcome, the outcome belongs to the job that runs it.
  */
-export function queuedNote(q: Pick<Question, "options">, d: NoteDecision, title?: string): string | undefined {
+export function queuedNote(q: Pick<Question, "options"> & Partial<Pick<Question, "picks" | "itemId">>, d: NoteDecision, title?: string): string | undefined {
   const opt = d.pick ? q.options.find((o) => o.id === d.pick) : undefined;
   if (opt && !((opt.effect.type === "open" || opt.effect.type === "focusSession") && opt.effect.keep)) return runsLater(opt.effect) ? `Noted → ${opt.label}` : undefined;
   if (title && d.dispatch?.action) return sentAgent(d.dispatch.action, title);
+  const viaPicks = !title && d.dispatch?.action ? picksDispatchOption(q, d.dispatch.action) : undefined;
+  if (viaPicks) return `Noted → ${viaPicks.label}`;
   if (title && d.when?.trim()) return `Working out when from “${d.when.trim()}”`;
   return undefined;
 }

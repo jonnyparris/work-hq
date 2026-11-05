@@ -162,7 +162,10 @@ one item. Something you dropped isn't brought back under a new title. Details: [
 Things moved on and Work HQ hasn't caught up (a batch of MRs merged this morning)? Click **recheck** in the top bar
 (or `bin/whq recheck`). It looks up every open item's MRs, PRs and tickets again right now, whatever the cache says,
 in every lane, not only *waiting*. Anything whose links have all landed goes on one card: tick the done ones, or mark
-them all. Some items ask for what comes after the merge (a deploy, a check), so nothing is ticked for you. The chip
+them all. Some items ask for what comes after the merge (a deploy, a check), so nothing is ticked for you. **Check for
+me** (or typing "check them all yourself") sends one verify agent across the ticked items, else the ones the note
+names, else all of them (a note that might leave some out, "all but Bravo", takes all and passes your words on),
+skipping any an agent is already on. Its brief says to propose what's done, not close it, so you answer its cards. The chip
 shows when it last ran and what it found; it turns red when lookups failed (a stale `glab`, `gh` or Access login), and
 those items aren't counted.
 
