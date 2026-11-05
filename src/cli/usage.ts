@@ -10,6 +10,7 @@ import type { Item, Job, JournalEntry, Question } from "../shared/types.ts";
 import { config } from "../server/config.ts";
 import { AFFIRMATIVE } from "../shared/dead-button.ts";
 import { type LoadSample, summarise } from "../server/load.ts";
+import { isFoldCard } from "../server/stopped-fold.ts";
 
 const arg = (name: string) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -86,17 +87,37 @@ p();
 
 // ── repeats ────────────────────────────────────────────────────────────────
 p("## Asked more than once (same item)");
+// Agent follow-ups (`agent:<prompt hash>`, `after:<job id>`) are each a different question from a different run, not
+// the owner being asked the same thing again: "Kitesurf shadow mode (5×)" was 4 agent follow-ups (11-04). They get
+// their own list. Stopped-run fold cards (`after:fold:`) are Work HQ's own ask, so they stay in the main list.
+// The trail shows when each was answered (asked, if open): a 10-29 createdAt printed for an 11-02 answer.
+const isAgentAsk = (q: Question) => /^(agent|after):/.test(q.key) && !isFoldCard(q);
 const perItem = new Map<string, Question[]>();
-for (const q of created) if (q.itemId) perItem.set(q.itemId, [...(perItem.get(q.itemId) ?? []), q]);
-const repeats = [...perItem].filter(([, qs]) => qs.length > 1).sort((a, b) => b[1].length - a[1].length);
-if (!repeats.length) p("None.");
-for (const [id, qs] of repeats.slice(0, 15)) {
-  const trail = qs.sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((q) => `${hm(q.createdAt)} ${q.kind}→${md(cut(q.answer ?? q.status, 40))}`).join(" · ");
-  p(`- **${md(cut(title(id), 80))}** (${qs.length}×): ${trail}`);
+const perItemAgent = new Map<string, Question[]>();
+for (const q of created) {
+  if (!q.itemId) continue;
+  const m = isAgentAsk(q) ? perItemAgent : perItem;
+  m.set(q.itemId, [...(m.get(q.itemId) ?? []), q]);
 }
+const at = (q: Question) => q.answeredAt ?? q.createdAt;
+// Last 12 per row: an item with a run a day would otherwise print one endless line.
+const trail = (qs: Question[]) => {
+  const all = [...qs].sort((a, b) => at(a).localeCompare(at(b))).map((q) => `${hm(at(q))} ${q.kind}→${md(cut(q.answer ?? q.status, 40))}`);
+  return (all.length > 12 ? [`+${all.length - 12} earlier`, ...all.slice(-12)] : all).join(" · ");
+};
+const several = (m: Map<string, Question[]>) => [...m].filter(([, qs]) => qs.length > 1).sort((a, b) => b[1].length - a[1].length);
+const repeats = several(perItem);
+if (!repeats.length) p("None.");
+for (const [id, qs] of repeats.slice(0, 15)) p(`- **${md(cut(title(id), 80))}** (${qs.length}×): ${trail(qs)}`);
 const samePrompt = new Map<string, Question[]>();
 for (const q of created.filter((q) => !q.itemId && !["review", "prep", "plan", "wrap"].includes(q.kind))) samePrompt.set(q.prompt, [...(samePrompt.get(q.prompt) ?? []), q]);
 for (const [prompt, qs] of samePrompt) if (qs.length > 1) p(`- (no item) **${md(cut(prompt, 80))}** asked ${qs.length}×`);
+const agentSeveral = several(perItemAgent);
+if (agentSeveral.length) {
+  p();
+  p("### Agent follow-ups (several on one item; different questions, not repeats)");
+  for (const [id, qs] of agentSeveral.slice(0, 10)) p(`- **${md(cut(title(id), 80))}** (${qs.length}): ${trail(qs)}`);
+}
 p();
 
 // ── notes ──────────────────────────────────────────────────────────────────

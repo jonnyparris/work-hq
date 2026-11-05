@@ -228,3 +228,56 @@ test("usage digest: network-error retries reconcile to the jobs they ran on", as
   expect(out).toContain("network-error retries: 3 on 3 job(s) \u00b7 then done 1 \u00b7 failed 1 \u00b7 still open 1");
   expect(out).not.toContain("rate-limit retries");
 });
+
+test("usage digest: agent follow-ups on one item aren't repeats; the trail shows when each was answered", async () => {
+  const path = `${tmpdir()}/whq-usage-agent-${Date.now()}.db`;
+  const hub = new Hub(new Store(path));
+  const kite = hub.createItem({ title: "Kitesurf shadow mode", status: "inbox" });
+  for (const k of ["a", "b", "c"]) hub.ask({ kind: "open", itemId: kite.id, key: `agent:${k}`, priority: 1, prompt: `Agent question ${k}?`, options: [] });
+  hub.ask({ kind: "open", itemId: kite.id, key: "after:job1", priority: 1, prompt: "Agent finished?", options: [] });
+  hub.ask({ kind: "confirm", itemId: kite.id, key: "k:kite", priority: 1, prompt: kite.title, options: [] });
+  // Stopped-run fold cards are Work HQ's own ask: they still count as repeats.
+  const fold = hub.createItem({ title: "Flaky deploy", status: "inbox" });
+  for (const k of ["j1", "j2"]) hub.ask({ kind: "open", itemId: fold.id, key: `after:fold:${k}`, priority: 1, prompt: `Stopped ${k}?`, options: [] });
+  const mr = hub.createItem({ title: "Review !1691", status: "inbox" });
+  const twoDaysAgo = new Date(Date.now() - 2 * 86400_000).toISOString();
+  for (const k of ["a", "b"]) {
+    const q = hub.ask({ kind: "confirm", itemId: mr.id, key: `k:mr${k}`, priority: 1, prompt: `${mr.title} ${k}?`, options: [] })!;
+    if (k === "a") hub.store.putQuestion({ ...hub.store.question(q.id)!, createdAt: twoDaysAgo, status: "answered", answer: "Done", answeredAt: new Date().toISOString() });
+  }
+  hub.store.db.close();
+  const p = Bun.spawn(["bun", "src/cli/usage.ts", "--db", path, "--since", new Date(Date.now() - 3 * 86400_000).toISOString(), "--until", new Date(Date.now() + 60_000).toISOString()], { stdout: "pipe", env: { ...process.env, WORK_HQ_CONFIG: "none" } });
+  const out = await new Response(p.stdout).text();
+  rmSync(path, { force: true });
+  const repeats = out.split("## Asked more than once")[1]!.split("\n## ")[0]!;
+  const [human = "", agent = ""] = repeats.split("### Agent follow-ups");
+  expect(human).not.toContain("Kitesurf shadow mode");
+  expect(agent).toContain("Kitesurf shadow mode** (4)");
+  expect(human).toContain("Flaky deploy** (2×)");
+  expect(agent).not.toContain("Flaky deploy");
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const day = (iso: string) => { const d = new Date(iso); return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+  const row = human.split("\n").find((l) => l.includes("Review !1691"))!;
+  expect(row).toContain("(2×)");
+  expect(row).toContain(`${day(new Date().toISOString())} `);
+  expect(row).not.toContain(`${day(twoDaysAgo)} `);
+});
+
+test("usage digest: a long repeat trail keeps the newest 12 and counts the rest", async () => {
+  const path = `${tmpdir()}/whq-usage-cap-${Date.now()}.db`;
+  const hub = new Hub(new Store(path));
+  const it = hub.createItem({ title: "Nag me daily", status: "inbox" });
+  const t0 = Date.now() - 50 * 60_000;
+  for (let i = 0; i < 14; i++) {
+    const q = hub.ask({ kind: "confirm", itemId: it.id, key: `k:nag${i}`, priority: 1, prompt: `Nag ${i}?`, options: [] })!;
+    hub.store.putQuestion({ ...hub.store.question(q.id)!, createdAt: new Date(t0 + i * 60_000).toISOString(), status: "answered", answer: `ans${i}`, answeredAt: new Date(t0 + i * 60_000 + 1000).toISOString() });
+  }
+  hub.store.db.close();
+  const out = await digest(path);
+  rmSync(path, { force: true });
+  const row = out.split("\n").find((l) => l.includes("Nag me daily"))!;
+  expect(row).toContain("(14×): +2 earlier · ");
+  expect(row).not.toContain("ans1 ");
+  expect(row).toContain("ans2 ");
+  expect(row.trim().endsWith("ans13")).toBe(true);
+});

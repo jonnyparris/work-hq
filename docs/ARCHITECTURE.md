@@ -391,7 +391,9 @@ JSON can be an agent, anywhere.
 to work from. The "nothing happened" check looks for a state change, schedule or dispatch on the same item within
 5 minutes of a note typed while its card was open. Notes added from the item drawer with no card open are
 reported as context. Lines an agent posted (`PATCH /api/items/:id` with `who: "agent"`) journal as `agent`, so
-the digest's typed-input sections leave them out.
+the digest's typed-input sections leave them out. "Asked more than once" counts only cards Work HQ itself put
+up; agent follow-ups (`agent:*`, `after:<job>`) are different questions from different runs, so they get their own
+"Agent follow-ups" list. Each trail entry shows when it was answered (asked, if still open).
 
 ## Files
 

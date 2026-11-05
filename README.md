@@ -177,7 +177,7 @@ Set `labels.trackerUrl` and every ticket key (`PAY-123`) in a question, a card o
 ### Let your reflection tune it
 
 `bin/work-hq usage --since <date>` prints how you actually used it: questions per kind and what you answered,
-items asked more than once, every typed note and what it led to (flagged if it did **nothing** or you typed it
+items asked more than once (agent follow-ups listed apart), every typed note and what it led to (flagged if it did **nothing** or you typed it
 twice), meeting cards, merged duplicates, failed agent runs grouped by error, and what you typed into the command
 bar. Point a nightly reflection at it and have it propose fixes. That's how most of the fixes above were found.
 
