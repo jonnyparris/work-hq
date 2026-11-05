@@ -756,7 +756,7 @@ export class Prompter {
     const today = localDate(now);
     const key = `${REVIEWS_PREFIX}${today}`;
     const prev = this.hub.store.openQuestionByKey(key);
-    const seen = prev ? readMeetings(this.hub, key) : [];
+    const seen = (prev && readMeetings(this.hub, key)) || [];
     // A sweep already read its notes (after the day rolled over, before this tick): nothing to ask about it.
     const fresh = stale.filter((m) => !m.start || !this.hub.wasScanned({ title: m.title, start: m.start }));
     // Chronological, not the order the open questions came back in (ORDER BY updated ties within a ms).

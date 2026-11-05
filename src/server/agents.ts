@@ -27,7 +27,7 @@ import {
 } from "./prompts.ts";
 import { cleanupWorktree, createWorktree, repoFor, type WorktreeResult } from "./worktrees.ts";
 import { foldStopped, isFoldCard } from "./stopped-fold.ts";
-import { BACKFILL_DAYS } from "./review-fold.ts";
+import { BACKFILL_TRIES, capSince, queueBackfill, refundBackfill, settleBackfill, startBackfill } from "./review-fold.ts";
 
 /** The after-card's "Check for me": a verify agent reads what the stopped job left (see stoppedJobNote). */
 export function checkStoppedOption(job: Pick<Job, "id" | "title" | "status" | "summary" | "error" | "session">): QuestionOption {
@@ -850,17 +850,21 @@ export class Agents implements Dispatcher {
 
   // ── sweeps (headless) ──────────────────────────────────────────────────
   private sweeping = new Set<string>();
-  private pendingSince = new Map<string, string>();
 
-  /** `{ rerun: true }`: failed after the laptop slept mid-run; the scheduler runs it again on its next awake tick. */
+  /**
+   * `{ rerun: true }`: failed after the laptop slept mid-run; the scheduler runs it again on its next awake tick.
+   * `since` (transcripts only): a backfill, the folded card's scan. It's capped at BACKFILL_DAYS when asked for and
+   * kept in kv (review-fold.ts: queueBackfill) until a sweep that read from it succeeds, so a failed run, a sleep or
+   * a restart doesn't lose it: the next scheduled sweep picks it up. BACKFILL_TRIES runs at most per ask.
+   */
   async sweep(name: "transcripts" | "calendar", opts: { since?: string } = {}): Promise<{ rerun?: boolean } | undefined> {
+    const asked = name === "transcripts" && opts.since ? capSince(opts.since) : undefined;
     if (this.sweeping.has(name)) {
-      // A backfill tapped mid-sweep (the folded card's scan; that card is already answered) rides the next
-      // scheduled sweep, which goes through the scheduler's restart hold and wake grace.
-      const next = opts.since && earlierIso(this.pendingSince.get(name), opts.since);
-      if (next) {
-        this.pendingSince.set(name, next);
-        this.hub.toast("A transcript scan is already running: the earlier days go with the next one.", "info");
+      // A backfill tapped mid-sweep (that card is already answered) rides the next scheduled sweep, which goes
+      // through the scheduler's restart hold and wake grace.
+      if (asked) {
+        queueBackfill(this.hub, asked);
+        this.hub.toast("A transcript scan is already running: the earlier days go with the next scheduled scan.", "info");
       }
       return;
     }
@@ -879,16 +883,20 @@ export class Agents implements Dispatcher {
       let through: string | undefined;
       let since = "";
       const startedAt = nowIso();
-      // A backfill: the folded card's scan, or one queued while another sweep ran (or put back after a sleep).
-      const backfillFrom = name === "transcripts" ? earlierIso(opts.since, this.pendingSince.get(name)) : undefined;
-      if (name === "transcripts") this.pendingSince.delete(name);
+      // A backfill: the folded card's scan, or one queued earlier (while another sweep ran, or by a run that failed).
+      // Persisted before the run, used verbatim (capped when asked for), cleared only once a run that read it succeeds.
+      if (asked) queueBackfill(this.hub, asked);
+      const bf = name === "transcripts" ? startBackfill(this.hub) : {};
+      if (bf.dropped) {
+        const msg = `Dropped the queued transcript scan from ${bf.dropped.since.slice(0, 10)}: ${BACKFILL_TRIES} runs failed.`;
+        this.line(job.id, `\u2715 ${msg}`);
+        this.hub.toast(msg, "warn");
+      }
+      const backfillFrom = bf.run?.since;
       if (name === "transcripts") {
         const midnight = new Date(day);
         midnight.setHours(0, 0, 0, 0);
-        // A backfill reads at most BACKFILL_DAYS back, however long the folded card sat open.
-        since = backfillFrom
-          ? laterIso(backfillFrom, new Date(day.getTime() - BACKFILL_DAYS * 86400_000).toISOString())!
-          : state.cursor && state.cursor > midnight.toISOString() ? state.cursor : midnight.toISOString();
+        since = backfillFrom ?? (state.cursor && state.cursor > midnight.toISOString() ? state.cursor : midnight.toISOString());
         const known = this.hub.store.items().filter((i) => i.source.type === "transcript" || i.status !== "dropped").map((i) => i.title);
         prompt = transcriptSweepPrompt(job.id, since, known);
       } else {
@@ -901,9 +909,9 @@ export class Agents implements Dispatcher {
         const error = r.error ?? "no JSON in final message";
         this.patch(job.id, { status: "failed", error, finishedAt: nowIso() });
         this.hub.putSync({ ...this.hub.store.syncState(name), error });
+        // A backfill stays queued in kv: the rerun (or the next scheduled sweep) reads it.
         if (r.slept && !this.cancelled(job.id)) {
-          // The rerun carries the backfill too (the card that asked for it is already answered).
-          if (backfillFrom) this.pendingSince.set(name, earlierIso(this.pendingSince.get(name), backfillFrom)!);
+          if (backfillFrom) refundBackfill(this.hub); // a sleep isn't a failed read: it doesn't use up a try
           this.line(job.id, "\u21bb slept mid-run: rerunning on the next awake tick");
           return { rerun: true };
         }
@@ -912,6 +920,7 @@ export class Agents implements Dispatcher {
       const { created } = this.hub.ingestReport({ ...report, jobId: job.id, eventsThrough: through }, name === "transcripts" ? "transcript" : "calendar");
       if (name === "transcripts") {
         this.hub.noteSweepWindow(since, startedAt);
+        if (backfillFrom) settleBackfill(this.hub, since);
         this.hub.markScanned(scannedFrom(report, this.hub.store.items().filter((i) => created.includes(i.id)), Boolean(backfillFrom)));
       }
       this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: report.summary });
@@ -1693,11 +1702,6 @@ export function scannedFrom(report: AgentReport, created: Item[], backfill = fal
 /** The later of two ISO times; an unparseable or missing one loses, both → undefined. */
 export function laterIso(a?: string, b?: string) {
   return pickIso(a, b, (x, y) => y > x);
-}
-
-/** The earlier of two ISO times; an unparseable or missing one loses, both → undefined. */
-export function earlierIso(a?: string, b?: string) {
-  return pickIso(a, b, (x, y) => y < x);
 }
 
 function pickIso(a: string | undefined, b: string | undefined, takeB: (ta: number, tb: number) => boolean) {
