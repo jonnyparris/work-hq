@@ -1,6 +1,6 @@
 // Restart on request, but not on top of a headless run.
 //
-// `whq land` used to kickstart the server straight away. A headless job (calendar/transcripts sweep, triage) dies
+// `whq land` used to kickstart the server straight away. A headless job (calendar/transcripts sweep, triage, work fallback) dies
 // with the process, and the boot pass starts a fresh calendar sweep, so a burst of landings killed one sweep after
 // another (10-21: five "server restarted mid-run" by 11:00, 90 boots in the log). Now land asks the server
 // (POST /api/restart); the server runs its own repo's `restart` command once no headless job is live, holding new
@@ -15,7 +15,10 @@ import { config } from "./config.ts";
 /** The checkout this server runs from. */
 export const SERVER_ROOT = resolve(import.meta.dir, "../..");
 
-/** Restart anyway after this long: a stuck sweep shouldn't keep new code out forever. Sweeps time out at 20 min. */
+/**
+ * Restart anyway after this long: a stuck sweep shouldn't keep new code out forever. Sweeps time out at 20 min.
+ * Headless work-fallback jobs can run 120 min; one still running at 25 min dies. Deliberate: new code beats it.
+ */
 export const MAX_HOLD_MS = 25 * 60_000;
 
 const real = (p: string) => {

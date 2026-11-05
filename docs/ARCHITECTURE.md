@@ -51,8 +51,11 @@
   default 1) that arms a fresh session after every run and retires itself after 50 runs, 30 min idle,
   2 h, a crash, a timeout, or a pi/extension update. A request that finds no idle worker waits for the
   one re-arming, or gets a one-off. Deadlines abort first (the run settles, the session is kept) and
-  SIGKILL 15 s later. A tool run with no event for `pi.stallMin` (default 10) is aborted as stalled.
-  Both clocks count awake time only: a watchdog tick over 30 s late means the laptop slept, and the gap
+  SIGKILL 15 s later. A tool run with no event for `pi.stallMin` (default 10) is aborted as stalled; a
+  headless-fallback work job also stops at a 120 min ceiling (busy, not hung). The ceiling is per
+  attempt (a rate-limit retry starts a fresh one). The stall watchdog is rpc-only (`pi.runner: "rpc"`,
+  the default); print runs have only the ceiling.
+  The rpc deadline and idle clocks count awake time only (print's ceiling is wall clock): a watchdog tick over 30 s late means the laptop slept, and the gap
   moves the deadline and the idle limit out instead of aborting (`sleptMs`, a `☾` line in the job log).
   A sweep that still fails after a sleep says `machine slept mid-run (N min), then …` and is due again on
   the next awake tick. No sweeps start for 3 min after a wake: Power Nap DarkWakes (2–10 s) fire the
@@ -86,8 +89,9 @@
   workspace that is selected, pinned, still working, or waiting on you.
 - **Restarts wait for headless runs.** `whq land` on the server's own checkout asks the server
   (`POST /api/restart`) instead of kickstarting it. The server runs its repo rule's `restart` once no
-  headless job (sweep, triage) is live, starts no new sweeps meanwhile, folds several landings into one
-  restart, and gives up waiting after 25 min (`src/server/restart.ts`). Boot sweeps only what's due by
+  headless job (sweep, triage, work fallback) is live, starts no new sweeps meanwhile, folds several landings into one
+  restart, and gives up waiting after 25 min (`src/server/restart.ts`), so a headless work job that
+  runs longer dies on a landing (cmux work jobs don't). Boot sweeps only what's due by
   its last good run, so a restart doesn't start a fresh calendar sweep for the next one to kill.
   A cmux job the restart caught before launch goes back on the gate with its saved prompt. If cmux
   doesn't answer the first ping (busy under load), boot keeps pinging every 3 s for up to 60 s, without

@@ -519,7 +519,9 @@ export class Agents implements Dispatcher {
     // No cmux: run headless with full tools. Still visible in the dashboard feed.
     // Don't hold the reservation for the whole run: once runHeadless marks the job running, the store counts it.
     let settled = false;
-    void this.runHeadless(jobId, prompt, { tools: true, thinking: "medium", perms: false, timeoutMin: 45 })
+    // The stall watchdog (pi.stallMin) catches a hung run; this ceiling only stops a busy one that never ends.
+    // 45 min killed two review-heavy jobs mid-review on 10-23 (max event gap ~5 min: busy, not hung).
+    void this.runHeadless(jobId, prompt, { tools: true, thinking: "medium", perms: false, timeoutMin: 120 })
       .then((r) => this.finishAction(jobId, r))
       .catch((e) => this.finishAction(jobId, { ok: false, text: "", error: (e as Error).message }))
       .finally(() => (settled = true));
