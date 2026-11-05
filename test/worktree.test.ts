@@ -6,7 +6,11 @@ import { join } from "node:path";
 // scripts/worktree.sh against throwaway repos: a bare "origin" and a main checkout cloned from it.
 // 10-20: two sessions shared ~/dev/work-hq and one commit swept the other's staged hunks.
 const SCRIPT = join(import.meta.dir, "..", "scripts", "worktree.sh");
-const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", WORKTREE_LOCK_WAIT: "2" };
+// No WORK_HQ_URL / WORK_HQ_JOB from a Work HQ agent running these tests: they'd point land at the live server.
+const { WORK_HQ_URL: _url, WORK_HQ_JOB: _job, ...parentEnv } = process.env;
+const env = { ...parentEnv, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", WORKTREE_LOCK_WAIT: "2",
+  // land asks Work HQ to restart after code lands; port 1 never answers, so no test pokes the live server on 7717.
+  WORK_HQ_PORT: "1" };
 
 function sh(cwd: string, ...cmd: string[]) {
   const r = Bun.spawnSync(cmd, { cwd, env, stdout: "pipe", stderr: "pipe" });
@@ -162,4 +166,165 @@ describe("worktree.sh", () => {
     expect(git(origin, "rev-parse", "main")).toBe(git(main, "rev-parse", "HEAD"));
     expect(existsSync(join(main, ".git", "worktree-land.lock"))).toBe(false);
   }, SLOW);
+
+  // 11-04: an agent kickstarted the server after a land and killed another job mid-land. land now asks the server
+  // (POST /api/restart, src/server/restart.ts), which holds the restart while headless jobs run.
+  describe("restart after land", () => {
+    // Async spawn: the fake server answers from this process, which spawnSync would block.
+    async function landAsync(cwd: string, port: number, ...args: string[]) {
+      const p = Bun.spawn(["bash", SCRIPT, "land", ...args], { cwd, env: { ...env, WORK_HQ_PORT: String(port) }, stdout: "pipe", stderr: "pipe" });
+      const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
+      return { ok: (await p.exited) === 0, out: out.trim(), err: err.trim() };
+    }
+    function fake(answer: (b: any) => Response) {
+      const asked: any[] = [];
+      const server = Bun.serve({ port: 0, fetch: async (req) => {
+        const b = await req.json();
+        asked.push({ path: new URL(req.url).pathname, method: req.method, ...b });
+        return answer(b);
+      } });
+      return { asked, server };
+    }
+    // land asks only for a Work HQ checkout (src/server/restart.ts present).
+    function workHq() {
+      const t = setup();
+      mkdirSync(join(t.main, "src", "server"), { recursive: true });
+      writeFileSync(join(t.main, "src", "server", "restart.ts"), "// gate\n");
+      git(t.main, "add", "src");
+      git(t.main, "commit", "-q", "-m", "work hq");
+      git(t.main, "push", "-q", "origin", "main");
+      return t;
+    }
+    function change(main: string, slug: string, file = "a.ts") {
+      const dir = newWt(main, slug);
+      mkdirSync(join(dir, file, ".."), { recursive: true });
+      writeFileSync(join(dir, file), `${slug}\n`);
+      git(dir, "add", file);
+      git(dir, "commit", "-q", "-m", slug);
+      return dir;
+    }
+
+    test("code landed while a headless job runs: queued at the server, no restart here", async () => {
+      const { main } = workHq();
+      const dir = change(main, "q");
+      const { asked, server } = fake(() => Response.json({ status: "queued", waitingFor: ["Read the calendar", "Triage"], pid: 1 }));
+      try {
+        const r = await landAsync(dir, server.port!);
+        expect(r.ok).toBe(true);
+        expect(r.out).toContain("landed");
+        expect(asked).toEqual([{ path: "/api/restart", method: "POST", repo: main, reason: "wt/q" }]);
+        expect(r.out).toContain("server restart: queued behind Read the calendar, Triage");
+      } finally {
+        server.stop(true);
+      }
+    }, SLOW);
+
+    test("no headless job: the server restarts now", async () => {
+      const { main } = workHq();
+      const dir = change(main, "n");
+      const { asked, server } = fake(() => Response.json({ status: "now", waitingFor: [], pid: 1 }));
+      try {
+        const r = await landAsync(dir, server.port!, "--keep");
+        expect(r.ok).toBe(true);
+        expect(asked).toHaveLength(1);
+        expect(r.out).toContain("server restart: now");
+      } finally {
+        server.stop(true);
+      }
+    }, SLOW);
+
+    test("409 (not the server's checkout): lands, no restart", async () => {
+      const { main } = workHq();
+      const dir = change(main, "other");
+      const { asked, server } = fake(() => Response.json({ error: "not this server's checkout" }, { status: 409 }));
+      try {
+        const r = await landAsync(dir, server.port!);
+        expect(r.ok).toBe(true);
+        expect(asked).toHaveLength(1);
+        expect(r.err).toContain("server restart: none");
+      } finally {
+        server.stop(true);
+      }
+    }, SLOW);
+
+    test("docs/test-only changes and --no-restart never ask", async () => {
+      const { main } = workHq();
+      const { asked, server } = fake(() => Response.json({ status: "now", waitingFor: [], pid: 1 }));
+      try {
+        expect((await landAsync(change(main, "docs", "docs/x.md"), server.port!)).ok).toBe(true);
+        expect((await landAsync(change(main, "tests", "test/x.test.ts"), server.port!)).ok).toBe(true);
+        expect((await landAsync(change(main, "skip"), server.port!, "--no-restart")).ok).toBe(true);
+        expect(asked).toEqual([]);
+      } finally {
+        server.stop(true);
+      }
+    }, SLOW);
+
+    test("a Work HQ job sends its id, so the gate doesn't hold the restart behind the job asking", async () => {
+      const { main } = workHq();
+      const dir = change(main, "job");
+      const { asked, server } = fake(() => Response.json({ status: "now", waitingFor: [], pid: 1 }));
+      try {
+        const p = Bun.spawn(["bash", SCRIPT, "land"], { cwd: dir, env: { ...env, WORK_HQ_PORT: String(server.port), WORK_HQ_JOB: "job_abc" }, stdout: "pipe", stderr: "pipe" });
+        expect(await p.exited).toBe(0);
+        expect(asked.map((a) => a.reason)).toEqual(["job_abc"]);
+      } finally {
+        server.stop(true);
+      }
+    }, SLOW);
+
+    test("not a Work HQ checkout: never asks", async () => {
+      const { main } = setup();
+      const { asked, server } = fake(() => Response.json({ status: "now", waitingFor: [], pid: 1 }));
+      try {
+        const r = await landAsync(change(main, "plain"), server.port!);
+        expect(r.ok).toBe(true);
+        expect(asked).toEqual([]);
+        expect(r.err + r.out).not.toContain("server restart");
+      } finally {
+        server.stop(true);
+      }
+    }, SLOW);
+
+    test("server answers 500: landed, says how to ask again", async () => {
+      const { main } = workHq();
+      const { asked, server } = fake(() => new Response("boom", { status: 500 }));
+      try {
+        const r = await landAsync(change(main, "err"), server.port!);
+        expect(r.ok).toBe(true);
+        expect(asked).toHaveLength(1);
+        expect(r.err).toContain("didn't take it (500)");
+        expect(r.err).toContain("/api/restart");
+      } finally {
+        server.stop(true);
+      }
+    }, SLOW);
+
+    test("code from origin that the catch-up brings in counts, even under a docs-only branch", async () => {
+      const { root, main, origin } = workHq();
+      const other = join(root, "other");
+      git(root, "clone", "-q", origin, other);
+      writeFileSync(join(other, "server.ts"), "new code\n");
+      git(other, "add", "server.ts");
+      git(other, "commit", "-q", "-m", "elsewhere");
+      git(other, "push", "-q", "origin", "main");
+      const dir = change(main, "docsonly", "README.md");
+      const { asked, server } = fake(() => Response.json({ status: "now", waitingFor: [], pid: 1 }));
+      try {
+        expect((await landAsync(dir, server.port!)).ok).toBe(true);
+        expect(asked).toHaveLength(1);
+      } finally {
+        server.stop(true);
+      }
+    }, SLOW);
+
+    test("server not answering: still landed, exit 0, says so", async () => {
+      const { main, origin } = workHq();
+      const r = await landAsync(change(main, "down"), 1);
+      expect(r.ok).toBe(true);
+      expect(r.err).toContain("Work HQ at http://127.0.0.1:1 didn't take it (000)");
+      expect(r.err).toContain("don't kickstart");
+      expect(git(origin, "rev-parse", "main")).toBe(git(main, "rev-parse", "HEAD"));
+    }, SLOW);
+  });
 });

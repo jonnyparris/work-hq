@@ -87,8 +87,8 @@
   (beacon `idle`/`exited`) longer than `cmux.pruneIdleHours` (default 3), or `cmux.pruneDoneMinutes`
   (default 20) when the job finished cleanly and nothing is open on its item. It never touches a
   workspace that is selected, pinned, still working, or waiting on you.
-- **Restarts wait for headless runs.** `whq land` on the server's own checkout asks the server
-  (`POST /api/restart`) instead of kickstarting it. The server runs its repo rule's `restart` once no
+- **Restarts wait for headless runs.** `whq land` and `scripts/worktree.sh land` on the server's own checkout ask the
+  server (`POST /api/restart`) instead of kickstarting it. The server runs its repo rule's `restart` once no
   headless job (sweep, triage, work fallback) is live, starts no new sweeps meanwhile, folds several landings into one
   restart, and gives up waiting after 25 min (`src/server/restart.ts`), so a headless work job that
   runs longer dies on a landing (cmux work jobs don't). Boot sweeps only what's due by

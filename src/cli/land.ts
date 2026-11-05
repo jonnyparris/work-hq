@@ -1,5 +1,6 @@
 // `whq land <jobId>`: land a work job's server-made worktree in one step (see src/server/worktrees.ts).
-//   1. worktree.sh land --keep [--check]   rebase on main, check, fast-forward the main checkout, push
+//   1. worktree.sh land --keep --no-restart [--check]   rebase on main, check, fast-forward the main checkout, push
+//                                          (--no-restart: step 4 restarts, after publish, with the repo rule's command as fallback)
 //   2. publish (if configured)             e.g. scripts/publish.sh github, from the landed worktree
 //   3. remove the worktree and its branch
 //   4. restart (if configured)             only when non-doc files changed; prints the new PID. For the server's
@@ -33,6 +34,8 @@ export interface LandResult {
   restarted?: boolean;
   /** The server took the restart but holds it for these headless jobs; it restarts itself when they finish. */
   queuedBehind?: string[];
+  /** The server is up but didn't answer the restart in time (or failed it): not restarted, ask it again. */
+  restartUnanswered?: string;
   error?: string;
 }
 
@@ -47,7 +50,7 @@ export async function land(info: WorktreeInfo, opts: { script?: string; port?: n
   const base = info.base ?? run(["git", "merge-base", "HEAD", "main"], info.dir).out;
   const files = base ? run(["git", "diff", "--name-only", base, "HEAD"], info.dir).out.split("\n").filter(Boolean) : [];
 
-  const landArgs = ["bash", script, "land", "--keep", ...(info.check ? ["--check", info.check] : [])];
+  const landArgs = ["bash", script, "land", "--keep", "--no-restart", ...(info.check ? ["--check", info.check] : [])];
   const l = run(landArgs, info.dir, true);
   const sha = /landed (\w+)/.exec(l.out)?.[1];
   if (!l.ok || !sha) return { ok: false, error: (l.err || l.out).split("\n").pop() || "land failed" };
@@ -69,6 +72,12 @@ export async function land(info: WorktreeInfo, opts: { script?: string; port?: n
     const port = opts.port ?? config.port;
     const asked = await askServer(port, info);
     if (asked?.status === "queued") return { ok: true, sha, mirror, restarted: true, queuedBehind: asked.waitingFor };
+    // Up but slow or failing: kickstarting it would kill the headless jobs the server holds the restart for.
+    if (asked?.status === "unanswered") {
+      const body = JSON.stringify({ repo: info.repo, reason: info.jobId });
+      const again = `curl -X POST -H 'content-type: application/json' -d '${body}' http://127.0.0.1:${port}/api/restart`;
+      return { ok: true, sha, mirror, restarted: false, restartUnanswered: `${asked.why}; ask again: ${again}` };
+    }
     if (asked?.status === "now") pid = await waitForPid(port, run, info.repo, String(asked.pid));
     else {
       const r = run(["bash", "-c", info.restart!], info.repo, true);
@@ -79,8 +88,14 @@ export async function land(info: WorktreeInfo, opts: { script?: string; port?: n
   return { ok: true, sha, mirror, pid, restarted: restart };
 }
 
-/** Ask the running server to restart itself. Undefined = not ours (409), not up, or not a Work HQ server: run the command. */
-async function askServer(port: number, info: WorktreeInfo): Promise<{ status: "now" | "queued"; waitingFor: string[]; pid: number } | undefined> {
+/**
+ * Ask the running server to restart itself. Undefined = not ours (409), not up, or not a Work HQ server: run the command.
+ * "unanswered" = maybe up but timed out, reset or answered 5xx: don't run the command over jobs it may be holding.
+ */
+async function askServer(
+  port: number,
+  info: WorktreeInfo,
+): Promise<{ status: "now" | "queued"; waitingFor: string[]; pid: number } | { status: "unanswered"; why: string } | undefined> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/api/restart`, {
       method: "POST",
@@ -88,11 +103,21 @@ async function askServer(port: number, info: WorktreeInfo): Promise<{ status: "n
       body: JSON.stringify({ repo: info.repo, reason: info.jobId }),
       signal: AbortSignal.timeout(3_000),
     });
+    if (res.status >= 500) return { status: "unanswered", why: `answered ${res.status}` };
     if (!res.ok) return undefined;
-    const r = (await res.json()) as { status?: string; waitingFor?: string[]; pid?: number };
-    return r.status === "now" || r.status === "queued" ? { status: r.status, waitingFor: r.waitingFor ?? [], pid: r.pid ?? 0 } : undefined;
-  } catch {
-    return undefined;
+    let r: { status?: string; waitingFor?: string[]; pid?: number };
+    try {
+      r = JSON.parse(await res.text());
+    } catch (e) {
+      if ((e as Error)?.name !== "SyntaxError") throw e;
+      return undefined; // 2xx but not JSON: not a Work HQ server
+    }
+    return r?.status === "now" || r.status === "queued" ? { status: r.status, waitingFor: r.waitingFor ?? [], pid: r.pid ?? 0 } : undefined;
+  } catch (e) {
+    // Only a refused connection means nothing listens (server down): run the command. A timeout, reset or anything
+    // else may be a live, busy server holding jobs.
+    if ((e as { code?: string })?.code === "ConnectionRefused") return undefined;
+    return { status: "unanswered", why: (e as Error)?.name === "TimeoutError" ? "no answer in 3 s" : `fetch failed (${(e as Error)?.message ?? e})` };
   }
 }
 
@@ -113,6 +138,8 @@ export function summarize(r: LandResult) {
     r.mirror && `mirror ${r.mirror}`,
     r.queuedBehind?.length
       ? `server restart queued behind ${r.queuedBehind.join(", ")} (it restarts itself when they finish)`
+      : r.restartUnanswered
+        ? `server NOT restarted (don't kickstart it): ${r.restartUnanswered}`
       : r.restarted ? `server restarted, PID ${r.pid ?? "unknown (not listening yet)"}` : "no restart needed",
   ].filter(Boolean).join(" · ");
 }

@@ -166,6 +166,53 @@ describe("whq land", () => {
     }
   }, SLOW);
 
+  // land.ts restarts after publish itself; worktree.sh mustn't ask the server first.
+  test("passes --no-restart to worktree.sh", async () => {
+    const { main } = setup();
+    const wt = (await createWorktree({ dir: main }, jobId())) as WorktreeInfo;
+    const calls: string[][] = [];
+    await land(wt, { run: (cmd) => (calls.push(cmd), { ok: false, out: "", err: "stop" }) });
+    const landCall = calls.find((c) => c.includes("land"));
+    expect(landCall).toContain("--no-restart");
+    expect(landCall).toContain("--keep");
+  }, SLOW);
+
+  // 11-04: a kickstart killed a job mid-land. A server that is up but slow holds jobs; never run the command over it.
+  test("server up but answering 500: no restart command, says how to ask again", async () => {
+    const { main } = setup();
+    const marker = join(main, "..", "kicked");
+    const wt = (await createWorktree({ dir: main, restart: `touch ${marker}` }, jobId())) as WorktreeInfo;
+    writeFileSync(join(wt.dir, "a.ts"), "s\n");
+    git(wt.dir, "commit", "-q", "-am", "s");
+    const server = Bun.serve({ port: 0, fetch: () => new Response("boom", { status: 500 }) });
+    try {
+      const r = await land(wt, { port: server.port });
+      expect(r.ok).toBe(true);
+      expect(r.restarted).toBe(false);
+      expect(existsSync(marker)).toBe(false);
+      expect(summarize(r)).toContain("server NOT restarted (don't kickstart it): answered 500; ask again: curl -X POST");
+    } finally {
+      server.stop(true);
+    }
+  }, SLOW);
+
+  test("server up but silent past 3 s: no restart command", async () => {
+    const { main } = setup();
+    const marker = join(main, "..", "kicked");
+    const wt = (await createWorktree({ dir: main, restart: `touch ${marker}` }, jobId())) as WorktreeInfo;
+    writeFileSync(join(wt.dir, "a.ts"), "t\n");
+    git(wt.dir, "commit", "-q", "-am", "t");
+    const server = Bun.serve({ port: 0, fetch: async () => (await Bun.sleep(5_000), new Response("late")) });
+    try {
+      const r = await land(wt, { port: server.port });
+      expect(r.ok).toBe(true);
+      expect(r.restartUnanswered).toStartWith("no answer in 3 s");
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      server.stop(true);
+    }
+  }, SLOW);
+
   test("docs-only change: no restart", async () => {
     const { main } = setup();
     const wt = (await createWorktree({ dir: main, restart: "exit 1" }, jobId())) as WorktreeInfo;

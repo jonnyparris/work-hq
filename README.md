@@ -241,7 +241,9 @@ scripts/worktree.sh land --check 'bun test'   # rebase on main, check, fast-forw
 scripts/worktree.sh list                      # what's in flight (never remove someone else's)
 ```
 
-The server runs from the main checkout, so restart it after `land`, not before.
+The server runs from the main checkout. `land` restarts it: when code (not docs or tests) landed, it asks the running server
+(`POST /api/restart`), which restarts once no headless job would die. Never `launchctl kickstart` it yourself: that
+kills running jobs. `--no-restart` skips the ask.
 
 If a `test-lock` command is on `PATH`, `land` runs the check through it. It caps how many test suites run at once across all worktrees (`TEST_SLOTS`, default 3; `TEST_LOCK=0` turns it off), so suites don't time out when many agents land together.
 

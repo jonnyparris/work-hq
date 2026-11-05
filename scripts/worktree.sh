@@ -6,14 +6,17 @@
 # works on its own branch in its own directory and lands with a fast-forward.
 #
 #   scripts/worktree.sh new <slug>             # → ../<repo>-<slug> on branch wt/<slug>; prints the path
-#   scripts/worktree.sh land [--check 'cmd'] [--no-push] [--keep]
+#   scripts/worktree.sh land [--check 'cmd'] [--no-push] [--keep] [--no-restart]
 #                                              # run inside the worktree: rebase on main, run the check,
 #                                              # fast-forward the main checkout, push origin main,
-#                                              # remove the worktree + branch. Prints the landed SHA.
+#                                              # remove the worktree + branch, ask Work HQ to restart.
+#                                              # Prints the landed SHA.
 #   scripts/worktree.sh list                   # worktrees + commits ahead of main
 #
 # Never removes or merges a worktree it didn't get pointed at: others may be in-flight.
-# Restarting a server that runs from the main checkout is the caller's job, after land.
+# Landed code (not docs/tests) → land asks the running Work HQ server to restart (POST /api/restart). It answers
+# only for its own checkout and waits for headless jobs first (src/server/restart.ts). Never launchctl kickstart
+# it yourself: that kills running jobs (11-04: a kickstart after a land killed another job mid-land).
 set -euo pipefail
 
 die() { echo "worktree.sh: $*" >&2; exit 1; }
@@ -21,6 +24,41 @@ MAIN="$(git worktree list --porcelain | awk 'NR==1 && $1=="worktree" { sub(/^wor
 [[ -n "$MAIN" ]] || die "not in a git repo"
 BASE="${WORKTREE_BASE:-main}"
 REMOTE="${WORKTREE_REMOTE:-origin}"
+
+# Ask the Work HQ server to restart for code just landed in $MAIN. Never fails the land: it already happened.
+#   200 now/queued → the server restarts itself (now, or once its headless jobs finish)
+#   409            → not that server's checkout, or it has no restart command: nothing restarted
+#   no answer      → down (launchd restarts a crashed server on the new code) or too busy: says how to ask again
+ask_restart() {
+  [[ -f "$MAIN/src/server/restart.ts" ]] || return 0 # not a Work HQ checkout: no server of ours runs from it
+  local url port repo reason data out code status waiting
+  # WORK_HQ_PORT (explicit) > WORK_HQ_URL (set in Work HQ's own agents) > the config's port, read with the main
+  # checkout's code (bounded: never hang a land) > 7717.
+  port="${WORK_HQ_PORT:-}"
+  if [[ -n "$port" ]]; then url="http://127.0.0.1:$port"
+  elif [[ -n "${WORK_HQ_URL:-}" ]]; then url="${WORK_HQ_URL%/}"
+  else
+    command -v bun >/dev/null && port="$(cd "$MAIN" && perl -e 'alarm shift; exec @ARGV' 5 bun src/cli/config.ts port 2>/dev/null || true)"
+    [[ "$port" =~ ^[0-9]+$ ]] || port=7717
+    url="http://127.0.0.1:$port"
+  fi
+  repo="${MAIN//\\/\\\\}"; repo="${repo//\"/\\\"}"
+  reason="${WORK_HQ_JOB:-$1}" # a Work HQ job sends its id: the gate never holds a restart behind the job asking
+  reason="${reason//\\/\\\\}"; reason="${reason//\"/\\\"}"
+  data="{\"repo\":\"$repo\",\"reason\":\"$reason\"}"
+  out="$(curl -s --connect-timeout 2 -m 10 -w $'\n%{http_code}' -X POST -H 'content-type: application/json' \
+    --data "$data" "$url/api/restart" 2>/dev/null || true)"
+  code="${out##*$'\n'}"; out="${out%$'\n'*}"
+  status="$(sed -n 's/.*"status" *: *"\([a-z]*\)".*/\1/p' <<<"$out")"
+  waiting="$(sed -n 's/.*"waitingFor" *: *\[\([^]]*\)\].*/\1/p' <<<"$out" | tr -d '"' | sed 's/,/, /g')"
+  case "$code:$status" in
+    200:now) echo "server restart: now (Work HQ at $url is restarting itself)" ;;
+    200:queued) echo "server restart: queued behind ${waiting:-headless jobs} (it restarts itself when they finish)" ;;
+    409:*) echo "server restart: none (Work HQ at $url doesn't run from $MAIN, or has no restart command)" >&2 ;;
+    *) echo "server restart: Work HQ at $url didn't take it (${code:-no answer}). Down? launchd starts it again. Busy? ask again, don't kickstart:" \
+         "curl -X POST -H 'content-type: application/json' -d '$data' $url/api/restart" >&2 ;;
+  esac
+}
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
@@ -43,12 +81,13 @@ case "$cmd" in
     ;;
 
   land)
-    check=""; push=1; keep=0
+    check=""; push=1; keep=0; restart=1
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --check) check="${2:?--check needs a command}"; shift 2 ;;
         --no-push) push=0; shift ;;
         --keep) keep=1; shift ;;
+        --no-restart) restart=0; shift ;;
         *) die "unknown flag $1" ;;
       esac
     done
@@ -82,6 +121,8 @@ case "$cmd" in
     echo "$branch pid $$" > "$lock/owner"
     trap 'rm -rf "$lock"' EXIT
 
+    # What the server's checkout ran before this land: the catch-up below can bring in code too.
+    before="$(git -C "$MAIN" rev-parse "$BASE")"
     # Catch the main checkout up with the remote first (fast-forward only).
     if git fetch -q "$REMOTE" "$BASE" 2>/dev/null && ! git merge-base --is-ancestor "$REMOTE/$BASE" "$BASE"; then
       git -C "$MAIN" merge -q --ff-only "$REMOTE/$BASE" \
@@ -109,6 +150,13 @@ case "$cmd" in
     git -C "$MAIN" merge -q --ff-only "$branch" \
       || die "main checkout refused the fast-forward (uncommitted edits to the same files in $MAIN?) — nothing landed"
     sha="$(git rev-parse --short HEAD)"
+    # The main checkout has the new code now, pushed or not: ask before the push, so a failed push (retry by hand,
+    # not by landing again) doesn't skip the restart. Same rule as src/cli/land.ts NO_RESTART: docs and tests never
+    # need one.
+    if (( restart )); then
+      files="$(git -C "$MAIN" diff --name-only "$before" "$sha")"
+      if [[ -n "$files" ]] && grep -Eqv '(^|/)(docs|test)/|\.md$' <<<"$files"; then ask_restart "$branch"; fi
+    fi
     if (( push )); then git -C "$MAIN" push -q "$REMOTE" "$BASE" || die "landed $sha locally but push failed — retry: git -C $MAIN push $REMOTE $BASE"; fi
 
     if (( ! keep )); then
@@ -128,5 +176,5 @@ case "$cmd" in
       done
     ;;
 
-  *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
