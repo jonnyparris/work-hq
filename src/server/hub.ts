@@ -859,6 +859,18 @@ export class Hub {
       await this.dispatcher.dispatch(item.id, d.dispatch.action, agentNote, `${q.prompt} → (typed) ${text}`);
       return;
     }
+    // No item, but the card makes one when its own dispatch option is picked (the coaching move):
+    // a typed instruction goes through that option. 11-02: "break this out into smaller tasks" on the M5 card
+    // was parked as stranded while the reply said an agent was on it.
+    const ownGo = !item ? itemlessDispatchOption(q, d) : undefined;
+    if (ownGo && this.dispatcher) {
+      // The typed words always go (journal, agent brief); the reader's reading rides along when it adds something.
+      const read = d.dispatch?.note?.trim();
+      await this.answer(q.id, ownGo.id, read && read !== text ? `${text}\n(Read as: ${read})` : text);
+      // Fixed words: the agent hasn't started yet, so the model's reply isn't safe here.
+      this.toast(`Noted → ${ownGo.label}`, "good");
+      return;
+    }
     if (item && d.when?.trim() && this.dispatcher) {
       this.closeWithNote(q, text);
       const id = item.id;
@@ -1385,14 +1397,31 @@ export function batchedItems(q: Pick<Question, "options" | "picks">): number {
  * 10-16 20:44: the note job's summary said "Asking Maryna in chat…"; the reply agent started 5 s later.
  * Same class as "Booked" (ff3d07e): the model words the outcome, the outcome belongs to the job that runs it.
  */
-export function queuedNote(q: Pick<Question, "options"> & Partial<Pick<Question, "picks" | "itemId">>, d: NoteDecision, title?: string): string | undefined {
+export function queuedNote(q: Pick<Question, "options"> & Partial<Pick<Question, "picks" | "itemId" | "key">>, d: NoteDecision, title?: string): string | undefined {
   const opt = d.pick ? q.options.find((o) => o.id === d.pick) : undefined;
   if (opt && !((opt.effect.type === "open" || opt.effect.type === "focusSession") && opt.effect.keep)) return runsLater(opt.effect) ? `Noted → ${opt.label}` : undefined;
   if (title && d.dispatch?.action) return sentAgent(d.dispatch.action, title);
   const viaPicks = !title && d.dispatch?.action ? picksDispatchOption(q, d.dispatch.action) : undefined;
   if (viaPicks) return `Noted → ${viaPicks.label}`;
+  const own = title ? undefined : itemlessDispatchOption(q, d);
+  if (own) return `Noted → ${own.label}`;
   if (title && d.when?.trim()) return `Working out when from “${d.when.trim()}”`;
   return undefined;
+}
+
+/**
+ * The option a typed "send an agent" goes through on a card with no item, when the card makes its own item on
+ * dispatch (applyEffect: a `coach:` card). Prefers the option with the reader's action, else the card's first
+ * dispatch option: the typed words go with it, so a "reply"-shaped ask still reaches the agent. Undefined for any
+ * other itemless card (batched, recheck, meeting review: no dispatch option or no way to make an item), so
+ * applyNote still says no agent started. applyEffect's eventId path is left out: no live eventId card has a
+ * dispatch option, and it needs the event to still exist, which this pure check can't see.
+ */
+export function itemlessDispatchOption(q: Pick<Question, "options"> & Partial<Pick<Question, "key" | "itemId">>, d: NoteDecision): QuestionOption | undefined {
+  const action = d.dispatch?.action;
+  if (q.itemId || !action || !q.key?.startsWith("coach:")) return undefined;
+  const go = q.options.filter((o) => o.effect.type === "dispatch");
+  return go.find((o) => o.effect.type === "dispatch" && o.effect.action === action) ?? go[0];
 }
 
 /**

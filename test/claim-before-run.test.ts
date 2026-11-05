@@ -146,4 +146,10 @@ test("queuedNote: open-and-keep and status picks fall through to the model's rep
   expect(queuedNote(q, { pick: "m" }, "t")).toBe("Noted → Both");
   expect(queuedNote(q, { pick: "o", dispatch: { action: "verify" } }, "t")).toBe("Sent an agent to check: t");
   expect(queuedNote(q, { dispatch: { action: "verify" } })).toBeUndefined(); // no item and no item picks → applyNote can't dispatch
+  // …unless the card makes its own item through its dispatch option (the coaching move).
+  const coach = { key: "coach:2026-10-19", options: [...q.options, { id: "go", label: "Hand to an agent", effect: { type: "dispatch" as const, action: "work" as const } }] };
+  expect(queuedNote(coach, { dispatch: { action: "verify" } })).toBe("Noted → Hand to an agent");
+  expect(queuedNote({ ...coach, key: "recheck:x" }, { dispatch: { action: "work" } })).toBeUndefined();
+  expect(queuedNote({ ...coach, key: "review:e1" }, { dispatch: { action: "work" } })).toBeUndefined();
+  expect(queuedNote({ ...coach, itemId: "it1" }, { dispatch: { action: "work" } })).toBeUndefined();
 });

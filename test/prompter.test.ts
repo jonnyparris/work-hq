@@ -1216,6 +1216,29 @@ describe("coaching move follow-up", () => {
     expect(hub.store.journal().some((j) => j.text === `${q.prompt} → Hand to an agent`)).toBe(true);
   });
 
+  test("a typed instruction the reader reads as dispatch goes through 'Hand to an agent'", async () => {
+    // 11-02 11:04: "break this out into smaller distinct tasks" was parked as stranded; no agent started.
+    const sent: Array<{ itemId: string; action: string; note?: string }> = [];
+    hub.dispatcher = {
+      dispatch: async (itemId: string, action: string, note?: string) => void sent.push({ itemId, action, note }),
+      readNote: async () => ({ dispatch: { action: "work", note: "Split the move into tasks" }, reply: "Sending an agent to split it up." }),
+    } as any;
+    coaching("2026-10-19", "tomorrow");
+    p.tick(new Date(2026, 9, 20, 10));
+    const q = coach()[0]!;
+    await hub.note(q.id, "break this out into smaller distinct tasks for me to triage");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.action).toBe("work");
+    expect(sent[0]!.note).toContain("Book the Priya Q4 session"); // the option's own brief
+    expect(sent[0]!.note).toContain("They added: break this out into smaller distinct tasks");
+    expect(sent[0]!.note).toContain("(Read as: Split the move into tasks)");
+    expect(hub.store.journal().some((j) => j.text.startsWith(`${q.prompt} → Hand to an agent — break this out`))).toBe(true);
+    expect(hub.store.item(sent[0]!.itemId)!.source.key).toBe("coach:move:2026-10-19");
+    expect(hub.store.question(q.id)!.status).toBe("answered");
+    expect(hub.store.journal().some((j) => j.text.startsWith("Note reply claimed a dispatch"))).toBe(false);
+  });
+
   test("a handed-off move counts once its agent item closes: done → done (via agent), dropped → not", async () => {
     const sent: string[] = [];
     hub.dispatcher = { dispatch: async (itemId: string) => void sent.push(itemId) } as any;
