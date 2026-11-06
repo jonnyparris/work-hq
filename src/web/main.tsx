@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import type { Item, SyncState } from "../shared/types.ts";
 import { quickFirst } from "../shared/batch.ts";
 import { type Pin, pinQueue, takePin } from "../shared/pin.ts";
+import { back, canBack, emptyNav, focusOn, jump, type Nav, next, orderQueue, readNav } from "../shared/skip.ts";
 import { Deck } from "./deck.tsx";
 import { AgentsPanel, Board, CoachingPanel, Drawer, Focus, JournalPage, NowPanel, Timeline, TodayPanel } from "./parts.tsx";
 import { api, useHQ, useNow } from "./store.ts";
@@ -22,8 +23,12 @@ function App() {
   const [view, setView] = useState<"today" | "journal">(location.pathname === "/journal" ? "journal" : "today");
   const [sel, setSel] = useState<string | undefined>();
   // "Next" is navigation only: nothing is sent. Kept per tab so a reload doesn't put a skipped card back on top.
-  const [skipped, setSkipped] = useState<string[]>(() => { try { return JSON.parse(sessionStorage.getItem("whq:skipped") ?? "[]"); } catch { return []; } });
-  useEffect(() => { sessionStorage.setItem("whq:skipped", JSON.stringify(skipped.slice(-200))); }, [skipped]);
+  // Back restores the list from before the last move (src/shared/skip.ts).
+  // Storage off or full: navigation still works, it just isn't kept across a reload.
+  const [skips, setSkips] = useState<Nav>(() => { try { return readNav(sessionStorage.getItem("whq:nav"), sessionStorage.getItem("whq:skipped")); } catch { return emptyNav(); } });
+  useEffect(() => {
+    try { sessionStorage.setItem("whq:nav", JSON.stringify(skips)); sessionStorage.removeItem("whq:skipped"); } catch { /* see above */ }
+  }, [skips]);
   const [deck, setDeck] = useState(false);
   const [quick, setQuick] = useStoredFlag("whq:quickFirst", false);
   useEffect(() => {
@@ -45,13 +50,13 @@ function App() {
     return () => window.removeEventListener("pointerdown", ask);
   }, []);
 
-  const order = useMemo(() => {
+  const ready = useMemo(() => {
     const t = now.getTime();
-    const ready = s.questions.filter((q) => !q.notBefore || Date.parse(q.notBefore) <= t);
-    ready.sort(quick ? quickFirst : (a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt));
-    // Skipped go to the back, not away.
-    return [...ready.filter((q) => !skipped.includes(q.id)), ...ready.filter((q) => skipped.includes(q.id))];
-  }, [s.questions, skipped, now, quick]);
+    const r = s.questions.filter((q) => !q.notBefore || Date.parse(q.notBefore) <= t);
+    return r.sort(quick ? quickFirst : (a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt));
+  }, [s.questions, now, quick]);
+  // Skipped go to the back, not away, in the order you skipped them (src/shared/skip.ts).
+  const order = useMemo(() => orderQueue(ready, skips.skipped), [ready, skips.skipped]);
   // While you're writing on a card (note focused, note has text, or dictating), it stays in front.
   // New arrivals queue behind it and show as "+N new". Released when you stop, answer, skip or go back.
   const [hold, setHold] = useState(false);
@@ -111,7 +116,7 @@ function App() {
                   workHours={s.config.workHours}
                   now={now}
                   onClose={() => setDeck(false)}
-                  onFocus={(id) => navigate(() => { setDeck(false); setSkipped(queue.filter((q) => q.id !== id).map((q) => q.id)); })}
+                  onFocus={(id) => navigate(() => { setDeck(false); setSkips((x) => focusOn(x, queue, id)); })}
                 />
               ) : (
               <div>
@@ -122,18 +127,15 @@ function App() {
                   nav={nav}
                   onHold={setHold}
                   items={s.items}
-                  onSkip={() => navigate(() => queue[0] && setSkipped((x) => [...x.filter((y) => y !== queue[0]!.id), queue[0]!.id]))}
-                  canBack={queue.length > 1 && skipped.some((id) => queue.some((q) => q.id === id))}
-                  onBack={() => navigate(() => setSkipped((x) => {
-                    const last = [...x].reverse().find((id) => queue.some((q) => q.id === id));
-                    return last ? x.filter((y) => y !== last) : x;
-                  }))}
+                  onSkip={() => navigate(() => setSkips((x) => next(x, queue)))}
+                  canBack={queue.length > 1 && canBack(skips, ready, queue[0]?.id)}
+                  onBack={() => navigate(() => setSkips((x) => back(x, ready, queue[0]?.id)))}
                   onOpenItem={setSel}
                 />
                 {queue.length > 1 && (
                   <div className="queue">
                     {queue.slice(1, 8).map((q) => (
-                      <button key={q.id} className="qchip" onClick={() => navigate(() => setSkipped((x) => [...x.filter((y) => y !== q.id), ...queue.slice(0, queue.indexOf(q)).map((y) => y.id)]))} title={q.prompt}>
+                      <button key={q.id} className="qchip" onClick={() => navigate(() => setSkips((x) => jump(x, queue, q.id)))} title={q.prompt}>
                         {q.prompt}
                       </button>
                     ))}

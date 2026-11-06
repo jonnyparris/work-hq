@@ -226,6 +226,10 @@ decision: one of the question's options, a status, a time (handled like "Schedul
 your words as the instruction, plus a corrected title if you fixed one. A note that's only background stays on
 the item, and the question waits until the next working morning. While pi reads the note, the question is
 hidden for 15 min, so it can't come straight back. **Next →** / `→` and **← Back** / `←` only move between cards.
+A skipped card goes to the back in the order you skipped it, so Next keeps cycling after a full pass.
+Back restores the queue as it was shown before the last move (Next, a queue chip, or the deck's focus), pinned card
+included. Cards that arrived since go behind it, and steps that would show the same card are passed over. Rules in
+`src/shared/skip.ts`; `src/web/main.tsx` keeps them per tab in sessionStorage (`whq:nav`, one key).
 
 Total open questions are capped at 14 so it asks rather than nags. Deferred questions (see below) don't count
 against the 14, but still count against their own kind's cap.
