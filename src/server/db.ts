@@ -122,6 +122,13 @@ export class Store {
   question(id: string) {
     return this.one<Question>("questions", id);
   }
+  /** One item's open cards. Filters in SQL, so only that item's docs are parsed (Hub.closeStateCards runs on each dispatch). */
+  openQuestionsFor(itemId: string): Question[] {
+    return this.db
+      .query("SELECT doc FROM questions WHERE status = 'open' AND json_extract(doc, '$.itemId') = ?")
+      .all(itemId)
+      .map((r: any) => JSON.parse(r.doc));
+  }
   openQuestionByKey(key: string): Question | undefined {
     const r: any = this.db.query("SELECT doc FROM questions WHERE key = ? AND status = 'open'").get(key);
     return r ? JSON.parse(r.doc) : undefined;

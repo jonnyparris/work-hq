@@ -398,7 +398,11 @@ export class Agents implements Dispatcher {
     const job = this.newJob("action", action, title, useCmux ? "cmux" : "headless", itemId, { decision, note });
     // Verifying doesn't change what the item *is*; everything else means someone's on it.
     if (action !== "verify") this.hub.updateItem(itemId, { status: "doing" });
+    // Someone's on it: the item's own state cards are answered (Hub.closeStateCards). Only once the worktree and
+    // prompt are built: a build that throws leaves them open.
+    const sent = () => action !== "verify" && this.hub.closeStateCards(itemId, "agent sent");
     if (config.demo) {
+      sent();
       void this.launchDemoAction(job.id, title, demoActionScript(item, action, note), useCmux);
       return this.hub.store.job(job.id);
     }
@@ -416,6 +420,7 @@ export class Agents implements Dispatcher {
       ],
     });
     if (useCmux) writeFileSync(promptFile(job.id), prompt);
+    sent();
     // Launch in the background: the gate may hold it for a while and callers shouldn't wait.
     void this.launchAction(job.id, title, prompt, useCmux);
     return this.hub.store.job(job.id);

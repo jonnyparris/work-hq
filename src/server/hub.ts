@@ -23,6 +23,8 @@ type Listener = (e: ServerEvent) => void;
 /** A Cloudflare Access app origin `cloudflared access login` may be run against: https and a bare host, nothing to inject. */
 export const ACCESS_APP = /^https:\/\/[a-z0-9.-]+\/?$/i;
 const ACCESS_LATER = "Later";
+/** An item's own state cards (prompter; when-retry: from Agents.scheduleFromWords): closed once an agent is sent on it (closeStateCards). */
+const STATE_CARD = /^(wait|state|inbox|kill|due|when-retry|doing|proposal):/;
 
 export interface Dispatcher {
   /** `decision`: the one answer that sent this job ("<question> → <option>"); the prompt scopes the job to it. */
@@ -46,6 +48,8 @@ export interface AnswerContext {
 
 export class Hub {
   private listeners = new Set<Listener>();
+  /** Cards whose typed note the note reader is reading now (note()): reads in flight, and a close held until they end. */
+  private reading = new Map<string, { n: number; close?: string }>();
   dispatcher?: Dispatcher;
   /** Writes the journal to memory (MemorySync; wired in index.ts). */
   journalFlusher?: () => Promise<unknown>;
@@ -317,6 +321,25 @@ export class Hub {
       this.store.putQuestion(q);
       this.emit({ type: "question", data: q });
     }
+  }
+
+  /**
+   * An agent was sent on the item: its own "where does this stand?" cards (waiting, state unknown, kill date, due,
+   * when-retry, still on it, inbox, proposal) are answered. Agent cards (`agent:`, `after:`, `restart:`, or an
+   * "Agent asks" badge on an agent-chosen key) and other kinds stay: they carry an agent's own question or result.
+   * A card whose typed note the reader is still reading closes once the note is acted on (note()): closing it now
+   * would drop what the note asked for. 11-05: "just do it" sent an agent and the item's "Still waiting" card
+   * stayed open. Returns how many closed now.
+   */
+  closeStateCards(itemId: string, reason: string) {
+    const cards = this.store.openQuestionsFor(itemId).filter((q) => STATE_CARD.test(q.key) && !isAgentCard(q));
+    let closed = 0;
+    for (const q of cards) {
+      const r = this.reading.get(q.id);
+      if (r) r.close = reason;
+      else (this.expireQuestion(q.id, reason), closed++);
+    }
+    return closed;
   }
 
   expireQuestion(id: string, reason = "expired") {
@@ -775,6 +798,15 @@ export class Hub {
     const read = this.dispatcher.readNote.bind(this.dispatcher);
     void (async () => {
       let d: NoteDecision | undefined;
+      const r = this.reading.get(q.id) ?? { n: 0 };
+      r.n++;
+      this.reading.set(q.id, r);
+      // The last read on the card is done: a close held while it ran (closeStateCards) happens now.
+      const done = () => {
+        if (--r.n > 0) return;
+        this.reading.delete(q.id);
+        if (r.close) this.expireQuestion(q.id, r.close);
+      };
       try {
         d = await read(q.id, t).catch((e) => {
           if (!isCrash(e)) throw e;
@@ -786,10 +818,11 @@ export class Hub {
         this.park(q, new Date(Date.now() + 15 * 60_000).toISOString());
         this.journal(`Couldn't read note (${errText(e)}), card back in 15 min`, { itemId: item?.id, questionId: q.id, who: "hq" });
         this.toast(`Couldn't read that note (${errText(e)}). Card back in 15 min.`, "warn");
+        done();
         return;
       }
-      if (!d) return; // question gone
-      await this.applyNote(q.id, d, t, new Date(), noteId).catch((e) => this.toast(`Couldn't act on that note: ${errText(e)}`, "warn"));
+      if (d) await this.applyNote(q.id, d, t, new Date(), noteId).catch((e) => this.toast(`Couldn't act on that note: ${errText(e)}`, "warn"));
+      done();
     })();
     return { pending: true };
   }
