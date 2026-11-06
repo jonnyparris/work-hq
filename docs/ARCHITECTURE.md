@@ -197,7 +197,7 @@ server? Work HQ still runs; you just lose import and the flush.
 | M5 move | the coaching move's time has passed (day: MM-DD, weekday or next workday after the reflection; time: last HH:MM, else 09:30); once per reflection date, never > 2 days late; a newer reflection expires it; journaled as `M5 move: … → answer` | 85 (notifies) |
 | 🍍 capture triage | new pineapple item | 82 |
 | Today's prep | work-hours morning (with the plan), weekday, today has 1-1s / 2–4 person meetings still to start; one card per day (`prep:<date>`), tick-boxes per meeting, each tick dispatches `prep`; the list follows the calendar and the card expires once they've all started. Replaced the per-meeting card 20 min before (17 of 19 expired, 10-22) | 75 |
-| Kill date | ≤ 2 days to a reflection kill date | 72–78 |
+| Kill date | ≤ 2 days to a reflection kill date; skipped while the item is scheduled for later | 72–78 |
 | Agent asks | a dispatched agent needs a decision | 72 |
 | Meeting ended | ≤ 45 min after a meeting with others | 70 |
 | Capture triage | new transcript item | 65 |

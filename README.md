@@ -117,7 +117,7 @@ and cheap to run every 30 seconds. The model decides what things *mean*. The rul
 | **M5 move** | the coaching card's "one thing to try" time (the last HH:MM in its *when*, else 09:30) | once per reflection: Done / Hand to an agent / Not today, journaled for tonight's reflection |
 | **Meeting soon** | a small meeting or 1-1 starts in ≤ 20 min | offers a brief |
 | **🍍 Captured** | you said pineapple | confirm, dispatch, or "not mine" |
-| **Kill date** | ≤ 2 days to a decision deadline | |
+| **Kill date** | ≤ 2 days to a decision deadline; an item scheduled for later waits for its slot | |
 | **Meeting ended** | ≤ 45 min after a meeting with others | "anything come out of it?" |
 | **State unknown** | your notes admit they don't know | max 3 open |
 | **Still on it?** | an item on *doing* with no agent running and no open card, quiet for 4 work hours | Done / Waiting / Today / Drop; at most daily per item, max 3 open |

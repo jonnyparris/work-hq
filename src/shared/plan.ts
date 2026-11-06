@@ -13,7 +13,8 @@ const DAY = 86400000;
 export function score(i: Item, now = Date.now()) {
   let s = 0;
   // Kill date near: boost from 3 days past to 3 days ahead. Past that the prompter's
-  // "Kill date passed — keep or kill?" card owns it; the planner shouldn't pin it forever.
+  // "Kill date passed — keep or kill?" card owns it (scheduled for later: from the slot on); the planner
+  // shouldn't pin it forever.
   const kill = i.signals?.killDate ? Date.parse(i.signals.killDate) : NaN;
   if (kill - now < 3 * DAY && kill - now >= -3 * DAY) s += 3;
   // Due soon: boost from 3 days overdue to 7 days ahead. Older overdue dates get no boost,

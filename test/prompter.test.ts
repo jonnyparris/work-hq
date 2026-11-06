@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { Store } from "../src/server/db.ts";
 import { Hub } from "../src/server/hub.ts";
 import { isOwner, Prompter, workMsBetween } from "../src/server/prompter.ts";
@@ -44,6 +44,60 @@ describe("prompter", () => {
     expect(hub.store.item(it.id)!.confirmedAt).toBeTruthy();
     expect(hub.store.questions("open").filter((q) => q.itemId === it.id)).toHaveLength(0);
     expect(hub.store.journal().some((j) => j.text.startsWith("Done: close CR"))).toBe(true);
+  });
+
+  // 11-05: "Extend a week" scheduled the item but left killDate behind; the card came back the next day, same key.
+  // The cooldown and answeredAt read the real clock, so pin it to each tick.
+  describe("kill date and a slot", () => {
+    afterEach(() => setSystemTime());
+    const tick = (d: Date) => (setSystemTime(d), p.tick(d));
+    const killCards = () => hub.store.questions("open").filter((q) => q.key.startsWith("kill:"));
+
+    test("Extend a week: no kill card until the slot, then it asks again", async () => {
+      const ext = hub.createItem({ title: "chat-room blog", status: "proposed", signals: { killDate: "2026-09-22" } });
+      const keep = hub.createItem({ title: "keep doing it", status: "proposed", signals: { killDate: "2026-09-22" } });
+      tick(at(10));
+      const card = (id: string) => killCards().find((q) => q.itemId === id);
+      await hub.answer(card(ext.id)!.id, "week");
+      await hub.answer(card(keep.id)!.id, "today");
+      expect(hub.store.item(ext.id)!.status).toBe("scheduled");
+      tick(new Date(2026, 8, 24, 11)); // past the 24h cooldown
+      // Control: the same timeline re-asks an item that wasn't given a slot.
+      expect(killCards().map((q) => q.itemId)).toEqual([keep.id]);
+      tick(new Date(2026, 8, 30, 9, 29)); // a minute before the slot (Wed 09-30 09:30)
+      expect(card(ext.id)).toBeUndefined();
+      // The week is up: "It's time", and keep-or-kill again.
+      tick(new Date(2026, 8, 30, 10));
+      expect(hub.store.questions("open").filter((q) => q.itemId === ext.id).map((q) => q.key).sort()).toEqual(
+        [`due:${ext.id}:${hub.store.item(ext.id)!.scheduledFor}`, "kill:" + ext.id + ":2026-09-22"].sort(),
+      );
+      await hub.answer(card(ext.id)!.id, "kill");
+      expect(hub.store.item(ext.id)!.status).toBe("dropped");
+      expect(hub.store.questions("open").filter((q) => q.itemId === ext.id)).toHaveLength(0);
+    });
+
+    test("a slot six days out: no kill card", () => {
+      const it = hub.createItem({ title: "later", status: "scheduled", scheduledFor: new Date(2026, 8, 29, 9, 30).toISOString(), signals: { killDate: "2026-09-22" } });
+      tick(at(10));
+      expect(killCards().some((q) => q.itemId === it.id)).toBe(false);
+    });
+
+    test("scheduled with no slot, or a slot that's passed, still gets the kill card", () => {
+      const none = hub.createItem({ title: "someday", status: "scheduled", signals: { killDate: "2026-09-22" } });
+      const past = hub.createItem({ title: "overdue", status: "scheduled", scheduledFor: at(9, 30).toISOString(), signals: { killDate: "2026-09-22" } });
+      tick(at(10));
+      expect(killCards().map((q) => q.itemId).sort()).toEqual([none.id, past.id].sort());
+    });
+
+    test("an open kill card closes once the item is scheduled elsewhere", () => {
+      const it = hub.createItem({ title: "chat-room blog", status: "proposed", signals: { killDate: "2026-09-22" } });
+      tick(at(10));
+      const q = killCards().find((q) => q.itemId === it.id)!;
+      hub.schedule(it.id, new Date(2026, 8, 29, 9, 30).toISOString(), "next week");
+      tick(at(10, 5));
+      expect(killCards()).toHaveLength(0);
+      expect(hub.store.question(q.id)).toMatchObject({ status: "expired", answer: "rescheduled" });
+    });
   });
 
   test("scheduled item that's due asks 'it's time' and notifies", () => {

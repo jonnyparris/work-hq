@@ -458,7 +458,9 @@ export class Prompter {
     for (const it of items) {
       if (budget <= 0 || openCount("state", (q) => q.key.startsWith("kill:")) >= CAP.kill) break;
       const kill = it.signals?.killDate;
-      if (!kill || ["done", "dropped"].includes(it.status)) continue;
+      // Scheduled for later ("Extend a week", Scheduled for…): you've answered; ask again once the slot comes.
+      // 11-05: "Extend a week" left killDate behind and this card came back the next day.
+      if (!kill || ["done", "dropped"].includes(it.status) || slotAhead(it, now)) continue;
       const days = (Date.parse(`${kill}T23:59:59`) - now.getTime()) / DAY;
       if (days > 2) continue;
       if (
@@ -888,6 +890,8 @@ export class Prompter {
       if (q.itemId && (!it || ["done", "dropped"].includes(it.status))) this.hub.expireQuestion(q.id, "moot");
       // Rescheduled (or started / un-scheduled) since this was asked: the old slot's prompt is stale.
       else if (q.key.startsWith("due:") && it && (it.status !== "scheduled" || q.key !== `due:${it.id}:${it.scheduledFor}`)) this.hub.expireQuestion(q.id, "rescheduled");
+      // A kill card still open when the item got a later slot some other way: it asks again at the slot.
+      else if (q.key.startsWith("kill:") && it && slotAhead(it, now)) this.hub.expireQuestion(q.id, "rescheduled");
       // "Still on it?" once it's off `doing` (answered elsewhere, re-dispatched) or an agent picked it up again.
       else if (q.key.startsWith("doing:") && it && (it.status !== "doing" || this.hub.store.liveJobs().some((j) => j.itemId === it.id))) this.hub.expireQuestion(q.id, "moved on");
       // The one-item merged card is that item's card now (it blocks its other prompts): gone once it's off `waiting`.
@@ -1296,6 +1300,10 @@ export function recheckCard(found: Array<{ it: Pick<Item, "id" | "title" | "stat
 function opt(id: string, label: string, effect: QuestionOption["effect"], tone?: QuestionOption["tone"]): QuestionOption {
   return { id, label, effect, tone };
 }
+
+/** Scheduled for a time that hasn't come yet. */
+const slotAhead = (i: Pick<Item, "status" | "scheduledFor">, now: Date) =>
+  i.status === "scheduled" && Boolean(i.scheduledFor) && Date.parse(i.scheduledFor!) > now.getTime();
 
 /** Memory's own ordering: Immediate first, delegated last. */
 function rank(i: Item) {
