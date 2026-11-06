@@ -198,6 +198,7 @@ bar. Point a nightly reflection at it and have it propose fixes. That's how most
 bin/whq report <jobId> <<'JSON'
 { "summary": "Filed PAY-2240", "updates": [{ "id": "it_…", "status": "waiting", "links": ["https://…"] }] }
 JSON
+bin/whq report --help                      # the full schema and button rules; prompts carry a short form
 bin/whq say "PAY-2198 is closed"           # same as the command bar
 bin/whq journal "learn: tightened the gchat skill"   # a journal line from any agent, no triage
 bin/whq access-login https://app.example.com "nightly job skipped"   # one "Log in now" card per app per day, no triage

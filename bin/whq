@@ -1,7 +1,7 @@
 #!/bin/bash
 # whq — tiny client for Work HQ, used by dispatched pi sessions.
 #
-#   whq report <jobId>        # JSON report on stdin → POST /api/agent/report
+#   whq report <jobId>        # JSON report on stdin → POST /api/agent/report (whq report --help: schema)
 #   whq say "<text>"          # talk to Work HQ like the command bar does
 #   whq journal "<text>"      # add a line to the journal as an agent (no triage)
 #   whq access-login <app> ["<why>"]  # Access login lapsed: one "Log in now" card per app per day (no triage)
@@ -17,7 +17,11 @@ post() { curl -sS -X POST "$URL$1" -H 'content-type: application/json' --data-bi
 jstr() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
 case "$cmd" in
   report)
-    job="${1:?usage: whq report <jobId> < report.json}"
+    case "${1:-}" in
+      -h|--help) cd "$ROOT" && exec "${BUN:-$(command -v bun || echo "$HOME/.bun/bin/bun")}" src/cli/report-help.ts ;;
+      ""|-*) echo "usage: whq report <jobId> < report.json   (schema: whq report --help)" >&2; exit 2 ;;
+    esac
+    job="$1"
     python3 -c 'import json,sys; d=json.load(sys.stdin); d["jobId"]=sys.argv[1]; print(json.dumps(d))' "$job" | post /api/agent/report | python3 -c '
 import json,sys
 raw=sys.stdin.read(); print(raw.rstrip())

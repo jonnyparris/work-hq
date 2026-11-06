@@ -32,9 +32,9 @@
   MCPs live inside pi; rather than scrape their tokens, Work HQ asks pi sessions to do the
   work and report back over HTTP (`bin/whq`). The memory MCP has a static token, so memory
   I/O is direct.
-- **Agents don't file ideas unasked.** The report contract allows a new idea item only when you asked,
-  the agent found a defect it didn't fix, or the dispatch note says "file ideas"; anything else is one
-  "Could also:" line in the summary. As a backstop, an action job files at most 2 new ideas
+- **Agents don't file ideas unasked.** The report contract (a short form in action and boss-check prompts, the full one in `whq report --help`) allows a new idea item, or a follow-up for unasked work, only when you asked,
+  the agent found a defect it didn't fix, or (ideas only) the dispatch note asks for ideas (`asksForIdeas`); anything else is one
+  "Could also:" line in the summary. As a backstop, unless the note asks for ideas, an action job files at most 2 new ideas
   (`src/shared/ideas.ts`); hub folds the rest into its summary. `bin/work-hq usage` shows ideas filed per day.
 - **The model login is pi's too.** pi reaches the model through whatever provider `pi.model` names
   (a gateway behind Cloudflare Access, say). When that login lapses, headless pi can't open a browser,

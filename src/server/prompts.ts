@@ -79,34 +79,39 @@ export function template(name: string, vars: Record<string, string> = {}): strin
 
 export const toolRoutes = () => template("tools");
 
-export const REPORT_CONTRACT = (jobId: string) => `REPORTING BACK TO WORK HQ
+/** What an agent may file unasked: shared by the short and full contracts so they can't disagree. */
+export const IDEA_RULE = `Items for unfinished parts of this job are fine. A new "idea" item, or a follow-up for work nobody asked for, only if
+  ${owner.name} asked for one or you found a defect in code you touched and didn't fix it; a new "idea" item also if the dispatch note asks
+  for ideas (file, suggest or propose ideas; brainstorm). Anything else: one "Could also: ..." line in summary.
+  Unless the note asks for ideas, Work HQ files at most ${IDEA_CAP} new idea items per action job and folds the rest into the summary.`;
 
-Work HQ (${owner.name}'s live dashboard, ${ROOT}) launched you as job ${jobId}. Report results by piping JSON:
+/** The full report schema and rules: `whq report --help` prints it, so every prompt doesn't carry it. */
+export const REPORT_HELP = `whq report <jobId> < report.json   (JSON on stdin; every top-level field optional, and each entry needs its first field: update id, item title, question prompt)
 
-  ${WHQ} report ${jobId} <<'JSON'
-  { "summary": "one line", "status": "done", "updates": [...], "items": [...], "questions": [...], "journal": [...] }
-  JSON
-
-Fields (all optional):
 - summary: one plain sentence of what happened.
-- status: "done" | "failed" | "progress" (use progress for mid-run notes).
+- status: "done" | "failed" | "progress" (progress for mid-run notes; report once at the end otherwise).
 - updates: [{ "id": "<item id>", "status": "done|waiting|today|dropped|...", "links": ["https://..."], "detail": "...", "note": "why" }]
 - items: new items [{ "title", "kind": "task|ticket|message|email|followup|decision|review|meeting|idea",
   "detail", "project", "people": [], "links": [], "status": "inbox",
   "source": { "type": "agent", "label", "url", "quote": "verbatim words", "key": "stable-dedupe-key" } }]
-  Items for unfinished parts of this job are fine. A new "idea" item, or a follow-up for work nobody asked for, only if
-  (a) ${owner.name} asked for one, (b) you found a defect in code you touched and didn't fix it, or (c) the dispatch note
-  says "file ideas". Anything else goes in summary as one "Could also: ..." line. Work HQ files at most ${IDEA_CAP} new idea
-  items per job and folds the rest into the summary.
-- questions: things only ${owner.name} can answer [{ "prompt", "context", "itemId",
+  ${IDEA_RULE}
+- questions: things only ${owner.name} can answer [{ "prompt", "context", "itemId", "key",
   "options": [{ "label": "Mark done", "status": "done" }, { "label": "File the ticket", "action": "ticket" }, { "label": "Keep open", "status": "proposed" }] }]
-  (status: any item status; action: ticket|reply|email|prep|work|verify — an action dispatches another agent)
-  A button that approves work you or another agent should do next ("Approve…", "Merge", "Regenerate", "Land") needs
-  \`action: "work"\` and a \`note\` saying what to do. \`status\` only moves the item; no agent starts.
-  whq report prints what each button will do ("Not now → noop (does nothing)"). A wrong one? Re-report that question with an explicit status/action and a new key.
-- journal: facts worth remembering, one line each ("PAY-123 closed by ${owner.name} 09-25").
+  status: any item status. action: ticket|reply|email|prep|work|verify|draft|publish (dispatches another agent; "note" rides along).
+  A button that approves work an agent should do next ("Approve…", "Merge", "Land") needs action "work" and a note.
+  status only moves the item; no agent starts. The output says what each button will do; re-report a wrong one under a new key.
+- journal: facts worth remembering, one string each ("PAY-123 closed by ${owner.name} 09-25").`;
 
-Report once at the end; progress reports are welcome on long runs.`;
+export const REPORT_CONTRACT = (jobId: string) => `REPORT to Work HQ (${owner.name}'s dashboard) once at the end ("progress" reports welcome on long runs).
+Full schema and rules: \`${WHQ} report --help\`.
+  ${WHQ} report ${jobId} <<'JSON'
+  { "summary": "one sentence", "status": "done|failed|progress", "updates": [{ "id", "status", "links", "note" }],
+    "items": [{ "title", "kind", "detail", "links", "source": { "label", "url", "quote", "key": "stable-dedupe-key" } }],
+    "questions": [{ "prompt", "context", "itemId", "key", "options": [{ "label", "status" | "action": "ticket|reply|email|prep|work|verify|draft|publish", "note" }] }],
+    "journal": ["one fact"] }
+  JSON
+${IDEA_RULE}
+A button's status only moves the item; one that approves work (Approve, Merge, Land) needs action "work" + note.`;
 
 function itemBlock(it: Item) {
   return [
