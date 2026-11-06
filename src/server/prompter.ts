@@ -259,7 +259,9 @@ export class Prompter {
       if (it.status !== "scheduled" || !it.scheduledFor || Date.parse(it.scheduledFor) > now.getTime()) continue;
       // An agent is on it, or one already asked you something about it: wait for that, don't say "It's time" again.
       // 10-19: a verify job's question landed at 15:31, the 15-min due cooldown re-asked at 15:45.
-      if (busy.has(it.id) || open.some((q) => q.itemId === it.id && !q.key.startsWith("due:"))) continue;
+      // An open kill card doesn't count: keep-or-kill is asked beside "It's time", not instead of it. Counting it let a
+      // kill card that opened while this card was held back (agent busy) block "It's time" until it was answered.
+      if (busy.has(it.id) || open.some((q) => q.itemId === it.id && !q.key.startsWith("due:") && !q.key.startsWith("kill:"))) continue;
       // You just answered another card about it (a noop, typed context): give it 15 min too. The due card's own
       // cooldown is per slot (key), so a reschedule to a new slot still asks.
       const since = new Date(now.getTime() - 15 * MIN).toISOString();

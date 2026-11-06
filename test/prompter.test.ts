@@ -89,6 +89,19 @@ describe("prompter", () => {
       expect(killCards().map((q) => q.itemId).sort()).toEqual([none.id, past.id].sort());
     });
 
+    // The due card was held back (an agent on it), the kill card opened meanwhile: it mustn't block "It's time".
+    test("an open kill card doesn't hold back the due card", () => {
+      const it = hub.createItem({ title: "overdue", status: "scheduled", scheduledFor: at(9, 30).toISOString(), signals: { killDate: "2026-09-22" } });
+      const job = { id: "j_kill", kind: "action", name: "work", title: "x", surface: "headless", status: "running", itemId: it.id, tail: [], createdAt: at(9).toISOString() } as any;
+      hub.putJob(job);
+      tick(at(10));
+      const keys = () => hub.store.questions("open").filter((q) => q.itemId === it.id).map((q) => q.key.split(":")[0]).sort();
+      expect(keys()).toEqual(["kill"]);
+      hub.putJob({ ...job, status: "done", finishedAt: at(10, 2).toISOString() });
+      tick(at(10, 5));
+      expect(keys()).toEqual(["due", "kill"]);
+    });
+
     test("an open kill card closes once the item is scheduled elsewhere", () => {
       const it = hub.createItem({ title: "chat-room blog", status: "proposed", signals: { killDate: "2026-09-22" } });
       tick(at(10));
