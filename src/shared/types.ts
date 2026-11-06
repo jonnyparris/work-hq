@@ -83,6 +83,9 @@ export interface Item {
    * its own source, so without this the proposal card (prompter §8) never fires for it.
    */
   proposalOf?: string;
+  /** Set when its check closed it as no longer reported (Checks.run). The one close a re-report undoes (hub
+   *  quietStatus); cleared by any later status change. */
+  checkClosed?: string;
   /** "Explain simply" in the drawer: a plain-English read of title + detail + quote. `for` = what it was written from. */
   explain?: ItemExplain;
   createdAt: string;

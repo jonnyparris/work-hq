@@ -135,7 +135,10 @@
   `RunCap` also hold launches while the 1-min load is above it, but only while one of ours is
   running, so outside load can't stall an empty queue. A 15 s timer re-checks held launches.
 - **Human decisions are the source of truth.** `confirmedAt` is set whenever the owner decides
-  something. Memory re-imports refresh text but never undo a confirmed status.
+  something. Memory re-imports refresh text but never undo a confirmed status. A check or agent
+  re-report (default status inbox) never moves an item an agent settled back to inbox either; only an
+  item its check closed as no longer reported (`checkClosed`) comes back, confirmed or not: the
+  check's close was the last call on it (`quietStatus`, hub.ts).
 
 ## Data model (src/shared/types.ts)
 

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { checkDue, staleCheckItems } from "../src/server/checks.ts";
 import { Store } from "../src/server/db.ts";
-import { Hub } from "../src/server/hub.ts";
+import { Hub, quietStatus } from "../src/server/hub.ts";
 
 describe("morning checks", () => {
   test("due once per day, retried after an hour", () => {
@@ -49,6 +49,51 @@ describe("morning checks", () => {
     hub.ingestReport({ items: [{ title: "x", source: { type: "check", label: "unlanded", key: "k" } }] });
     expect(hub.store.item(it.id)!.status).toBe("waiting");
   });
+
+  // 11-05: two items an agent set Waiting and three weekly reviews an agent set Done were re-asked after
+  // the next check run: an agent's whq report update doesn't stamp confirmedAt, and the re-report came in as inbox.
+  test("a re-report keeps the status an agent set, and asks no inbox card", async () => {
+    const { Prompter } = await import("../src/server/prompter.ts");
+    const hub = new Hub(new Store(":memory:"));
+    const src = (key: string) => ({ type: "check" as const, label: "closeable", key });
+    const waiting = hub.createItem({ title: "Close TICKET-1?", kind: "ticket", source: src("closeable:TICKET-1") });
+    const done = hub.createItem({ title: "cf-readiness: 18 changes", kind: "review", source: src("cf-readiness:2026-10-26") });
+    hub.ingestReport({ updates: [{ id: waiting.id, status: "waiting", note: "acceptance criteria not met" }, { id: done.id, status: "done" }] });
+    expect(hub.store.item(waiting.id)!.confirmedAt).toBeUndefined();
+    hub.ingestReport({
+      items: [
+        { title: "Close TICKET-1?", kind: "ticket", source: src("closeable:TICKET-1") },
+        { title: "cf-readiness: 18 changes", kind: "review", status: "inbox", source: src("cf-readiness:2026-10-26") },
+      ],
+    });
+    expect(hub.store.item(waiting.id)!.status).toBe("waiting");
+    expect(hub.store.item(done.id)!.status).toBe("done");
+    new Prompter(hub).tick(new Date(2026, 10, 5, 10, 0));
+    expect(hub.store.questions("open").filter((q) => q.key.startsWith("inbox:"))).toEqual([]);
+  });
+
+  test("quietStatus", () => {
+    const t = "2026-11-05T00:00:00Z";
+    expect(quietStatus({ status: "waiting" }, "inbox", false)).toBe("inbox");
+    expect(quietStatus({ status: "waiting" }, undefined, true)).toBe("waiting");
+    expect(quietStatus({ status: "waiting" }, "inbox", true)).toBe("waiting");
+    expect(quietStatus({ status: "done" }, "inbox", true)).toBe("done");
+    expect(quietStatus({ status: "inbox" }, "inbox", true)).toBe("inbox");
+    expect(quietStatus({ status: "waiting" }, "today", true)).toBe("today");
+    expect(quietStatus({ status: "waiting", confirmedAt: t }, "today", true)).toBe("waiting");
+    expect(quietStatus({ status: "done", checkClosed: t }, "inbox", true)).toBe("inbox");
+    expect(quietStatus({ status: "done", checkClosed: t, confirmedAt: t }, "inbox", true)).toBe("inbox");
+    expect(quietStatus({ status: "done", checkClosed: t }, "today", true)).toBe("today");
+    expect(quietStatus({ status: "done", checkClosed: t, confirmedAt: t }, "today", true)).toBe("done");
+  });
+
+  test("a re-import that names a real status still applies it", () => {
+    const hub = new Hub(new Store(":memory:"));
+    const it = hub.createItem({ title: "x", source: { type: "agent", key: "k" } });
+    hub.ingestReport({ updates: [{ id: it.id, status: "waiting" }] });
+    hub.ingestReport({ items: [{ title: "x", status: "today", source: { type: "agent", key: "k" } }] });
+    expect(hub.store.item(it.id)!.status).toBe("today");
+  });
 });
 
 describe("Checks.run", () => {
@@ -63,6 +108,48 @@ describe("Checks.run", () => {
     expect(hub.store.syncState("check:unlanded").lastOkAt).toBeTruthy();
     await checks.run({ name: "unlanded", command: `echo '{"items":[]}'` });
     expect(hub.store.item(it!.id)!.status).toBe("done");
+  });
+
+  test("an item the check closed comes back when the check reports it again; an agent's close doesn't", async () => {
+    const { Checks } = await import("../src/server/checks.ts");
+    const hub = new Hub(new Store(":memory:"));
+    const checks = new Checks(hub);
+    const report = (...keys: string[]) => `echo '${JSON.stringify({ items: keys.map((key) => ({ title: `Agent failing ${key}`, kind: "task", source: { key } })) })}'`;
+    await checks.run({ name: "mr-failing", command: report("a", "b") });
+    const byKey = (k: string) => hub.store.items().find((i) => i.source.key === k)!;
+    hub.ingestReport({ updates: [{ id: byKey("b").id, status: "done" }] });
+    await checks.run({ name: "mr-failing", command: report("b") });
+    expect(byKey("a").status).toBe("done");
+    await checks.run({ name: "mr-failing", command: report("a", "b") });
+    expect(byKey("a").status).toBe("inbox");
+    expect(byKey("a").checkClosed).toBeUndefined();
+    expect(byKey("b").status).toBe("done");
+    // Closed by the check, then dropped by the owner: the owner's call wins (confirmedAt).
+    await checks.run({ name: "mr-failing", command: report("b") });
+    hub.setStatus(byKey("a").id, "dropped");
+    await checks.run({ name: "mr-failing", command: report("a", "b") });
+    expect(byKey("a").status).toBe("dropped");
+  });
+
+  test("check-closed: one write; an owner-touched item still comes back; a same-status settle ends it", async () => {
+    const { Checks } = await import("../src/server/checks.ts");
+    const hub = new Hub(new Store(":memory:"));
+    const checks = new Checks(hub);
+    const report = (...keys: string[]) => `echo '${JSON.stringify({ items: keys.map((key) => ({ title: `Failing ${key}`, kind: "task", source: { key } })) })}'`;
+    await checks.run({ name: "f", command: report("a", "b", "c") });
+    const byKey = (k: string) => hub.store.items().find((i) => i.source.key === k)!;
+    hub.setStatus(byKey("a").id, "today"); // owner touched: confirmedAt
+    const events: string[] = [];
+    hub.subscribe((e) => e.type === "item" && events.push((e.data as { source: { key: string } }).source.key));
+    await checks.run({ name: "f", command: report() });
+    expect(events.filter((k) => k === "a")).toEqual(["a"]);
+    expect(byKey("a")).toMatchObject({ status: "done", checkClosed: expect.any(String) });
+    // An agent confirms b done (same status); the owner confirms c done.
+    hub.ingestReport({ updates: [{ id: byKey("b").id, status: "done", checkClosed: "forged" } as never] });
+    hub.setStatus(byKey("c").id, "done");
+    expect(byKey("b").checkClosed).toBeUndefined();
+    await checks.run({ name: "f", command: report("a", "b", "c") });
+    expect([byKey("a").status, byKey("b").status, byKey("c").status]).toEqual(["inbox", "done", "done"]);
   });
 
   test("everyMin: toasts only items it had not reported before", async () => {

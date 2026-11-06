@@ -214,13 +214,14 @@ export class Hub {
       ...cur,
       ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)),
       id: cur.id,
-      // Don't let a re-import clobber a status the owner already set.
-      status: opts.quiet && cur.confirmedAt ? cur.status : patch.status ?? cur.status,
+      status: quietStatus(cur, patch.status, opts.quiet),
       // An item keeps its own source key; other keys that reach it are aliases (Store.aliasKey).
       source: { ...cur.source, ...(patch.source ?? {}), key: cur.source.key ?? patch.source?.key },
       createdAt: cur.createdAt,
       updatedAt: nowIso(),
     };
+    // checkClosed belongs to the close it was stamped with: any later status call (even a same-status settle) ends it.
+    if (!patch.checkClosed && (next.status !== cur.status || (!opts.quiet && patch.status !== undefined))) delete next.checkClosed;
     this.store.putItem(next);
     this.emit({ type: "item", data: next });
     // A handed-off coaching move's outcome follows its item (coachHistory): re-send the panel when it changes.
@@ -232,9 +233,10 @@ export class Hub {
   }
 
   /** A status change + journal line. `who` is who decided (the journal reads `you` as the owner's own words);
-   *  `confirm` stamps confirmedAt (defaults to who === "you"; false leaves any earlier stamp alone). */
-  setStatus(id: string, status: ItemStatus, note?: string, who: JournalEntry["who"] = "you", confirm = who === "you") {
-    const item = this.updateItem(id, { status, confirmedAt: confirm ? nowIso() : undefined });
+   *  `confirm` stamps confirmedAt (defaults to who === "you"; false leaves any earlier stamp alone). `extra` goes in
+   *  the same write (Checks.run stamps checkClosed this way). */
+  setStatus(id: string, status: ItemStatus, note?: string, who: JournalEntry["who"] = "you", confirm = who === "you", extra: Partial<Item> = {}) {
+    const item = this.updateItem(id, { ...extra, status, confirmedAt: confirm ? nowIso() : undefined });
     this.journal(`${label(status)}: ${item.title}${note ? ` — ${note}` : ""}`, { itemId: id, who });
     // Anything open about this item is now moot.
     if (["done", "dropped"].includes(status)) this.closeQuestionsFor(id, `item ${status}`);
@@ -1257,7 +1259,7 @@ export class Hub {
       }
       created.push(
         this.createItem({
-          ...raw,
+          ...withoutCheckClosed(raw),
           status,
           source: { type: fallbackSource, label: job?.title, ...(raw.source ?? {}) },
         }),
@@ -1266,7 +1268,7 @@ export class Hub {
     for (const u of r.updates ?? []) {
       if (!this.store.item(u.id)) continue;
       const { id, note, ...patch } = u;
-      this.updateItem(id, patch as Partial<Item>);
+      this.updateItem(id, withoutCheckClosed(patch as Partial<Item>));
       if (note || patch.status) this.journal(`${patch.status ? label(patch.status) + ": " : ""}${this.store.item(id)!.title}${note ? ` — ${note}` : ""}`, { itemId: id, who: "agent" });
       // A closed item's agent cards are moot, as with setStatus (which closes every card). Only agent cards here: an
       // agent's "done" shouldn't silently take the owner's own questions with it. Lets the boss check close an item
@@ -1403,6 +1405,26 @@ export function openLocal(url: string) {
   try {
     Bun.spawn([process.env.WORK_HQ_OPEN_BIN || "open", url], { stdout: "ignore", stderr: "ignore" });
   } catch {}
+}
+
+/**
+ * The status a quiet re-import (createItem on a known source key, memory upsert) leaves an item on.
+ * Its check closed it as no longer reported (checkClosed, the last status call it had) and it's reported again: back
+ * to inbox, so a problem that recurs is back on the board. Otherwise an owner's call (confirmedAt) stands, and a
+ * re-import with status "inbox" (a re-report's default, not a decision) never moves an item off another status: an
+ * agent's Waiting or Done carries no confirmedAt. Any other status a re-import names still applies.
+ */
+export function quietStatus(cur: Pick<Item, "status" | "confirmedAt" | "checkClosed">, status: ItemStatus | undefined, quiet?: boolean): ItemStatus {
+  if (!quiet || !status) return status ?? cur.status;
+  if (status === "inbox" && cur.status === "done" && cur.checkClosed) return status;
+  if (cur.confirmedAt || status === "inbox") return cur.status;
+  return status;
+}
+
+/** checkClosed is Checks.run's to set: agent reports can't mark an item revivable. */
+function withoutCheckClosed<T extends { checkClosed?: unknown }>(x: T): Omit<T, "checkClosed"> {
+  const { checkClosed: _c, ...rest } = x;
+  return rest;
 }
 
 /** Item notes keep the last 20. `who` absent = the owner's words; "agent" = an agent posted it over the API. */

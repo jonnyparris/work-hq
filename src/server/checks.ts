@@ -8,7 +8,9 @@
 // Every item needs a stable `source.key`. An item a check reported before and
 // no longer reports is closed as done ("check no longer reports it"), so a
 // fixed problem leaves the board on its own. Items the owner already closed
-// stay closed: re-imports never clobber a confirmed status (see Hub.updateItem).
+// stay closed, and an agent's Waiting or Done stands. An open item (Waiting included) still closes when the
+// check stops reporting it, and only that close is undone when the check reports it again: the problem came
+// back, so it's back in the inbox even if the owner had touched it (hub.ts quietStatus).
 //
 // A check may also send `questions` about its own items: point at one with
 // `itemKey` (its source.key) and give a stable `key`; they're asked once.
@@ -109,7 +111,7 @@ export class Checks {
       const wasOpen = new Set(this.openKeys(c.name));
       this.hub.ingestReport({ items, questions });
       for (const it of staleCheckItems(this.hub.store.items(), c.name, { items })) {
-        this.hub.setStatus(it.id, "done", `${c.name} no longer reports it`, "agent");
+        this.hub.setStatus(it.id, "done", `${c.name} no longer reports it`, "agent", false, { checkClosed: nowIso() });
       }
       this.hub.putSync({ ...this.hub.store.syncState(name), lastOkAt: nowIso(), error: undefined, cursor: `${items.length} open` });
       // Interval checks re-report the same items every few minutes: toast only what's new.
