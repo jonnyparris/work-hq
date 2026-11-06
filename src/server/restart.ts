@@ -6,6 +6,12 @@
 // (POST /api/restart); the server runs its own repo's `restart` command once no headless job is live, holding new
 // scheduled sweeps meanwhile. Several landings while it waits fold into one restart. cmux jobs survive a restart
 // (the server picks them up again), so they don't hold it.
+//
+// The landing job holds it too when it runs headless. land doesn't wait for the restart, so the job goes on to write
+// its report; restarting at once killed it first (11-05: job_mw2cz30ktqlbv landed, then failed "server restarted
+// mid-run"). The restart fires once it leaves `running` (Agents.finishAction, after pi exits, so after its report).
+// Each landing job gets MAX_HOLD_MS from its own ask, not from the first one, so joining a long hold late doesn't
+// leave it only the minutes that are left.
 
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
@@ -29,9 +35,14 @@ const real = (p: string) => {
   }
 };
 
-/** Headless jobs a restart would kill. `except`: the landing job itself, if it runs headless, mustn't wait on itself. */
-export function blockers(live: Job[], except = new Set<string>()): Job[] {
-  return live.filter((j) => j.surface === "headless" && ["queued", "running"].includes(j.status) && !except.has(j.id));
+/** Headless jobs a restart would kill, the landing job included. */
+export function blockers(live: Job[]): Job[] {
+  return live.filter((j) => j.surface === "headless" && ["queued", "running"].includes(j.status));
+}
+
+/** What the answer and the log call each blocker. A job that asked for the restart is named as such. */
+function label(j: Job, asked: Map<string, number>) {
+  return asked.has(j.id) ? `${j.title} (the job asking: restarts when it ends)` : j.title;
 }
 
 export interface RestartAnswer {
@@ -42,7 +53,8 @@ export interface RestartAnswer {
 }
 
 export class RestartGate {
-  pending?: { since: number; reasons: string[] };
+  /** since: the first ask. asked: each reason (a job id, for Work HQ jobs) and when it first asked. */
+  pending?: { since: number; reasons: string[]; asked: Map<string, number> };
   private timer?: ReturnType<typeof setInterval>;
 
   constructor(
@@ -76,24 +88,29 @@ export class RestartGate {
   }
 
   request(reason: string): RestartAnswer {
-    if (!this.pending) this.pending = { since: this.now(), reasons: [] };
+    if (!this.pending) this.pending = { since: this.now(), reasons: [], asked: new Map() };
     this.pending.reasons.push(reason);
-    const waiting = blockers(this.o.live(), new Set(this.pending.reasons));
+    if (!this.pending.asked.has(reason)) this.pending.asked.set(reason, this.now());
+    const waiting = blockers(this.o.live());
     if (!waiting.length) {
       this.fire("no headless jobs running");
       return { status: "now", waitingFor: [], pid: process.pid };
     }
-    console.log(`[restart] held for ${waiting.length} headless job(s): ${waiting.map((j) => j.title).join(", ")}`);
+    const names = waiting.map((j) => label(j, this.pending!.asked));
+    console.log(`[restart] held for ${waiting.length} headless job(s): ${names.join(", ")}`);
     this.timer ??= setInterval(() => this.check(), this.o.pollMs ?? 5_000);
-    return { status: "queued", waitingFor: waiting.map((j) => j.title), pid: process.pid };
+    return { status: "queued", waitingFor: names, pid: process.pid };
   }
 
   /** Called on a timer while a restart is pending. Returns true once it fired. */
   check() {
     if (!this.pending) return false;
-    const waiting = blockers(this.o.live(), new Set(this.pending.reasons));
-    if (waiting.length && this.now() - this.pending.since < MAX_HOLD_MS) return false;
-    this.fire(waiting.length ? `held ${Math.round(MAX_HOLD_MS / 60_000)} min, restarting anyway over ${waiting.map((j) => j.title).join(", ")}` : "headless jobs finished");
+    const p = this.pending;
+    const waiting = blockers(this.o.live());
+    // A landing job's hold runs from its own ask; everything else's from the first one.
+    if (waiting.some((j) => this.now() - (p.asked.get(j.id) ?? p.since) < MAX_HOLD_MS)) return false;
+    const names = waiting.map((j) => label(j, p.asked));
+    this.fire(waiting.length ? `held ${Math.round(MAX_HOLD_MS / 60_000)} min past each ask, restarting anyway over ${names.join(", ")}` : "headless jobs finished");
     return true;
   }
 

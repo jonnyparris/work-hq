@@ -89,9 +89,10 @@
   workspace that is selected, pinned, still working, or waiting on you.
 - **Restarts wait for headless runs.** `whq land` and `scripts/worktree.sh land` on the server's own checkout ask the
   server (`POST /api/restart`) instead of kickstarting it. The server runs its repo rule's `restart` once no
-  headless job (sweep, triage, work fallback) is live, starts no new sweeps meanwhile, folds several landings into one
-  restart, and gives up waiting after 25 min (`src/server/restart.ts`), so a headless work job that
-  runs longer dies on a landing (cmux work jobs don't). Boot sweeps only what's due by
+  headless job (sweep, triage, work fallback, or the headless landing job itself, so it can report) is live, starts
+  no new sweeps meanwhile, folds several landings into one restart, and gives up waiting after 25 min (from each
+  landing job's own ask, for the rest from the first ask; `src/server/restart.ts`), so a headless work job that runs longer dies on a landing (cmux
+  work jobs don't). Boot sweeps only what's due by
   its last good run, so a restart doesn't start a fresh calendar sweep for the next one to kill.
   A cmux job the restart caught before launch goes back on the gate with its saved prompt. If cmux
   doesn't answer the first ping (busy under load), boot keeps pinging every 3 s for up to 60 s, without

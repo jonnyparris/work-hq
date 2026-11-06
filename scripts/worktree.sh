@@ -43,7 +43,7 @@ ask_restart() {
     url="http://127.0.0.1:$port"
   fi
   repo="${MAIN//\\/\\\\}"; repo="${repo//\"/\\\"}"
-  reason="${WORK_HQ_JOB:-$1}" # a Work HQ job sends its id: the gate never holds a restart behind the job asking
+  reason="${WORK_HQ_JOB:-$1}" # a Work HQ job sends its id: a headless one holds the restart until its report is in
   reason="${reason//\\/\\\\}"; reason="${reason//\"/\\\"}"
   data="{\"repo\":\"$repo\",\"reason\":\"$reason\"}"
   out="$(curl -s --connect-timeout 2 -m 10 -w $'\n%{http_code}' -X POST -H 'content-type: application/json' \

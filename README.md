@@ -251,8 +251,8 @@ Dispatched work jobs don't have to remember any of this. List the repo under `re
 on an item of that project gets its own worktree before pi starts; the prompt names it, and
 `bin/whq land <jobId>` lands it, runs `publish`, removes the worktree and runs `restart` (only when non-doc files
 changed), printing the SHA, mirror SHA and server PID. For the server's own checkout the server does the restart itself,
-after any running sweep finishes. A job that ends with nothing committed has its worktree
-removed. For your own sessions in the main checkout, `git config core.hooksPath scripts/hooks` adds a pre-commit
+after any running sweep finishes, and after the landing job itself ends if it runs headless. A job that ends with
+nothing committed has its worktree removed. For your own sessions in the main checkout, `git config core.hooksPath scripts/hooks` adds a pre-commit
 warning whenever other worktrees are live.
 
 <details>

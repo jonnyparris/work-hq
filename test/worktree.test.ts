@@ -260,7 +260,7 @@ describe("worktree.sh", () => {
       }
     }, SLOW);
 
-    test("a Work HQ job sends its id, so the gate doesn't hold the restart behind the job asking", async () => {
+    test("a Work HQ job sends its id, so the gate knows which blocker is the job asking", async () => {
       const { main } = workHq();
       const dir = change(main, "job");
       const { asked, server } = fake(() => Response.json({ status: "now", waitingFor: [], pid: 1 }));
