@@ -209,6 +209,7 @@ server? Work HQ still runs; you just lose import and the flush.
 | State unknown | memory admits it doesn't know | 60 (max 3 open) |
 | PR / MR merged · Ticket done (batched) | waiting items whose MRs all merged and JIRA tickets are all done (`jira-state.ts`: REST + cloudflared token, 30 min cache; a failed lookup is unknown, never done); one card, ≤ once per 20 h; "Keep waiting" stops it re-listing them | 55 |
 | Still waiting | waiting > 3 days | 50 |
+| Stale proposals | `proposed`, untouched for 14 days (`stale-proposals.ts` `lastTouch`: created, confirmedAt, an owner note, latest job, staleKeptAt; not updatedAt, which memory re-imports bump daily); skipped with a future slot, a kill date, a live job or another open card on it (its item, or one of its picks: recheck, stopped-agents). One card (`proposed:stale`, oldest 20 rows, ≤ once per 20 h; asked before the budget check and counted against it like the stale card): "Retire ticked" drops the ticked and stamps staleKeptAt on the rest (not confirmedAt, which would stop memory-sync retiring it), "Retire all", "Keep all". Taps only, a typed note never answers it; a row an agent is on is left alone (its job is a touch, so it stays off the next card); only rows still `proposed` change. 11-06: 122 proposed, 87 over two weeks old | 40 |
 | Reflection proposal | unconverted proposal (kept across nights until answered) | 45 (max 2 open) |
 | Draft to review / post idea | `post` item, proposed | 42 / 38 (max 2 open) |
 

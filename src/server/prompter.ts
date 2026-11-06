@@ -15,6 +15,7 @@ import { type PrRef, PrStates, prRefs } from "./pr-state.ts";
 import { openUrl } from "./prompts.ts";
 import { cardItemIds, isFoldCard, pruneFold } from "./stopped-fold.ts";
 import { readMeetings, redrawReviews, REVIEWS_PREFIX, reviewDigest, type StaleMeeting } from "./review-fold.ts";
+import { isStaleProposedCard, sweepStaleProposals } from "./stale-proposals.ts";
 
 const MIN = 60_000;
 const DAY = 86_400_000;
@@ -245,6 +246,9 @@ export class Prompter {
     let budget = CAP.total - open.filter((q) => !deferred(q, now) && !isProposalCard(q) && !isStale(q, old)).length;
     this.foldReviews(stale, now);
     if (this.foldStale(open, old, now)) budget--;
+    // Proposed items nobody touched in two weeks: one card to retire or keep them (stale-proposals.ts). 11-06: 122 on
+    // Proposed, 87 over two weeks old, and no rule ever aged one out. Its own slot, like the stale card.
+    if (sweepStaleProposals(this.hub, items, this.open, now)) budget--;
 
     const hour = now.getHours() + now.getMinutes() / 60;
     const [dayStart, dayEnd] = config.sweeps.workHours;
@@ -1189,8 +1193,8 @@ export function workdaysAgo(n: number, now = new Date()) {
 export const staleBefore = (now: Date) => workdaysAgo(STALE_WORKDAYS, now).getTime();
 const deferred = (q: Pick<Question, "notBefore">, now: Date) => Boolean(q.notBefore) && Date.parse(q.notBefore!) > now.getTime();
 const isProposalCard = (q: Pick<Question, "key">) => q.key.startsWith("proposal:");
-/** Older than STALE_WORKDAYS, and not a card with its own slots or the stale card itself. */
-const isStale = (q: Pick<Question, "key" | "createdAt">, before: number) => q.key !== STALE_KEY && !isProposalCard(q) && Date.parse(q.createdAt) < before;
+/** Older than STALE_WORKDAYS, and not a card with its own slots, the stale card itself or the stale-proposals card. */
+const isStale = (q: Pick<Question, "key" | "createdAt">, before: number) => q.key !== STALE_KEY && !isStaleProposedCard(q) && !isProposalCard(q) && Date.parse(q.createdAt) < before;
 
 /** The stale card lists the oldest this many; the rest join as those close. */
 const STALE_PICKS = 20;

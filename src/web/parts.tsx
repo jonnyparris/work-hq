@@ -376,7 +376,7 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
       <div className="options">
         {q.options.map((o, i) => (
           <button key={o.id} className={`opt ${o.tone ?? ""}`} disabled={busy || blockedOption(o.effect, ticks.length, note)} onClick={() => answer(o.id)}>
-            <kbd>{i + 1}</kbd>{q.kind === "plan" && o.id === "plan" ? (picked.length ? `Commit to ${picked.length}` : "Clear today") : o.effect.type === "prepMeetings" ? (ticks.length ? `Prep ${ticks.length}` : "Tick a meeting to prep") : o.effect.type === "donePicks" && !o.effect.all ? (ticks.length ? `Mark ${ticks.length} done` : "Tick the done ones") : o.effect.type === "closePicks" && !o.effect.all ? (ticks.length ? `Close ${ticks.length}` : "Tick the ones to close") : o.effect.type === "stoppedPicks" && !o.effect.all ? (ticks.length ? `${o.effect.act === "check" ? "Check" : "Send again"}: ${ticks.length}` : o.effect.act === "check" ? "Tick the ones to check" : "Tick the ones to send again") : o.label}
+            <kbd>{i + 1}</kbd>{q.kind === "plan" && o.id === "plan" ? (picked.length ? `Commit to ${picked.length}` : "Clear today") : o.effect.type === "prepMeetings" ? (ticks.length ? `Prep ${ticks.length}` : "Tick a meeting to prep") : o.effect.type === "donePicks" && !o.effect.all ? (ticks.length ? `Mark ${ticks.length} done` : "Tick the done ones") : o.effect.type === "closePicks" && !o.effect.all ? (ticks.length ? `Close ${ticks.length}` : "Tick the ones to close") : o.effect.type === "retirePicks" && !o.effect.all && !o.effect.keep ? (ticks.length ? `Retire ${ticks.length}, keep the rest` : "Tick the ones to retire") : o.effect.type === "stoppedPicks" && !o.effect.all ? (ticks.length ? `${o.effect.act === "check" ? "Check" : "Send again"}: ${ticks.length}` : o.effect.act === "check" ? "Tick the ones to check" : "Tick the ones to send again") : o.label}
           </button>
         ))}
       </div>
@@ -761,7 +761,7 @@ export function CoachTrack({ history }: { history: CoachOutcome[] }) {
 
 // ── Agents ────────────────────────────────────────────────────────────────
 /** Options that act on the card's ticked picks: no tick and no note, nothing to do. */
-const needsTicks = (e: Effect) => e.type === "prepMeetings" || ((e.type === "donePicks" || e.type === "closePicks" || e.type === "stoppedPicks") && !e.all);
+const needsTicks = (e: Effect) => e.type === "prepMeetings" || ((e.type === "donePicks" || e.type === "closePicks" || e.type === "stoppedPicks") && !e.all) || (e.type === "retirePicks" && !e.all && !e.keep);
 
 /**
  * Would tapping this do nothing? Tick options with no tick and no note. closePicks never reads a note: "Close ticked"
@@ -770,6 +770,8 @@ const needsTicks = (e: Effect) => e.type === "prepMeetings" || ((e.type === "don
 export function blockedOption(e: Effect, ticked: number, note: string) {
   const typed = Boolean(note.trim());
   if (e.type === "closePicks") return e.all ? typed : !ticked;
+  // Same as closePicks: ticks drop items, a note never picks them. "Keep all" needs nothing.
+  if (e.type === "retirePicks") return e.keep ? false : e.all ? typed : !ticked;
   // A note goes to the agents; it never picks rows.
   if (e.type === "stoppedPicks") return !e.all && !ticked;
   return needsTicks(e) && !ticked && !typed;

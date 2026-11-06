@@ -15,6 +15,7 @@ export const DEMO_OWNER = "Alex";
 /** Wipe every table and fill it with a fresh, time-relative day of made-up work. */
 export function resetDemo(hub: Hub) {
   for (const t of ["items", "questions", "jobs", "events", "journal", "sync", "kv"]) hub.store.db.exec(`DELETE FROM ${t}`);
+  hub.store.forgetJobCache();
   seedDemo(hub);
   hub.emit({ type: "snapshot", data: hub.snapshot() });
 }

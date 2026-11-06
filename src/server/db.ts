@@ -183,6 +183,25 @@ export class Store {
   jobs(limit = 60): Job[] {
     return this.all<Job>("jobs", `ORDER BY updated DESC LIMIT ${limit}`);
   }
+  private lastJobAt?: Map<string, string>;
+  /**
+   * item id → when the latest job on it was created. Every job, not just the last `jobs()` page. Read on the 30 s
+   * prompter tick (stale-proposals.ts): the full scan runs once, then putJob keeps the map current. Jobs are never
+   * deleted, except by the demo reset (forgetJobCache).
+   */
+  lastJobAtByItem(): ReadonlyMap<string, string> {
+    if (!this.lastJobAt) {
+      const rows = this.db
+        .query("SELECT json_extract(doc, '$.itemId') AS item, MAX(json_extract(doc, '$.createdAt')) AS at FROM jobs WHERE json_extract(doc, '$.itemId') IS NOT NULL GROUP BY item")
+        .all() as Array<{ item: string; at: string | null }>;
+      this.lastJobAt = new Map(rows.filter((r) => r.at).map((r) => [r.item, r.at!]));
+    }
+    return this.lastJobAt;
+  }
+  /** Anything that deletes jobs behind putJob's back (the demo reset) calls this. */
+  forgetJobCache() {
+    this.lastJobAt = undefined;
+  }
   /** Jobs still in flight (queued, running or blocked). Not limited, unlike `jobs()`. */
   liveJobs(): Job[] {
     return this.all<Job>("jobs", "WHERE status IN ('queued', 'running', 'blocked')");
@@ -192,6 +211,7 @@ export class Store {
   }
   putJob(job: Job) {
     this.put("jobs", job.id, job.status, job.finishedAt ?? job.startedAt ?? job.createdAt, job);
+    if (this.lastJobAt && job.itemId && job.createdAt && job.createdAt > (this.lastJobAt.get(job.itemId) ?? "")) this.lastJobAt.set(job.itemId, job.createdAt);
     return job;
   }
 

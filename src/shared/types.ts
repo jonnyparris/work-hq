@@ -86,6 +86,9 @@ export interface Item {
   /** Set when its check closed it as no longer reported (Checks.run). The one close a re-report undoes (hub
    *  quietStatus); cleared by any later status change. */
   checkClosed?: string;
+  /** "Keep" on the stale-proposals card (server/stale-proposals.ts): it counts as a touch there, so the item stays off
+   *  that card for a while. Not confirmedAt: that also stops memory-sync retiring an item memory no longer lists. */
+  staleKeptAt?: string;
   /** "Explain simply" in the drawer: a plain-English read of title + detail + quote. `for` = what it was written from. */
   explain?: ItemExplain;
   createdAt: string;
@@ -191,6 +194,12 @@ export type Effect =
   | { type: "donePicks"; all?: boolean }
   /** Stale card: close each card ticked in `picks` (pick id = question id), or every pick with `all`. */
   | { type: "closePicks"; all?: boolean }
+  /**
+   * Stale-proposals card (server/stale-proposals.ts): drop each item ticked in `picks` (or every pick with `all`) and keep
+   * the rest (staleKeptAt now, so they stay off the card for a while). `keep`: drop nothing, keep every pick. Taps only:
+   * a typed note never picks any of these (the card has no item to keep the note's words on).
+   */
+  | { type: "retirePicks"; all?: boolean; keep?: boolean }
   /**
    * Stopped-agents card (server/stopped-fold.ts): for each item ticked in `picks` (or every pick with `all`), `check`
    * sends a verify agent about its stopped job, `rerun` sends that job's action again with its note. `jobs`: item id → job id.
