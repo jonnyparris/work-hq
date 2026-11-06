@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { Agents, type CmuxDeps } from "../src/server/agents.ts";
 import { Store } from "../src/server/db.ts";
 import { Hub } from "../src/server/hub.ts";
@@ -131,4 +131,142 @@ test("answering one card with a dispatch closes the item's other state cards, ke
   expect(status(wait)).toBe("answered");
   expect(hub.store.question(wait.id)!.answer).toBe("Chase them");
   expect(status(state)).toBe("expired");
+});
+
+// r3 leftovers of 0506138: a reader that fails after an agent was sent, a throw while handling it, a build that throws.
+
+test("a reader that fails after a dispatch doesn't park the card or promise it back: it closes as 'agent sent'", async () => {
+  const { hub, agents, item, card, status } = setup();
+  const wait = card(`wait:${item.id}`);
+  let fail!: (e: Error) => void;
+  (agents as any).readNote = () => new Promise((_, rej) => (fail = rej));
+  const toasts: string[] = [];
+  hub.subscribe((e: any) => e.type === "toast" && toasts.push(e.data.text));
+  await hub.note(wait.id, "hang on, checking with Ravi");
+  await agents.dispatch(item.id, "reply", undefined, "other card → Chase");
+  fail(new Error("bad json"));
+  await tick();
+  expect(status(wait)).toBe("expired");
+  expect(hub.store.question(wait.id)!.answer).toBe("agent sent");
+  expect(toasts.some((t) => t.includes("Card back in 15 min"))).toBe(false);
+  expect(toasts.some((t) => t.includes("Couldn't read that note (bad json). It's kept on the item; an agent is already on it, so the card is closed."))).toBe(true);
+  expect(hub.store.journal().some((j: any) => j.text.includes("an agent is already on it, card closed"))).toBe(true);
+  expect(JSON.stringify(hub.store.item(item.id)!.notes)).toContain("checking with Ravi");
+});
+
+test("a throw while handling a failed read still ends the read: the held close happens", async () => {
+  const { hub, agents, item, card, status } = setup();
+  const wait = card(`wait:${item.id}`);
+  let fail!: (e: Error) => void;
+  (agents as any).readNote = () => new Promise((_, rej) => (fail = rej));
+  await hub.note(wait.id, "hang on, checking with Ravi");
+  await agents.dispatch(item.id, "reply", undefined, "other card → Chase");
+  const toast = hub.toast.bind(hub);
+  const logged = spyOn(console, "error").mockImplementation(() => {});
+  let logs = 0;
+  let calls: string[] = [];
+  try {
+    (hub as any).toast = () => {
+      throw new Error("toast broke");
+    };
+    fail(new Error("bad json"));
+    await tick();
+    logs = logged.mock.calls.length;
+    calls = logged.mock.calls.map((c) => String(c[0]));
+  } finally {
+    (hub as any).toast = toast;
+    logged.mockRestore();
+  }
+  expect(status(wait)).toBe("expired");
+  expect((hub as any).reading.size).toBe(0);
+  expect(logs).toBeGreaterThan(0);
+  expect(calls.some((c) => c.includes(`note read on ${wait.id}`))).toBe(true);
+  expect(hub.store.journal().some((j: any) => j.text.includes("Couldn't act on note (toast broke)"))).toBe(true);
+});
+
+test("a read that returns no decision after a dispatch still ends: the held close happens", async () => {
+  const { hub, agents, item, card, status } = setup();
+  const wait = card(`wait:${item.id}`);
+  let finish!: (d: any) => void;
+  (agents as any).readNote = () => new Promise((r) => (finish = r));
+  await hub.note(wait.id, "hang on, checking with Ravi");
+  await agents.dispatch(item.id, "reply", undefined, "other card → Chase");
+  finish(undefined);
+  await tick();
+  expect(status(wait)).toBe("expired");
+  expect(hub.store.question(wait.id)!.answer).toBe("agent sent");
+  expect((hub as any).reading.size).toBe(0);
+});
+
+test("a build that throws fails the job and gives the item back, so a retry dispatches again", async () => {
+  const { hub, agents, item, card, status } = setup();
+  const wait = card(`wait:${item.id}`);
+  const build = (agents as any).worktreeFor.bind(agents);
+  (agents as any).worktreeFor = async () => {
+    throw new Error("git worktree add failed");
+  };
+  await expect(agents.dispatch(item.id, "work")).rejects.toThrow("git worktree add failed");
+  const failed = hub.store.jobs().filter((j) => j.itemId === item.id);
+  expect(failed.map((j) => j.status)).toEqual(["failed"]);
+  expect(failed[0]!.error).toContain("git worktree add failed");
+  expect(hub.store.item(item.id)!.status).toBe("waiting");
+  expect(status(wait)).toBe("open");
+  (agents as any).worktreeFor = build;
+  const again = await agents.dispatch(item.id, "work");
+  expect(again!.id).not.toBe(failed[0]!.id);
+  expect(again!.status).toBe("queued");
+});
+
+test("a build that throws while another agent is on the item leaves the item in doing", async () => {
+  const { hub, agents, item } = setup();
+  await agents.dispatch(item.id, "reply", undefined, "first → Chase");
+  (agents as any).worktreeFor = async () => {
+    throw new Error("git worktree add failed");
+  };
+  await expect(agents.dispatch(item.id, "work", undefined, "second → Do it")).rejects.toThrow("git worktree add failed");
+  expect(hub.store.item(item.id)!.status).toBe("doing");
+});
+
+test("a build that throws with only a verify live gives the item back", async () => {
+  const { hub, agents, item } = setup();
+  await agents.dispatch(item.id, "verify");
+  (agents as any).worktreeFor = async () => {
+    throw new Error("git worktree add failed");
+  };
+  await expect(agents.dispatch(item.id, "work")).rejects.toThrow("git worktree add failed");
+  expect(hub.store.item(item.id)!.status).toBe("waiting");
+});
+
+test("stopped while it builds: stays cancelled, cards stay open, item given back, nothing launches", async () => {
+  const { hub, agents, item, card, status } = setup();
+  const wait = card(`wait:${item.id}`);
+  let build!: () => void;
+  (agents as any).worktreeFor = () => new Promise<undefined>((r) => (build = () => r(undefined)));
+  let launched = false;
+  (agents as any).launchAction = async () => {
+    launched = true;
+  };
+  const p = agents.dispatch(item.id, "work");
+  await tick();
+  const job = hub.store.jobs().find((j) => j.itemId === item.id)!;
+  agents.cancel(job.id);
+  build();
+  await p;
+  expect(hub.store.job(job.id)!.error).toBe("cancelled");
+  expect(status(wait)).toBe("open");
+  expect(hub.store.item(item.id)!.status).toBe("waiting");
+  expect(launched).toBe(false);
+});
+
+test("stopped while it builds, then the build throws: the job keeps 'cancelled'", async () => {
+  const { hub, agents, item } = setup();
+  let fail!: (e: Error) => void;
+  (agents as any).worktreeFor = () => new Promise((_, rej) => (fail = rej));
+  const p = agents.dispatch(item.id, "work");
+  await tick();
+  const job = hub.store.jobs().find((j) => j.itemId === item.id)!;
+  agents.cancel(job.id);
+  fail(new Error("git worktree add failed"));
+  await expect(p).rejects.toThrow("git worktree add failed");
+  expect(hub.store.job(job.id)!.error).toBe("cancelled");
 });

@@ -16,7 +16,7 @@ import * as cmux from "./cmux.ts";
 import { config } from "./config.ts";
 import { newId, nowIso } from "./db.ts";
 import { type DemoScript, demoActionScript, demoSweepScript, feedLine } from "./demo.ts";
-import { ACCESS_APP, type Dispatcher, type Hub, isCrash, queuedNote } from "./hub.ts";
+import { ACCESS_APP, type Dispatcher, errText, type Hub, isCrash, queuedNote } from "./hub.ts";
 import { GatewayToken } from "./gateway-token.ts";
 import { backoffMs, isRateLimited, isTransient, LaunchGate, RunCap } from "./launch-gate.ts";
 import { overloaded } from "./load.ts";
@@ -412,14 +412,36 @@ export class Agents implements Dispatcher {
     const related = url
       ? this.hub.store.liveJobs().filter((j) => j.kind === "action" && j.id !== job.id && j.itemId && j.itemId !== itemId && this.hub.store.item(j.itemId)?.source.url === url)
       : [];
-    const prompt = actionPrompt(job.id, item, action, note, await this.worktreeFor(job.id, item, action), {
-      decision,
-      siblings: [
-        ...siblings.map((j) => ({ id: j.id, action: j.name, decision: j.decision ?? j.note })),
-        ...related.map((j) => ({ id: j.id, action: j.name, decision: j.decision ?? j.note, item: this.hub.store.item(j.itemId!)?.title ?? "" })),
-      ],
-    });
-    if (useCmux) writeFileSync(promptFile(job.id), prompt);
+    // Nothing will run (the build threw, or Stop landed while it built): a queued job left behind would sit forever and
+    // the same-dispatch check above would swallow every retry, with the item in doing and nobody on it.
+    const giveBack = (error?: string) => {
+      // A cancel while it built already failed the job: keep its "cancelled".
+      if (error && !this.cancelled(job.id)) this.patch(job.id, { status: "failed", error, finishedAt: nowIso() });
+      // worktreeFor may have made the worktree: nothing else would remove it (finishAction never runs).
+      void cleanupWorktree(job.id).catch(() => {});
+      // Another agent on the item (verify doesn't count: it never moves the item to doing) keeps it in doing.
+      const others = this.hub.store.liveJobs().some((j) => j.kind === "action" && j.id !== job.id && j.itemId === itemId && j.name !== "verify");
+      if (action !== "verify" && !others && this.hub.store.item(itemId)?.status === "doing") this.hub.updateItem(itemId, { status: item.status });
+    };
+    let prompt: string;
+    try {
+      prompt = actionPrompt(job.id, item, action, note, await this.worktreeFor(job.id, item, action), {
+        decision,
+        siblings: [
+          ...siblings.map((j) => ({ id: j.id, action: j.name, decision: j.decision ?? j.note })),
+          ...related.map((j) => ({ id: j.id, action: j.name, decision: j.decision ?? j.note, item: this.hub.store.item(j.itemId!)?.title ?? "" })),
+        ],
+      });
+      if (useCmux) writeFileSync(promptFile(job.id), prompt);
+    } catch (e) {
+      giveBack(`couldn't prepare the job: ${errText(e)}`);
+      throw e;
+    }
+    // Stopped while it built: don't answer the item's cards for an agent that won't run.
+    if (this.cancelled(job.id)) {
+      giveBack();
+      return this.hub.store.job(job.id);
+    }
     sent();
     // Launch in the background: the gate may hold it for a while and callers shouldn't wait.
     void this.launchAction(job.id, title, prompt, useCmux);

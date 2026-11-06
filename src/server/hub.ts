@@ -327,8 +327,8 @@ export class Hub {
    * An agent was sent on the item: its own "where does this stand?" cards (waiting, state unknown, kill date, due,
    * when-retry, still on it, inbox, proposal) are answered. Agent cards (`agent:`, `after:`, `restart:`, or an
    * "Agent asks" badge on an agent-chosen key) and other kinds stay: they carry an agent's own question or result.
-   * A card whose typed note the reader is still reading closes once the note is acted on (note()): closing it now
-   * would drop what the note asked for. 11-05: "just do it" sent an agent and the item's "Still waiting" card
+   * A card whose typed note the reader is still reading closes once the read ends (note(): acted on, failed, or the
+   * question gone): closing it now would drop what the note asked for. 11-05: "just do it" sent an agent and the item's "Still waiting" card
    * stayed open. Returns how many closed now.
    */
   closeStateCards(itemId: string, reason: string) {
@@ -801,29 +801,42 @@ export class Hub {
       const r = this.reading.get(q.id) ?? { n: 0 };
       r.n++;
       this.reading.set(q.id, r);
-      // The last read on the card is done: a close held while it ran (closeStateCards) happens now.
-      const done = () => {
-        if (--r.n > 0) return;
-        this.reading.delete(q.id);
-        if (r.close) this.expireQuestion(q.id, r.close);
-      };
+      // finally: a throw below (park, journal, toast, applyNote) still ends this read, so a held close happens and the
+      // entry doesn't leak. The last read on the card is done: a close held while it ran (closeStateCards) happens now.
       try {
-        d = await read(q.id, t).catch((e) => {
-          if (!isCrash(e)) throw e;
-          this.journal(`Note reader crashed (${errText(e)}), retrying once`, { itemId: item?.id, questionId: q.id, who: "hq" });
-          return read(q.id, t);
-        });
-      } catch (e) {
-        // Never apply an empty decision here: a crash is not "you typed background".
-        this.park(q, new Date(Date.now() + 15 * 60_000).toISOString());
-        this.journal(`Couldn't read note (${errText(e)}), card back in 15 min`, { itemId: item?.id, questionId: q.id, who: "hq" });
-        this.toast(`Couldn't read that note (${errText(e)}). Card back in 15 min.`, "warn");
-        done();
-        return;
+        try {
+          d = await read(q.id, t).catch((e) => {
+            if (!isCrash(e)) throw e;
+            this.journal(`Note reader crashed (${errText(e)}), retrying once`, { itemId: item?.id, questionId: q.id, who: "hq" });
+            return read(q.id, t);
+          });
+        } catch (e) {
+          // Never apply an empty decision here: a crash is not "you typed background".
+          // An agent was sent on the item while this ran: the card closes when the read ends, so don't promise it back.
+          if (r.close) {
+            this.journal(`Couldn't read note (${errText(e)}); an agent is already on it, card closed`, { itemId: item?.id, questionId: q.id, who: "hq" });
+            this.toast(`Couldn't read that note (${errText(e)}). It's kept on the item; an agent is already on it, so the card is closed.`, "warn");
+            return;
+          }
+          this.park(q, new Date(Date.now() + 15 * 60_000).toISOString());
+          this.journal(`Couldn't read note (${errText(e)}), card back in 15 min`, { itemId: item?.id, questionId: q.id, who: "hq" });
+          this.toast(`Couldn't read that note (${errText(e)}). Card back in 15 min.`, "warn");
+          return;
+        }
+        if (d) await this.applyNote(q.id, d, t, new Date(), noteId).catch((e) => this.toast(`Couldn't act on that note: ${errText(e)}`, "warn"));
+      } finally {
+        if (--r.n <= 0) {
+          this.reading.delete(q.id);
+          if (r.close) this.expireQuestion(q.id, r.close);
+        }
       }
-      if (d) await this.applyNote(q.id, d, t, new Date(), noteId).catch((e) => this.toast(`Couldn't act on that note: ${errText(e)}`, "warn"));
-      done();
-    })();
+    })().catch((e) => {
+      // Escaped the handler (a journal or toast that threw): the read already ended above; leave a trace.
+      console.error(`note read on ${q.id}:`, e);
+      try {
+        this.journal(`Couldn't act on note (${errText(e)})`, { itemId: item?.id, questionId: q.id, who: "hq" });
+      } catch {}
+    });
     return { pending: true };
   }
 
@@ -1550,7 +1563,7 @@ export function isCrash(e: unknown) {
   return /pi exited|pi killed|\bSIG[A-Z]+\b|server restarted/i.test(errText(e));
 }
 
-function errText(e: unknown) {
+export function errText(e: unknown) {
   return e instanceof Error ? e.message : String(e);
 }
 
