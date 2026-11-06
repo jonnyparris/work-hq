@@ -263,6 +263,32 @@ test("usage digest: agent follow-ups on one item aren't repeats; the trail shows
   expect(row).not.toContain(`${day(twoDaysAgo)} `);
 });
 
+test("usage digest: a stopped-run fold card closed because its item was done or dropped isn't a repeat", async () => {
+  const path = `${tmpdir()}/whq-usage-fold-done-${Date.now()}.db`;
+  const hub = new Hub(new Store(path));
+  // 11-05: one dispatch answer, then the agent reported the item done and that closed its fold card unanswered.
+  for (const why of ["item done", "item dropped"]) {
+    const it = hub.createItem({ title: `Fixed by agent (${why})`, status: "inbox" });
+    const d = hub.ask({ kind: "dispatch", itemId: it.id, key: `k:${why}`, priority: 1, prompt: "Send an agent?", options: [] })!;
+    hub.store.putQuestion({ ...hub.store.question(d.id)!, status: "answered", answer: "Do it — send an agent", answeredAt: new Date().toISOString() });
+    hub.ask({ kind: "state", itemId: it.id, key: `after:fold:${why}`, priority: 1, prompt: "Agent stopped?", options: [] })!;
+    // The real close path: setStatus expires every open card on the item "item <status>" (a note goes to the journal).
+    hub.setStatus(it.id, why === "item done" ? "done" : "dropped", "landed", "agent");
+  }
+  // A fold card that expired any other way, or was answered, still counts.
+  const kept = hub.createItem({ title: "Still asked twice", status: "inbox" });
+  const d = hub.ask({ kind: "dispatch", itemId: kept.id, key: "k:kept", priority: 1, prompt: "Send an agent?", options: [] })!;
+  hub.store.putQuestion({ ...hub.store.question(d.id)!, status: "answered", answer: "Do it — send an agent", answeredAt: new Date().toISOString() });
+  const f = hub.ask({ kind: "state", itemId: kept.id, key: "after:fold:kept", priority: 1, prompt: "Agent stopped?", options: [] })!;
+  hub.expireQuestion(f.id, "closed as stale");
+  hub.store.db.close();
+  const out = await digest(path);
+  rmSync(path, { force: true });
+  const repeats = out.split("## Asked more than once")[1]!.split("\n## ")[0]!.split("### Agent follow-ups")[0]!;
+  expect(repeats).not.toContain("Fixed by agent");
+  expect(repeats).toContain("Still asked twice** (2×)");
+});
+
 test("usage digest: a long repeat trail keeps the newest 12 and counts the rest", async () => {
   const path = `${tmpdir()}/whq-usage-cap-${Date.now()}.db`;
   const hub = new Hub(new Store(path));
