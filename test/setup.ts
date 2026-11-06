@@ -2,6 +2,10 @@
 process.env.WORK_HQ_CONFIG = "none";
 process.env.WORK_HQ_SWEEPS = "off";
 delete process.env.WORK_HQ_MEMORY_TOKEN;
+// Memory calls in tests go to fakes. A shell's WORK_HQ_DB (or WORK_HQ_MEMORY_WRITE=off) turns memory writes off,
+// which silently no-ops the journal flush tests.
+delete process.env.WORK_HQ_DB;
+delete process.env.WORK_HQ_MEMORY_WRITE;
 delete process.env.WORK_HQ_CLAIRIC_TOKEN;
 delete process.env.WORK_HQ_CLAIRIC_ACCOUNT;
 // Never shell out to the real cmux: a busy cmux app made `cmux tree` outlast the 5 s test timeout (10-21,

@@ -149,7 +149,35 @@ export class MemorySync {
   }
 
   // ── journal → memory ───────────────────────────────────────────────────
-  async flushJournal() {
+  private flushRunning?: Promise<{ written: number }>;
+  private flushQueued?: Promise<{ written: number }>;
+
+  /**
+   * One flush at a time. The scheduler, the job runner and the wrap card can all call this. Two overlapping flushes
+   * took the same pending entries, the second read the file after the first wrote it, and appended them again
+   * (11-05: R2 had the 01:08–01:30 block twice, the DB one entry each). Callers that arrive mid-flush share one
+   * follow-up flush, which runs after the current one settles (even if it failed) and picks up whatever is still
+   * pending. So an R2 outage queues at most one extra flush, however many callers pile up.
+   */
+  flushJournal(): Promise<{ written: number }> {
+    if (this.flushQueued) return this.flushQueued;
+    if (!this.flushRunning) return this.startFlush();
+    this.flushQueued ??= this.flushRunning.catch(() => {}).then(() => {
+      this.flushQueued = undefined;
+      return this.startFlush();
+    });
+    return this.flushQueued;
+  }
+
+  private startFlush() {
+    const run: Promise<{ written: number }> = this.flushJournalOnce().finally(() => {
+      if (this.flushRunning === run) this.flushRunning = undefined;
+    });
+    this.flushRunning = run;
+    return run;
+  }
+
+  private async flushJournalOnce() {
     const pending = this.hub.store.unsyncedJournal();
     if (!pending.length) return { written: 0 };
     if (!config.memory.write) {
@@ -159,16 +187,19 @@ export class MemorySync {
     const s = { ...this.hub.store.syncState("journal"), lastRunAt: nowIso() };
     try {
       const current = (await this.memory.read(config.memory.journalPath)) ?? "";
-      const { body, overflow } = mergeJournal(current, pending, (id) => this.hub.store.item(id));
-      await this.memory.write(config.memory.journalPath, body);
+      const { body, overflow, added } = mergeJournal(current, pending, (id) => this.hub.store.item(id));
+      // Archive first: the new main body has already dropped the spilled days, so writing it first and then failing
+      // the archive write would lose them. A failure after the archive write retries into appendArchive's dedupe.
       if (overflow) {
         const archivePath = config.memory.journalPath.replace(/\.md$/, `-archive-${new Date().toISOString().slice(0, 7)}.md`);
         const prev = (await this.memory.read(archivePath)) ?? `---\ntags: [workload, work-hq, journal, archive]\n---\n\n# Work HQ Journal — archive\n`;
-        await this.memory.write(archivePath, `${prev.trimEnd()}\n\n${overflow}\n`);
+        await this.memory.write(archivePath, appendArchive(prev, overflow));
       }
+      await this.memory.write(config.memory.journalPath, body);
       for (const e of pending) this.hub.store.putJournal({ ...e, synced: true });
-      this.hub.putSync({ ...s, lastOkAt: nowIso(), error: undefined, cursor: `${pending.length} entries` });
-      return { written: pending.length };
+      const had = pending.length - added;
+      this.hub.putSync({ ...s, lastOkAt: nowIso(), error: undefined, cursor: `${added} entries${had ? ` (${had} already there)` : ""}` });
+      return { written: added };
     } catch (e) {
       this.hub.putSync({ ...s, error: String((e as Error).message ?? e) });
       throw e;
@@ -209,7 +240,7 @@ export function mergeJournal(
   current: string,
   entries: JournalEntry[],
   itemOf: (id: string) => Item | undefined,
-): { body: string; overflow?: string } {
+): { body: string; overflow?: string; added: number } {
   // Existing day sections, newest first.
   const days = new Map<string, string[]>();
   const order: string[] = [];
@@ -222,6 +253,13 @@ export function mergeJournal(
     days.set(m[1]!, lines);
     order.push(m[1]!);
   });
+  // Lines the file already has are not written again: a flush that wrote but died before marking its entries
+  // synced, or one that overlapped another (11-05). This matches on the line, not the entry: a later entry with the
+  // same minute, who and text as a line already there is skipped too. The reader can't tell the two apart anyway,
+  // and an id marker on every line would cost the file ~20% of its 20 KB. Same-line entries within one batch are
+  // all written: they can't be a retry.
+  const had = new Map([...days].map(([d, ls]) => [d, new Set(ls)]));
+  let added = 0;
   for (const e of entries) {
     const d = new Date(e.at);
     const day = localDate(d);
@@ -233,7 +271,9 @@ export function mergeJournal(
       days.set(day, []);
       order.push(day);
     }
+    if (had.get(day)?.has(line)) continue;
     days.get(day)!.push(line);
+    added++;
   }
   order.sort().reverse();
   const render = (ds: string[]) => ds.map((d) => `## ${d}\n\n${days.get(d)!.join("\n")}\n`).join("\n");
@@ -244,7 +284,36 @@ export function mergeJournal(
     spill.unshift(keep.pop()!);
     body = `${JOURNAL_HEADER}\n${render(keep)}`;
   }
-  return { body, overflow: spill.length ? render(spill.reverse()) : undefined };
+  return { body, overflow: spill.length ? render(spill.reverse()) : undefined, added };
+}
+
+/**
+ * Append spilled day sections to the archive, skipping lines the archive already has for that day. A day the archive
+ * already has gets its new lines added to its own section, not a second `## day` heading.
+ */
+export function appendArchive(prev: string, overflow: string): string {
+  let out = prev.trimEnd();
+  const parts = overflow.split(/^(?=## \d{4}-\d{2}-\d{2}\s*$)/m);
+  for (const part of parts) {
+    const day = /^## (\d{4}-\d{2}-\d{2})/.exec(part)?.[1];
+    if (!day) continue;
+    const lines = part.split("\n").filter((l) => l.startsWith("- "));
+    const head = new RegExp(`^## ${day}\\s*$`, "m").exec(out);
+    if (!head) {
+      out += `\n\n## ${day}\n\n${lines.join("\n")}`;
+      continue;
+    }
+    const start = head.index + head[0].length;
+    const next = out.slice(start).search(/^## \d{4}-\d{2}-\d{2}\s*$/m);
+    const end = next < 0 ? out.length : start + next;
+    const section = out.slice(start, end);
+    const have = new Set(section.split("\n").filter((l) => l.startsWith("- ")));
+    const fresh = lines.filter((l) => !have.has(l));
+    if (!fresh.length) continue;
+    const merged = `${section.trimEnd()}\n${fresh.join("\n")}\n`;
+    out = out.slice(0, start) + merged + (next < 0 ? "" : "\n") + out.slice(end).replace(/^\n+/, "");
+  }
+  return `${out.trimEnd()}\n`;
 }
 
 export function localDate(d: Date) {
