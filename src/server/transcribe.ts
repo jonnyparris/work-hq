@@ -8,7 +8,6 @@
 //             e.g. "whisper-cli -m ~/models/ggml-base.en.bin -nt -np -f {file}"
 //   auto    — hex if it's running, else command if set, else browser.
 //
-// The 🍍 listener stays on Web Speech either way: it needs a continuous stream and keyword spotting.
 
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";

@@ -142,7 +142,7 @@ function App() {
                   </div>
                 )}
                 <div className="kbd-help">
-                  <kbd>1</kbd>–<kbd>9</kbd> answer · <kbd>→</kbd>/<kbd>s</kbd> next · <kbd>←</kbd> back · <kbd>n</kbd> note · <kbd>⌘↵</kbd> send note (acts on it) · <kbd>⌘K</kbd> talk · <kbd>⌘.</kbd> 🍍
+                  <kbd>1</kbd>–<kbd>9</kbd> answer · <kbd>→</kbd>/<kbd>s</kbd> next · <kbd>←</kbd> back · <kbd>n</kbd> note · <kbd>⌘↵</kbd> send note (acts on it) · <kbd>⌘K</kbd> talk
                   {queue.length > 1 && <> · <button className="kbd-btn" onClick={() => setDeck(true)}><kbd>b</kbd> clear the deck</button></>}
                   {" · "}<button className={`kbd-btn ${quick ? "on" : ""}`} onClick={() => setQuick((x) => !x)}><kbd>q</kbd> quick wins first{quick ? " ✓" : ""}</button>
                 </div>
@@ -240,23 +240,20 @@ function CommandBar() {
   const [text, setText] = useState("");
   const [pending, setPending] = useState(false);
   const [reply, setReply] = useState<string | undefined>();
-  const [listening, setListening] = useState(false);
   const [dictating, setDictating] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
-  const [ticker, setTicker] = useState("");
-  const [fired, setFired] = useState(false);
   const [err, setErr] = useState<string | undefined>();
   const input = useRef<HTMLInputElement>(null);
   const voice = useRef<Voice | undefined>(undefined);
   // Someone else (the Focus card's "Scheduled for…") can borrow dictation.
   const target = useRef<((text: string, final: boolean) => void) | undefined>(undefined);
 
-  const send = useCallback(async (t: string, mode: "chat" | "pineapple" = "chat") => {
+  const send = useCallback(async (t: string) => {
     if (!t.trim()) return;
     setPending(true);
     setReply(undefined);
     try {
-      const r = await api.say(t, mode);
+      const r = await api.say(t);
       // reply-safe: the triage reply, same text as its job summary (agents.triage).
       setReply(r.reply ?? "Done.");
     } catch (e) {
@@ -268,14 +265,6 @@ function CommandBar() {
 
   if (!voice.current) {
     voice.current = new Voice({
-      onInterim: (t) => setTicker((x) => `${x} ${t}`.slice(-220)),
-      onPineapple: (transcript) => {
-        setFired(true);
-        chime();
-        setTimeout(() => setFired(false), 1000);
-        if (transcript.trim()) send(transcript, "pineapple");
-        else setReply("🍍 heard — but no transcript to capture from.");
-      },
       onDictation: (t, final) => {
         if (target.current) {
           const fn = target.current;
@@ -286,8 +275,7 @@ function CommandBar() {
         setText(t);
         if (final && t.trim()) setTimeout(() => input.current?.focus(), 0);
       },
-      onState: ({ listening: l, dictating: d, transcribing: t, error }) => {
-        setListening(l || (voice.current?.listening ?? false));
+      onState: ({ dictating: d, transcribing: t, error }) => {
         setDictating(d);
         setTranscribing(Boolean(t));
         setErr(error);
@@ -314,17 +302,11 @@ function CommandBar() {
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") { e.preventDefault(); input.current?.focus(); }
-      if ((e.metaKey || e.ctrlKey) && e.key === ".") { e.preventDefault(); togglePine(); }
     };
     window.addEventListener("keydown", k);
     return () => window.removeEventListener("keydown", k);
   });
 
-  const togglePine = () => {
-    const v = voice.current!;
-    if (v.listening) { v.stopListening(); setListening(false); setTicker(""); }
-    else { v.startListening(); setListening(true); }
-  };
   const toggleDictate = () => {
     const v = voice.current!;
     // The command bar takes the mic back: a borrower (a meeting row's box) lets go instead of waiting for a final.
@@ -336,7 +318,6 @@ function CommandBar() {
 
   return (
     <div className="bar-wrap">
-      {listening && ticker && <div className="ticker"><span>{ticker}</span></div>}
       {(pending || reply || err) && (
         <div className="reply">
           {pending ? <><span className="thinking"><i /><i /><i /></span> Thinking…</> : err ? <b style={{ color: "var(--coral)" }}>{err}</b> : <><span>◆</span><b>{reply}</b><span className="spacer" style={{ flex: 1 }} /><button className="skip" onClick={() => setReply(undefined)}>✕</button></>}
@@ -359,12 +340,6 @@ function CommandBar() {
           placeholder={transcribing ? "Transcribing…" : dictating ? "Listening…" : "Tell Work HQ anything — “PAY-123 is closed”, “remind me to reply to Sam after standup”, “file a ticket for…”"}
         />
         <span className="hint">⌘K</span>
-        {speechSupported && (
-          <button className={`pine ${listening ? "on" : ""} ${fired ? "fired" : ""}`} onClick={togglePine} title="Always-on 🍍 listener (⌘.)">
-            <span className="fruit">🍍</span>{listening ? "listening" : "off"}
-          </button>
-        )}
-        {listening && <button className="mini" onClick={() => voice.current?.fireNow()} title="Capture the last couple of minutes now">Capture now</button>}
         <button className="send" disabled={!text.trim() || pending} onClick={() => { const t = text; setText(""); send(t); }}>Send</button>
       </div>
     </div>

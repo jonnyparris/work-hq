@@ -207,7 +207,7 @@ function findJobWorkspace(jobId: string) {
 const promptFile = (jobId: string) => resolve(cmux.jobDir(jobId), "prompt.md");
 /** The owner's words for a triage job, so a restart mid-triage can still offer them back. */
 const triageFile = (jobId: string) => resolve(cmux.jobDir(jobId), "triage.json");
-type TriageMode = "chat" | "pineapple" | "review";
+type TriageMode = "chat" | "review";
 
 export class Agents implements Dispatcher {
   private running = new Map<string, Running>();
@@ -976,11 +976,12 @@ export class Agents implements Dispatcher {
    * repeat side effects. A network blip ("Connection error.", "Request timed out.") that surfaced within
    * triageBlipMaxFirstMs gets one rerun after triageBlipRetryMs, so Wi-Fi can come back after wake.
    * If it still fails, the words come back as a card with Retry / Drop — a failed triage must never
-   * leave the ask only in the journal (10-15: lost for 35 hours). 10-26, 10-27, 11-04: 🍍 asks right
+   * leave the ask only in the journal (10-15: lost for 35 hours). 10-26, 10-27, 11-04: asks right
    * after wake failed on blips and needed a Retry tap.
    */
   async triage(utterance: string, mode: TriageMode = "chat"): Promise<TriageResult & { jobId: string }> {
-    const job = this.newJob("triage", mode, mode === "pineapple" ? `🍍 ${utterance.slice(-60)}` : utterance.slice(0, 80), "headless");
+    if (mode !== "review") mode = "chat"; // a Retry card saved before the 🍍 listener went says "pineapple"
+    const job = this.newJob("triage", mode, utterance.slice(0, 80), "headless");
     writeFileSync(triageFile(job.id), JSON.stringify({ text: utterance, mode }));
     const prompt = triagePrompt(utterance, { now: new Date(), items: this.hub.store.items(), events: this.hub.todayEvents(), questions: this.hub.store.questions("open") }, mode);
     const run = () => this.runHeadless(job.id, prompt, { tools: false, thinking: config.pi.triageThinking, perms: false, timeoutMin: 4 });
@@ -1045,7 +1046,7 @@ export class Agents implements Dispatcher {
       badge: "Triage failed",
       priority: 85,
       prompt: `Couldn't triage: "${quote}"`,
-      context: `${mode === "pineapple" ? "🍍 capture" : mode === "review" ? "Review note" : "Command bar"} · ${error}. Your words are in the journal; nothing was acted on.`,
+      context: `${mode === "review" ? "Review note" : "Command bar"} · ${error}. Your words are in the journal; nothing was acted on.`,
       options: [
         { id: "retry", label: "Retry", tone: "primary", effect: { type: "triage", text, mode } },
         { id: "drop", label: "Drop", tone: "quiet", effect: { type: "noop" } },
@@ -1066,7 +1067,7 @@ export class Agents implements Dispatcher {
         this.hub.createItem({
           ...raw,
           status: raw.status ?? "inbox",
-          source: { type: mode === "pineapple" ? "pineapple" : "voice", ...(raw.source ?? {}) },
+          source: { type: "voice", ...(raw.source ?? {}) },
         }),
       );
     }
@@ -1080,9 +1081,7 @@ export class Agents implements Dispatcher {
       const { id, note, ...patch } = u;
       if (patch.scheduledFor && !patch.status) patch.status = "scheduled";
       if (patch.status) applied++; // a detail-only edit doesn't back "Marked … done"
-      // 11-01: a 🍍 capture's status change is the triage model's call, not words the owner typed, so it
-      // journals as hq. Confirmation is unchanged (true): the owner captured it, and dedupe/re-ask rely on it.
-      if (patch.status) this.hub.setStatus(id, patch.status, note, mode === "pineapple" ? "hq" : "you", true);
+      if (patch.status) this.hub.setStatus(id, patch.status, note, "you", true);
       const { status: _s, ...rest } = patch;
       if (Object.keys(rest).length) this.hub.updateItem(id, { ...rest, confirmedAt: nowIso() });
     }
@@ -1129,7 +1128,7 @@ export class Agents implements Dispatcher {
       const id = c.id.startsWith("new:") ? created[Number(c.id.slice(4))]?.id : c.id;
       const item = id ? this.hub.store.item(id) : undefined;
       if (!item || !c.start || Number.isNaN(Date.parse(c.start))) continue;
-      if (item.scheduledFor !== c.start) this.hub.schedule(item.id, c.start, item.when ?? new Date(c.start).toLocaleString(), mode === "pineapple" ? "hq" : "you");
+      if (item.scheduledFor !== c.start) this.hub.schedule(item.id, c.start, item.when ?? new Date(c.start).toLocaleString(), "you");
       void this.calendarBlock(item.id, c.start, c.durationMin ?? 30);
     }
     return { missed, applied, bulkDispatched };

@@ -26,7 +26,7 @@ export type ItemStatus =
 export type SourceType =
   | "memory" // active-todos / pineapple log / proposals in agent-memory
   | "transcript" // meeting notes / transcripts
-  | "pineapple" // 🍍 spoken or typed
+  | "pineapple" // legacy: the in-app 🍍 listener (removed); old items keep it
   | "voice" // dictated into the command bar
   | "manual" // typed into the command bar
   | "agent" // a dispatched agent created it
@@ -178,8 +178,8 @@ export type Effect =
   | { type: "gatewayLogin"; app: string }
   /** Run `cloudflared access login <app>` for any other Access app a local job needs (`whq access-login`). */
   | { type: "accessLogin"; app: string }
-  /** Run triage again on words a failed triage kept (command bar, 🍍, review notes). */
-  | { type: "triage"; text: string; mode: "chat" | "pineapple" | "review" }
+  /** Run triage again on words a failed triage kept (command bar, review notes). */
+  | { type: "triage"; text: string; mode: "chat" | "review" }
   /** Morning plan: the items picked on the card (sent with the answer as `itemIds`) go to today. */
   | { type: "commitPlan" }
   /** Morning prep card: send a prep agent for each meeting ticked in the card's `picks` (sent with the answer as `picks`). */

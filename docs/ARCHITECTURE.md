@@ -5,7 +5,7 @@
 ```
                        ┌──────────────── Chrome (localhost:7717) ────────────────┐
                        │  Focus question · Board · Timeline · Agents · Journal   │
-                       │  Command bar (⌘K) · Dictation · 🍍 always-on listener    │
+                       │  Command bar (⌘K) · Dictation                            │
                        └───────────────▲─────────────────────┬───────────────────┘
                                 WebSocket (push)        HTTP (answers, say, dispatch)
                        ┌───────────────┴─────────────────────▼───────────────────┐
@@ -42,7 +42,7 @@
   ("Log in now" runs `cloudflared access login <app>`, one tab), and pauses sweeps. It retries once
   every 30 min until a run works again.
   A local job that needs another Access app (launchd scripts; first user: browser-run-growth) calls
-  `whq access-login <app>` instead of a 🍍: one "Log in now" card per app per day
+  `whq access-login <app>` instead of a free-text `whq say`: one "Log in now" card per app per day
   (`access-login:<host>:<day>`, `Hub.accessLoginCard`), no triage job; `whq access-ok <app>` closes it.
 - **Headless pi runs over RPC, never with the prompt in argv** (`src/server/pi-rpc.ts`). Endpoint
   security (SentinelOne) SIGKILLs any exec whose argv holds a string over ~1 KB, so prompts go over
@@ -179,7 +179,7 @@ The thresholds are strict on purpose: titles that name different tickets never m
 - Twin is open → the new one is merged into it (links and people added, title and status kept).
 - Twin is one you closed → it isn't re-added. The journal says so (`Not re-adding …`).
 - Either way the new key becomes an **alias** (`item_keys` table), so the next import goes to the same item.
-- Voice and 🍍 never match a closed item: saying it again means it's live again. Checks, calendar
+- Voice (and items from the old in-app 🍍 listener) never match a closed item: saying it again means it's live again. Checks, calendar
   items and manual adds are never merged.
 - After each memory import, `dedupeExisting` merges duplicates that already exist. It only ever drops
   the copy you haven't confirmed.
@@ -195,7 +195,7 @@ server? Work HQ still runs; you just lose import and the flush.
 | It's time | scheduled item's time has passed | 90 (notifies) |
 | Wrap up | 90 min before end of day | 88 |
 | M5 move | the coaching move's time has passed (day: MM-DD, weekday or next workday after the reflection; time: last HH:MM, else 09:30); once per reflection date, never > 2 days late; a newer reflection expires it; journaled as `M5 move: … → answer` | 85 (notifies) |
-| 🍍 capture triage | new pineapple item | 82 |
+| 🍍 capture triage | new item with the pineapple signal (meeting transcripts) | 82 |
 | Today's prep | work-hours morning (with the plan), weekday, today has 1-1s / 2–4 person meetings still to start; one card per day (`prep:<date>`), tick-boxes per meeting, each tick dispatches `prep`; the list follows the calendar and the card expires once they've all started. Replaced the per-meeting card 20 min before (17 of 19 expired, 10-22) | 75 |
 | Kill date | ≤ 2 days to a reflection kill date; skipped while the item is scheduled for later | 72–78 |
 | Agent asks | a dispatched agent needs a decision | 72 |
@@ -308,9 +308,8 @@ Scheduled for…, and Not for me. Saying "I should blog about X" in the command 
 
 ## Voice
 
-Now: Chrome Web Speech, continuous, `owner.speechLang` (default `en-GB`). The 🍍 listener keeps ~2.5 minutes of
-transcript; on the keyword it waits 7 s for the sentence to finish, then sends it to triage
-in `pineapple` mode.
+Voice is push-to-talk dictation only. 🍍 capture comes from meeting transcripts
+([`prompts/sweeps/transcripts.md`](../prompts/sweeps/transcripts.md)), not a live listener.
 
 Dictation (command-bar mic, "Scheduled for…") uses `voice.dictation`, resolved on every press
 ([`transcribe.ts`](../src/server/transcribe.ts)):
@@ -319,7 +318,7 @@ Dictation (command-bar mic, "Scheduled for…") uses `voice.dictation`, resolved
   `~/Library/Application Support/voice-control/local-api.json` (port + bearer token); the server
   checks `/health`, then posts the WAV to `/transcriptions?model=<HEX's selected model>`.
 - **command** — any shell command that reads `{file}` and prints text (whisper.cpp, parakeet-mlx, …).
-- **browser** — Web Speech, sharing the 🍍 recogniser. Live interim text.
+- **browser** — Chrome Web Speech, `owner.speechLang` (default `en-GB`). Live interim text.
 - **auto** (default) — hex if it's up, else command if set, else browser.
 
 For hex/command the browser records (AudioWorklet → 16 kHz mono WAV), stops on `voice.silenceMs` of
@@ -327,11 +326,6 @@ quiet or ↵ / ⌘↵, **releases the mic before uploading**, and posts to `/api
 the prompt shows "Transcribing…" instead. If HEX has quit, the next press falls back to Web Speech.
 
 Next:
-- **Speaker separation.** The laptop mic hears the call. Options: route the Meet tab's audio
-  and the mic separately (two `MediaStream`s → a Whisper worker), or use Gemini's live
-  transcript when it becomes available mid-meeting.
-  Proposal for any meeting, not just Meet (a local mic + sound-output helper, RealtimeKit compared):
-  [`proposals/local-meeting-listener.md`](proposals/local-meeting-listener.md).
 - **Conversation mode.** Read the focus question aloud (SpeechSynthesis), accept a spoken
   answer ("two", "done", "push it to tomorrow"), confirm with a chime. The option ids and
   triage already support it; it's a UI mode.

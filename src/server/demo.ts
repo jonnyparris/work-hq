@@ -39,7 +39,7 @@ export function seedDemo(hub: Hub) {
   item({
     title: "Send Jordan the capacity numbers for Q4", kind: "email", status: "inbox", project: "PAY", people: ["Jordan"],
     signals: { pineapple: true }, confidence: 0.9,
-    source: { type: "pineapple", label: "Payments roadmap review", quote: "I'll get you the capacity numbers by Thursday — pineapple." },
+    source: { type: "transcript", label: "Payments roadmap review", quote: "I'll get you the capacity numbers by Thursday — pineapple." },
   });
   item({
     title: "Decide who owns the retry-queue migration", kind: "decision", status: "inbox", project: "PAY", people: ["Priya", "Tom"],
@@ -76,7 +76,7 @@ export function seedDemo(hub: Hub) {
   item({ title: "Chase vendor on SOC 2 report", kind: "followup", status: "waiting", people: ["Ravi"], source: { type: "manual" } });
   const filed = item({
     title: "File ticket: checkout p99 alert is too noisy", kind: "ticket", status: "waiting", project: "PAY",
-    links: ["https://tracker.example.com/browse/PAY-2240"], source: { type: "pineapple", quote: "that alert pages us every night, pineapple" },
+    links: ["https://tracker.example.com/browse/PAY-2240"], source: { type: "transcript", label: "Checkout standup", quote: "that alert pages us every night, pineapple" },
   });
   item({ title: "Share hiring rubric with Priya", kind: "task", status: "done", source: { type: "manual" } });
 

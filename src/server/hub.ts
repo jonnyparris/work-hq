@@ -34,7 +34,7 @@ export interface Dispatcher {
   readNote?(questionId: string, text: string): Promise<NoteDecision | undefined>;
   gatewayLogin?(app: string): Promise<void>;
   accessLogin?(app: string): Promise<void>;
-  triage?(text: string, mode: "chat" | "pineapple" | "review"): Promise<unknown>;
+  triage?(text: string, mode: "chat" | "review"): Promise<unknown>;
   sweep?(name: "transcripts" | "calendar", opts?: { since?: string }): Promise<unknown>;
   /** Focus a job's cmux workspace. */
   focus?(jobId: string): unknown;
@@ -232,8 +232,7 @@ export class Hub {
   }
 
   /** A status change + journal line. `who` is who decided (the journal reads `you` as the owner's own words);
-   *  `confirm` stamps confirmedAt (defaults to who === "you"; false leaves any earlier stamp alone). A 🍍 triage
-   *  move is who "hq" with confirm true: the owner captured it, the model picked the status. */
+   *  `confirm` stamps confirmedAt (defaults to who === "you"; false leaves any earlier stamp alone). */
   setStatus(id: string, status: ItemStatus, note?: string, who: JournalEntry["who"] = "you", confirm = who === "you") {
     const item = this.updateItem(id, { status, confirmedAt: confirm ? nowIso() : undefined });
     this.journal(`${label(status)}: ${item.title}${note ? ` — ${note}` : ""}`, { itemId: id, who });
@@ -355,7 +354,7 @@ export class Hub {
 
   /**
    * A local job (launchd script) found its Cloudflare Access session for `app` lapsed: one "Log in now" card per
-   * app per day, key `access-login:<host>:<day>`. Replaces a free-text 🍍 per run, which sent a triage job each time
+   * app per day, key `access-login:<host>:<day>`. Replaces a free-text capture per run (`whq pineapple`, since removed), which sent a triage job each time
    * (10-22..10-29: six of them for a ClickHouse app). Asking again while the card is open, or after "Later" that
    * day, does nothing; after a login (that failed, or lapsed again) or `resolved`, a lapse asks again. Yesterday's
    * card closes. `resolved`: the job got through, so close any open card for the app instead.

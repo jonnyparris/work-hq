@@ -27,17 +27,15 @@ Work HQ closes the loop **in the moment**:
 
 ## Say 🍍 to capture
 
-<p align="center"><img src="docs/img/pineapple.svg" alt="Say pineapple during a call and the last two minutes become a captured item" width="90%"></p>
-
-Turn on the listener (`⌘.`). When you say **"pineapple"** during a call, it takes the last couple
-of minutes of transcript and captures the action. Your meeting-notes tool is swept every 30 minutes
-as a backstop.
+Say **"pineapple"** in a recorded meeting (e.g. Google Meet's own transcript). The transcript sweep
+runs every 30 minutes. It turns what was discussed just before the word into a captured item with the
+verbatim quote. Only your "pineapple" counts; the word from anyone else is ignored.
 
 <p align="center"><img src="docs/img/capture.png" alt="A captured item: the verbatim quote, and one-key answers" width="85%"></p>
 
 ## Try it in 60 seconds
 
-You need [Bun](https://bun.sh), macOS, and Chrome (for voice).
+You need [Bun](https://bun.sh), macOS, and Chrome (for dictation).
 
 ```bash
 git clone <this repo> work-hq && cd work-hq
@@ -102,7 +100,7 @@ Placeholders like `{{owner.name}}` and `{{tracker}}` are filled from the config.
 | Morning checks (e.g. "merged but never landed") | any shell command that prints `{ "items": [...] }` JSON — see `checks` in the example config | nothing extra on the board |
 | Dispatched actions you can watch | [cmux](https://cmux.com) | they run headless and stream into the Agents panel |
 | Import to-dos, save the journal | a memory MCP with `read`/`write`/`list`/`search` over markdown | the journal stays in the local SQLite database |
-| Dictation and 🍍 | Chrome (Web Speech API, no keys) | type instead |
+| Dictation | Chrome (Web Speech API, no keys) | type instead |
 | Better on-device dictation (optional) | [HEX](https://hex.kitlangton.dev) running — picked up automatically — or any local transcriber via `voice.command` | Web Speech |
 
 ## What it asks, and when
@@ -116,7 +114,7 @@ and cheap to run every 30 seconds. The model decides what things *mean*. The rul
 | **It's time** | a scheduled item is due | notifies |
 | **M5 move** | the coaching card's "one thing to try" time (the last HH:MM in its *when*, else 09:30) | once per reflection: Done / Hand to an agent / Not today, journaled for tonight's reflection |
 | **Meeting soon** | a small meeting or 1-1 starts in ≤ 20 min | offers a brief |
-| **🍍 Captured** | you said pineapple | confirm, dispatch, or "not mine" |
+| **🍍 Captured** | you said pineapple in a meeting transcript | confirm, dispatch, or "not mine" |
 | **Kill date** | ≤ 2 days to a decision deadline; an item scheduled for later waits for its slot | |
 | **Meeting ended** | ≤ 45 min after a meeting with others | "anything come out of it?" |
 | **State unknown** | your notes admit they don't know | max 3 open |
@@ -201,7 +199,6 @@ bin/whq report <jobId> <<'JSON'
 { "summary": "Filed PAY-2240", "updates": [{ "id": "it_…", "status": "waiting", "links": ["https://…"] }] }
 JSON
 bin/whq say "PAY-2198 is closed"           # same as the command bar
-bin/whq pineapple "…what was just said…"   # capture from any terminal
 bin/whq journal "learn: tightened the gchat skill"   # a journal line from any agent, no triage
 bin/whq access-login https://app.example.com "nightly job skipped"   # one "Log in now" card per app per day, no triage
 bin/whq access-ok https://app.example.com    # the job got through: close that card

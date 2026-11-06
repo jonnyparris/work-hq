@@ -58,7 +58,7 @@ export function dedupeEligible(source: Item["source"]["type"] | undefined) {
  */
 export function findTwin(title: string, source: Item["source"]["type"] | undefined, items: Item[], now = Date.now()): Item | undefined {
   if (!dedupeEligible(source)) return undefined;
-  // The owner saying it again (voice, 🍍) means it's live again, even if they closed it before.
+  // The owner saying it again (voice; "pineapple" = the removed in-app listener) means it's live again, even if they closed it before.
   const allowClosed = source !== "voice" && source !== "pineapple";
   const candidates = items.filter((i) => {
     if (!dedupeEligible(i.source.type)) return false;

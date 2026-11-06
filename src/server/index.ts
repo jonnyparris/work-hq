@@ -166,10 +166,10 @@ const server = Bun.serve({
     "/api/say": {
       POST: (req) =>
         handle(async () => {
-          const b = await body<{ text: string; mode?: "chat" | "pineapple" | "review"; voice?: boolean }>(req);
+          const b = await body<{ text: string; mode?: "chat" | "review"; voice?: boolean }>(req);
           if (!b.text?.trim()) throw new Error("say something");
-          const mode = b.mode ?? "chat";
-          if (mode !== "pineapple") hub.journal(b.text.trim(), { who: "you" });
+          const mode = b.mode === "review" ? "review" : "chat";
+          hub.journal(b.text.trim(), { who: "you" });
           return agents.triage(b.text.trim(), mode);
         }),
     },

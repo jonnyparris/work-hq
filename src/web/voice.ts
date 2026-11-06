@@ -1,60 +1,30 @@
 // Browser speech, via Chrome's Web Speech API (works on localhost, no keys).
 //
-// Two modes share one recogniser (Chrome only allows one at a time):
-//   listen   — always-on 🍍 watcher. Keeps a rolling transcript; when the owner says
-//              "pineapple", waits a beat for the rest of the sentence, then hands
-//              the preceding couple of minutes to triage.
-//   dictate  — push-to-talk into the command bar / "Scheduled for…". Uses the server's
-//              dictation engine (HEX, a local command) when there is one: records a WAV here,
-//              stops on silence, posts it to /api/transcribe. Otherwise Web Speech.
-//
-// Caveat worth knowing: the laptop mic hears everyone in the room/call, so the
-// "only when the owner says it" rule is enforced by triage reading context, not here.
+// Push-to-talk dictation into the command bar / "Scheduled for…". Uses the server's dictation
+// engine (HEX, a local command) when there is one: records a WAV here, stops on silence, posts it
+// to /api/transcribe. Otherwise Web Speech.
 
 import { profile } from "./ui.tsx";
 
 type Rec = any;
 
 const SR: any = (globalThis as any).SpeechRecognition ?? (globalThis as any).webkitSpeechRecognition;
-/** Web Speech: live dictation + the 🍍 listener. */
+/** Web Speech: live dictation. */
 export const speechSupported = Boolean(SR);
 /** Recorded dictation (HEX / local command) only needs a mic. */
 export const micSupported = Boolean(globalThis.navigator?.mediaDevices?.getUserMedia);
 
-const KEYWORD = /\bpine\s?apple\b/i;
-const WINDOW_MS = 150_000; // how much conversation to hand over
-const AFTER_MS = 7_000; // keep listening this long after the keyword
-
-interface Line { at: number; text: string }
-
 export interface VoiceHandlers {
-  onInterim?: (text: string) => void;
-  onPineapple?: (transcript: string) => void;
   onDictation?: (text: string, final: boolean) => void;
-  onState?: (s: { listening: boolean; dictating: boolean; transcribing?: boolean; error?: string }) => void;
+  onState?: (s: { dictating: boolean; transcribing?: boolean; error?: string }) => void;
 }
 
 export class Voice {
   private rec: Rec | undefined;
-  private mode: "off" | "listen" | "dictate" = "off";
-  private wantListen = false;
-  private lines: Line[] = [];
-  private pendingFire: ReturnType<typeof setTimeout> | undefined;
+  private mode: "off" | "dictate" = "off";
   private dictated = "";
 
   constructor(private h: VoiceHandlers) {}
-
-  get listening() { return this.wantListen; }
-
-  startListening() {
-    this.wantListen = true;
-    if (this.mode === "off") this.start("listen");
-  }
-
-  stopListening() {
-    this.wantListen = false;
-    if (this.mode === "listen") this.stop();
-  }
 
   private recorder: WavRecorder | undefined;
   /** Bumped on every start/stop so a slow async start can tell it's been cancelled. */
@@ -69,7 +39,7 @@ export class Voice {
     this.stop();
     void engine().then((e) => {
       if (gen !== this.gen) return;
-      if (e.engine === "browser") return void setTimeout(() => gen === this.gen && this.start("dictate"), 120);
+      if (e.engine === "browser") return void setTimeout(() => gen === this.gen && this.start(), 120);
       void this.startRecorder(gen, e.silenceMs);
     });
   }
@@ -90,7 +60,7 @@ export class Voice {
   private async startRecorder(gen: number, silenceMs: number) {
     const r = new WavRecorder();
     this.recorder = r;
-    this.rec = undefined; // the 🍍 recogniser was stopped in startDictation; its late onend is ignored
+    this.rec = undefined; // a Web Speech recogniser stopped in startDictation; its late onend is ignored
     this.mode = "dictate";
     this.state();
     try {
@@ -140,14 +110,13 @@ export class Voice {
   private afterRecorder(error?: string) {
     this.mode = "off";
     this.state(error);
-    if (this.wantListen) setTimeout(() => this.mode === "off" && this.start("listen"), 300);
   }
 
   private state(error?: string) {
-    this.h.onState?.({ listening: this.mode === "listen", dictating: this.mode === "dictate", transcribing: this.transcribing, error });
+    this.h.onState?.({ dictating: this.mode === "dictate", transcribing: this.transcribing, error });
   }
 
-  private start(mode: "listen" | "dictate") {
+  private start() {
     if (!SR) return this.state("Speech recognition needs Chrome");
     const rec: Rec = new SR();
     rec.continuous = true;
@@ -161,15 +130,11 @@ export class Voice {
         if (r.isFinal) this.final(text.trim());
         else interim += text;
       }
-      if (interim) {
-        if (this.mode === "dictate") this.h.onDictation?.(`${this.dictated} ${interim}`.trim(), false);
-        else this.h.onInterim?.(interim);
-      }
+      if (interim && this.mode === "dictate") this.h.onDictation?.(`${this.dictated} ${interim}`.trim(), false);
     };
     rec.onerror = (e: any) => {
       if (e.error === "no-speech" || e.error === "aborted") return;
       this.state(e.error === "not-allowed" ? "Microphone blocked" : e.error);
-      if (e.error === "not-allowed") this.wantListen = false;
     };
     rec.onend = () => {
       // A late end from a recogniser we already replaced (e.g. by a recorded dictation) changes nothing.
@@ -178,14 +143,12 @@ export class Voice {
       this.rec = undefined;
       this.mode = "off";
       if (was === "dictate") this.h.onDictation?.(this.dictated.trim(), true);
-      // Chrome ends sessions on silence; the watcher just comes back.
-      if (this.wantListen) setTimeout(() => this.mode === "off" && this.start("listen"), was === "dictate" ? 300 : 250);
       this.state();
     };
     try {
       rec.start();
       this.rec = rec;
-      this.mode = mode;
+      this.mode = "dictate";
       this.state();
     } catch (err) {
       this.state(String(err));
@@ -197,31 +160,9 @@ export class Voice {
   }
 
   private final(text: string) {
-    if (!text) return;
-    if (this.mode === "dictate") {
-      this.dictated = `${this.dictated} ${text}`.trim();
-      this.h.onDictation?.(this.dictated, false);
-      return;
-    }
-    const now = Date.now();
-    this.lines.push({ at: now, text });
-    this.lines = this.lines.filter((l) => now - l.at < WINDOW_MS + AFTER_MS);
-    this.h.onInterim?.(text);
-    if (KEYWORD.test(text) && !this.pendingFire) {
-      this.pendingFire = setTimeout(() => {
-        this.pendingFire = undefined;
-        const transcript = this.lines.map((l) => l.text).join("\n");
-        this.lines = [];
-        this.h.onPineapple?.(transcript);
-      }, AFTER_MS);
-    }
-  }
-
-  /** Manual trigger (button / hotkey) — same as saying the word. */
-  fireNow() {
-    const transcript = this.lines.map((l) => l.text).join("\n");
-    this.lines = [];
-    this.h.onPineapple?.(transcript);
+    if (!text || this.mode !== "dictate") return;
+    this.dictated = `${this.dictated} ${text}`.trim();
+    this.h.onDictation?.(this.dictated, false);
   }
 }
 

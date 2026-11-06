@@ -320,7 +320,7 @@ export interface TriageContext {
   questions?: Question[];
 }
 
-export function triagePrompt(utterance: string, ctx: TriageContext, mode: "chat" | "pineapple" | "review") {
+export function triagePrompt(utterance: string, ctx: TriageContext, mode: "chat" | "review") {
   const me = owner.name;
   const active = ctx.items
     .filter((i) => !["done", "dropped"].includes(i.status))
@@ -333,10 +333,6 @@ export function triagePrompt(utterance: string, ctx: TriageContext, mode: "chat"
     chat: `${me} typed or said this to their dashboard. It may be a correction ("X is done", "that's not mine"),
 a new commitment ("remind me to reply to Sam after standup"), a scheduling instruction, a question, or a request
 to act ("file a ticket for…"). Explicit requests to act count as confirmation — include them in "dispatch".`,
-    pineapple: `${me} said "pineapple" 🍍 during a live conversation — their trigger to capture what was just discussed.
-Below is the rolling live transcript up to the trigger (laptop mic; other voices may be in it). Extract the
-action(s) from the discussion immediately before the keyword. Mark new items with signals {"pineapple": true},
-status "inbox", and put the verbatim words in source.quote. One item is typical; zero is fine if nothing is actionable.`,
     review: `A meeting just ended (or, for a list of earlier meetings, one of those) and ${me} jotted what came out of it. Turn it into items (status "today" if they say
 they'll do it today, else "inbox"), and correct any existing items they mention.`,
   }[mode];
@@ -392,7 +388,7 @@ OUTPUT: ONLY a JSON object, no prose, no fences:
   "reply": "what you did, briefly; dispatched work as handed off, not done",
   "items": [{ "title", "kind", "status", "detail", "project", "people", "post": {"venue", "why"},
               "when": "short human phrase, e.g. 'after standup'", "scheduledFor": "ISO timestamp",
-              "signals": {"pineapple": true}, "source": {"type": "${mode === "pineapple" ? "pineapple" : "voice"}", "quote", "label"} }],
+              "source": {"type": "voice", "quote", "label"} }],
   "updates": [{ "id", "status", "title", "detail", "when", "scheduledFor", "note" }],
   "dispatch": [{ "id": "<existing id, or 'new:<index into items>'>", "action": "ticket|reply|email|prep|work|verify|draft|publish", "note" }],
   "calendar": [{ "id": "<existing id, or 'new:<index>'>", "start": "ISO", "durationMin": 30 }],

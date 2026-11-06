@@ -45,7 +45,7 @@ test("pi crashes once, then answers: rerun once, apply once, no card", async () 
 test("crashes twice: no third run, words come back on a Retry / Drop card", async () => {
   const words = "x".repeat(100);
   const { hub, agents, calls } = setup([crash, crash]);
-  const r = await agents.triage(words, "pineapple");
+  const r = await agents.triage(words, "review");
   expect(calls.run).toBe(2);
   expect(calls.apply).toBe(0);
   expect(hub.store.job(r.jobId)!.status).toBe("failed");
@@ -53,7 +53,14 @@ test("crashes twice: no third run, words come back on a Retry / Drop card", asyn
   expect(q?.kind).toBe("open");
   expect(q?.prompt).toContain(`"${"x".repeat(80)}…"`);
   expect(q?.options.map((o) => o.label)).toEqual(["Retry", "Drop"]);
-  expect(q?.options[0]?.effect).toEqual({ type: "triage", text: words, mode: "pineapple" });
+  expect(q?.options[0]?.effect).toEqual({ type: "triage", text: words, mode: "review" });
+});
+
+// The in-app 🍍 listener is gone; a Retry card saved before that still says mode "pineapple".
+test("a legacy 'pineapple' mode triages as chat", async () => {
+  const { hub, agents } = setup([ok("not json at all")]);
+  await agents.triage("book the room", "pineapple" as never);
+  expect(hub.store.questions("open")[0]?.options[0]?.effect).toEqual({ type: "triage", text: "book the room", mode: "chat" });
 });
 
 test("bad JSON isn't rerun but still gets the card", async () => {
@@ -63,13 +70,13 @@ test("bad JSON isn't rerun but still gets the card", async () => {
   expect(hub.store.questions("open")[0]?.options[0]?.effect).toEqual({ type: "triage", text: "book the room", mode: "chat" });
 });
 
-// 10-26, 10-27, 11-04: 🍍 asks right after wake failed on "Connection error." / "Request timed out."
+// 10-26, 10-27, 11-04: asks right after wake failed on "Connection error." / "Request timed out."
 // and sat on a triage-failed card until a Retry tap. A blip gets one rerun after a short wait.
 const blip = { ok: false, text: "", error: "Connection error." };
 
 test("network blip, then answers: rerun once after the wait, job done, no card", async () => {
   const { hub, agents, calls } = setup([blip, ok(GOOD)]);
-  const r = await agents.triage("remind me to chase the vendor", "pineapple");
+  const r = await agents.triage("remind me to chase the vendor");
   expect(calls.run).toBe(2);
   expect(calls.apply).toBe(1);
   expect(r.reply).toBe("Added.");

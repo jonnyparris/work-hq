@@ -466,24 +466,6 @@ a:hover { text-decoration: underline; }
 .thinking i:nth-child(3) { animation-delay: .3s; }
 @keyframes blink { 50% { opacity: .2; } }
 
-/* pineapple listener */
-.pine {
-  display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px 5px 8px; border-radius: 999px;
-  background: var(--surface); border: 1px solid var(--line); font-size: 12px; color: var(--text-2);
-}
-.pine:hover { background: var(--surface-2); color: var(--text); }
-.pine .fruit { font-size: 15px; filter: grayscale(1) opacity(.6); transition: filter .2s; }
-.pine.on { border-color: rgba(242,193,78,0.35); color: var(--gold); background: var(--gold-soft); }
-.pine.on .fruit { filter: none; animation: bob 2.4s ease-in-out infinite; }
-.pine.fired { animation: fire .9s ease-out; }
-@keyframes bob { 50% { transform: translateY(-2px) rotate(-6deg); } }
-@keyframes fire { 0% { box-shadow: 0 0 0 0 rgba(242,193,78,0.7); } 100% { box-shadow: 0 0 0 18px rgba(242,193,78,0); } }
-.ticker {
-  max-width: 980px; margin: 0 auto 6px; font-size: 12px; color: var(--text-3); white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; padding: 0 14px;
-}
-.ticker span { direction: ltr; unicode-bidi: bidi-override; }
-
 /* ── drawer ────────────────────────────────────────────────────────────── */
 .scrim { position: fixed; inset: 0; background: rgba(0,0,0,0.45); backdrop-filter: blur(2px); z-index: 20; animation: fade .15s; }
 @keyframes fade { from { opacity: 0; } }

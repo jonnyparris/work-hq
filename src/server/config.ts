@@ -142,7 +142,7 @@ export const config = {
     timezone: pick("WORK_HQ_TZ", "owner.timezone", systemTz),
     /** Names / email prefixes that mean "me" — hidden from attendee lists. */
     aliases: [] as string[], // filled below: owner.aliases + owner.name
-    /** Speech recognition language for dictation and 🍍. */
+    /** Speech recognition language for dictation. */
     speechLang: pick<string>(undefined, "owner.speechLang", "en-GB"),
   },
 

@@ -17,7 +17,7 @@
     <!-- browser -->
     <rect x="250" y="28" width="500" height="84" rx="16" class="box" stroke="rgba(242,193,78,.4)"/>
     <text x="500" y="60" text-anchor="middle" class="h">Browser · localhost:7717</text>
-    <text x="500" y="84" text-anchor="middle" class="s">Focus question · Board · Timeline · Agents · Journal · ⌘K · 🍍 listener</text>
+    <text x="500" y="84" text-anchor="middle" class="s">Focus question · Board · Timeline · Agents · Journal · ⌘K · dictation</text>
 
     <!-- ws / http -->
     <path d="M430 112 V 170" class="flow" stroke="#f2c14e"/>

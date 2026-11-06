@@ -290,7 +290,7 @@ const followed = (q: Question) => {
     const dt = Date.parse(j.createdAt) - t;
     if (dt < -1000) return false;
     if (j.name === "note") return dt <= 15 * 60_000 && j.title.startsWith(`Note: ${q.prompt}`.slice(0, 40));
-    return ["chat", "pineapple", "review"].includes(j.name) && dt <= 2 * 60_000;
+    return ["chat", "pineapple" /* removed listener; old jobs */, "review"].includes(j.name) && dt <= 2 * 60_000;
   });
 };
 const dead = asked.filter((q) => {

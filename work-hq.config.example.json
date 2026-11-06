@@ -11,7 +11,7 @@
     "location": "Lisbon",
     "timezone": "Europe/Lisbon",          // defaults to the system timezone
     "aliases": ["alex", "alex.kim"],      // "me" in attendee lists (hidden in the UI)
-    "speechLang": "en-GB"                 // dictation + 🍍 listener
+    "speechLang": "en-GB"                 // dictation
   },
 
   "server": { "port": 7717 },
@@ -128,7 +128,7 @@
   // and the pi session file stays, so `pi --resume` brings it back.
   "cmux": { "group": "Work HQ", "pruneIdleHours": 3, "pruneDoneMinutes": 20 },
 
-  // Push-to-talk dictation (command-bar mic, "Scheduled for…"). The 🍍 listener always uses Chrome's Web Speech.
+  // Push-to-talk dictation (command-bar mic, "Scheduled for…").
   //   "auto"    → HEX if it's running (found via its local API, no setup), else "command" if set, else Web Speech
   //   "hex" | "command" | "browser" to pin one. Recorded engines stop on silenceMs of quiet, or ↵ / ⌘↵.
   "voice": {

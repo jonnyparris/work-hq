@@ -3,7 +3,6 @@
 #
 #   whq report <jobId>        # JSON report on stdin → POST /api/agent/report
 #   whq say "<text>"          # talk to Work HQ like the command bar does
-#   whq pineapple "<text>"    # capture an action (🍍) from any terminal
 #   whq journal "<text>"      # add a line to the journal as an agent (no triage)
 #   whq access-login <app> ["<why>"]  # Access login lapsed: one "Log in now" card per app per day (no triage)
 #   whq access-ok <app>       # the login works again: close that app's card
@@ -33,7 +32,6 @@ try: fo=json.loads(raw).get("folded") or []
 except Exception: fo=[]
 if fo: print("Not filed (idea cap per job; added to the summary as \"Could also:\"): "+"; ".join(fo))' ;;
   say)       echo "{\"text\": $(jstr "$*")}" | post /api/say ;;
-  pineapple) echo "{\"text\": $(jstr "$*"), \"mode\": \"pineapple\"}" | post /api/say ;;
   journal)   echo "{\"text\": $(jstr "$*")}" | post /api/journal ;;
   access-login) echo "{\"app\": $(jstr "${1:?usage: whq access-login <app> [why]}"), \"reason\": $(jstr "${*:2}")}" | post /api/access-login ;;
   access-ok)    echo "{\"app\": $(jstr "${1:?usage: whq access-ok <app>}"), \"resolved\": true}" | post /api/access-login ;;
