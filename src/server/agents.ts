@@ -5,7 +5,7 @@
 
 import { type BulkRequest, deferHorizon, localDay } from "../shared/batch.ts";
 import { isAgentCard, isWaitingSession } from "../shared/boss.ts";
-import { claimsDispatch, claimsStatus } from "../shared/dead-button.ts";
+import { claimsDispatch, claimsStatus, parksDispatch } from "../shared/dead-button.ts";
 import { explainKey, sentences } from "../shared/detail.ts";
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
@@ -26,6 +26,7 @@ import {
   stoppedJobNote, transcriptSweepPrompt, triagePrompt, WIKI_DRAFTS,
 } from "./prompts.ts";
 import { cleanupWorktree, createWorktree, repoFor, type WorktreeResult } from "./worktrees.ts";
+import { actionFor, WHEN_OPT } from "./prompter.ts";
 import { foldStopped, isFoldCard } from "./stopped-fold.ts";
 import { BACKFILL_TRIES, capSince, queueBackfill, refundBackfill, settleBackfill, startBackfill } from "./review-fold.ts";
 
@@ -1008,7 +1009,7 @@ export class Agents implements Dispatcher {
       this.reaskTriage(job.id, error, { text: utterance, mode });
       return { jobId: job.id, reply: "Triage failed — your words are on a card to retry." };
     }
-    const { missed, applied, bulkDispatched } = await this.applyTriage(result, mode, utterance);
+    const { missed, applied, bulkDispatched, created, updated } = await this.applyTriage(result, mode, utterance);
     // The reply was written before anything ran. If it promised an agent that never started, say so:
     // either a dispatch that failed (missed), or a reply that claims one with dispatch[] empty.
     const unbacked = !result.dispatch?.length && !bulkDispatched && claimsDispatch(result.reply);
@@ -1016,13 +1017,22 @@ export class Agents implements Dispatcher {
     // Same for status: "Marked the Joao Duarte reference calls done." with nothing marked (10-23).
     const unmarked = !applied && claimsStatus(result.reply);
     if (unmarked) this.hub.journal(`Triage reply claimed a status change but none was applied (heuristic, check it): "${result.reply}"`, { who: "hq" });
+    // The reply parked the agent ("Not dispatched; say the word") or claimed one that never started: put the offer on a
+    // card so it's one tap. 11-06: four asks went straight to Proposed this way, no card, one hunted for at 22:23.
+    // Chat only: meeting notes (review) capture to inbox, and their Captured cards carry the agent button.
+    const parked = mode === "chat" && !result.dispatch?.length && !bulkDispatched && !result.question?.prompt && (unbacked || parksDispatch(result.reply))
+      ? this.offerAgents(this.parkedTargets(created, updated), result.reply ?? "")
+      : 0;
+    const onCard = parked ? "Send an agent? is on a card." : "";
     let reply = missed
       ? `${result.reply ?? ""} (No agent started for ${missed} of those: item not found.)`.trim()
       : unbacked
-        ? `${result.reply} (No agent started.)`
-        : result.reply;
+        ? `${result.reply} (No agent started.${onCard ? ` ${onCard}` : ""})`
+        : onCard
+          ? `${result.reply} (${onCard})`
+          : result.reply;
     if (unmarked) reply = `${reply} (Nothing was marked.)`;
-    // reply-safe: applyTriage ran first; the prompt words dispatches as handed off; failed or missing dispatches, and status claims with nothing applied, get a suffix.
+    // reply-safe: applyTriage ran first; the prompt words dispatches as handed off; failed or missing dispatches, and status claims with nothing applied, get a suffix; a parked agent gets "Send an agent? is on a card." only once the card is open.
     this.patch(job.id, { status: "done", finishedAt: nowIso(), summary: reply });
     return { ...result, reply, jobId: job.id };
   }
@@ -1054,14 +1064,60 @@ export class Agents implements Dispatcher {
     });
   }
 
+  /** Items a parked triage can offer an agent for: open, no live action job on them. The ones it created; if none of
+   *  those is eligible (done, dropped, busy), the ones it updated: an ask matched to an existing item. */
+  private parkedTargets(created: Item[], updated: string[]): Item[] {
+    // An agent already on it (queued, running or blocked): no second one. Action jobs only, like hub.pickTargets; the
+    // prompter's `busy` counts every live job, but a note reader or explain run isn't an agent on the item.
+    const busy = new Set(this.hub.store.liveJobs().filter((j) => j.kind === "action" && j.itemId).map((j) => j.itemId));
+    const eligible = (ids: string[]) => [...new Set(ids)]
+      .map((id) => this.hub.store.item(id))
+      .filter((i): i is Item => Boolean(i && !["done", "dropped"].includes(i.status) && !busy.has(i.id)));
+    const fresh = eligible(created.map((i) => i.id));
+    return fresh.length ? fresh : eligible(updated);
+  }
+
+  /** One "Send an agent?" card per item (first 3) triage left without an agent. Returns the cards open for them. */
+  private offerAgents(items: Item[], reply: string): number {
+    let n = 0;
+    for (const item of items.slice(0, 3)) {
+      const act = actionFor(item);
+      if (!act) continue;
+      // Asked again about an item whose card is still open: that card is the offer.
+      if (this.hub.store.questions("open").some((q) => q.key === `parked:${item.id}`)) {
+        n++;
+        continue;
+      }
+      const q = this.hub.ask({
+        kind: "dispatch",
+        itemId: item.id,
+        key: `parked:${item.id}`,
+        badge: "Send an agent?",
+        priority: 75,
+        prompt: item.title,
+        context: `Triage logged it without an agent: “${reply.slice(0, 200)}”`,
+        options: [
+          { id: "go", label: act.label, tone: "primary", effect: { type: "dispatch", action: act.action } },
+          { id: "today", label: "Mine, today", effect: { type: "status", status: "today" } },
+          { id: "later", label: "Mine, later", effect: { type: "status", status: "proposed" } },
+          WHEN_OPT,
+          { id: "drop", label: "Drop it", tone: "quiet", effect: { type: "status", status: "dropped" } },
+        ],
+      });
+      if (q) n++;
+    }
+    return n;
+  }
+
   /** missed: requested dispatches that didn't start (unknown id, bad 'new:' index).
    *  bulkDispatched: cards a bulk dispatch op answered (agents started).
    *  applied: status changes that landed (updates with a status on known ids, bulk done/drop, new items born with a status). */
-  private async applyTriage(t: TriageResult, mode: TriageMode, utterance: string): Promise<{ missed: number; applied: number; bulkDispatched: number }> {
+  private async applyTriage(t: TriageResult, mode: TriageMode, utterance: string): Promise<{ missed: number; applied: number; bulkDispatched: number; created: Item[]; updated: string[] }> {
     let missed = 0;
     let applied = 0;
     let bulkDispatched = 0;
     const created: Item[] = [];
+    const updated: string[] = [];
     for (const raw of t.items ?? []) {
       created.push(
         this.hub.createItem({
@@ -1079,6 +1135,7 @@ export class Agents implements Dispatcher {
         continue;
       }
       const { id, note, ...patch } = u;
+      updated.push(id);
       if (patch.scheduledFor && !patch.status) patch.status = "scheduled";
       if (patch.status) applied++; // a detail-only edit doesn't back "Marked … done"
       if (patch.status) this.hub.setStatus(id, patch.status, note, "you", true);
@@ -1131,7 +1188,7 @@ export class Agents implements Dispatcher {
       if (item.scheduledFor !== c.start) this.hub.schedule(item.id, c.start, item.when ?? new Date(c.start).toLocaleString(), "you");
       void this.calendarBlock(item.id, c.start, c.durationMin ?? 30);
     }
-    return { missed, applied, bulkDispatched };
+    return { missed, applied, bulkDispatched, created, updated };
   }
 
   // ── a note typed on a question: what does it mean? ─────────────────────

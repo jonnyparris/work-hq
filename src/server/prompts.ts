@@ -325,6 +325,12 @@ export interface TriageContext {
   questions?: Question[];
 }
 
+/** ", and the repos <project>" from config.repos, or "" when none are set. */
+function ownRepos(): string {
+  const names = [...new Set(config.repos.map((r) => r.project).filter(Boolean))];
+  return names.length ? `, and the repos ${names.join(", ")}` : "";
+}
+
 export function triagePrompt(utterance: string, ctx: TriageContext, mode: "chat" | "review") {
   const me = owner.name;
   const active = ctx.items
@@ -337,7 +343,11 @@ export function triagePrompt(utterance: string, ctx: TriageContext, mode: "chat"
   const framing = {
     chat: `${me} typed or said this to their dashboard. It may be a correction ("X is done", "that's not mine"),
 a new commitment ("remind me to reply to Sam after standup"), a scheduling instruction, a question, or a request
-to act ("file a ticket for…"). Explicit requests to act count as confirmation — include them in "dispatch".`,
+to act ("file a ticket for…"). Explicit requests to act count as confirmation — include them in "dispatch".
+So does a change to ${me}'s own tools: this dashboard, their agents, prompts, skills, scripts, nightly jobs, MR
+workflows${ownRepos()}. Worded as "let's…", "we need to…", "we should…", "X should also…", "start using…" or
+"fix it", that is a request to act: create the item and dispatch "work" with it. Never park an ask with "say the
+word" or "want me to send an agent?" in the reply: dispatch it, or set "question" if you can't tell.`,
     review: `A meeting just ended (or, for a list of earlier meetings, one of those) and ${me} jotted what came out of it. Turn it into items (status "today" if they say
 they'll do it today, else "inbox"), and correct any existing items they mention.`,
   }[mode];
@@ -360,7 +370,7 @@ Statuses: inbox, proposed, today, scheduled, doing, waiting, done, dropped.
 Kinds: task, ticket, message, email, followup, decision, review, meeting, idea, post.
 "post" = a blog post they should write ("I should blog about X"): status "proposed", add "post": {"venue": "wiki|site|both"}
 (wiki = ${writing.wiki.name}; site = their public ${writing.site.name}; default "wiki" unless they say external/public/personal site, "both" if they say both).
-Actions you may dispatch (only when asked): ticket, reply, email, prep, work, verify, draft (blog draft), publish.
+Actions you may dispatch (only when asked${mode === "chat" ? ", which includes the own-tools rule above" : ""}): ticket, reply, email, prep, work, verify, draft (blog draft), publish.
 
 Rules:
 - Match existing items generously by meaning; prefer updating over creating duplicates.

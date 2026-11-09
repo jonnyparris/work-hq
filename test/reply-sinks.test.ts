@@ -25,7 +25,7 @@ const ALLOW: { file: string; line: RegExp; why: string }[] = [
   { file: "server/hub.ts", line: /toast\(d\.reply \?\? `\$\{label\(d\.status\)\}/, why: "setStatus already ran" },
   { file: "server/hub.ts", line: /toast\(reply \? `\$\{reply\} Back/, why: "context only: nothing runs, the reply is an answer; a dispatch claim gets a suffix" },
   { file: "server/hub.ts", line: /toast\(reply \? `\$\{reply\} Kept as context/, why: "drawer note read as context: nothing runs, the reply is an answer; a dispatch claim gets a suffix" },
-  { file: "server/agents.ts", line: /summary: reply \}\);/, why: "triage: applyTriage ran; missed or unbacked dispatches get a suffix; prompt words dispatches as handed off" },
+  { file: "server/agents.ts", line: /summary: reply \}\);/, why: "triage: applyTriage ran; missed or unbacked dispatches get a suffix, a parked agent gets the on-a-card suffix once its card is open; prompt words dispatches as handed off" },
   { file: "server/agents.ts", line: /summary: queuedNote\(q, out, item\?\.title\) \?\? out\.reply/, why: "queuedNote takes over when the note queues work" },
   { file: "server/agents.ts", line: /toast\(out\?\.reply \?\? "Couldn't tell when/, why: "failure path: the reply asks when" },
   { file: "server/agents.ts", line: /summary: out\.reply \?\? `Scheduled \$\{label\}`/, why: "schedule() ran; calendar create takes fixed words above" },

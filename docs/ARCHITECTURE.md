@@ -293,6 +293,13 @@ the job that does it hasn't started, and sometimes fails. So:
 - `when` with `calendar: create`: "Scheduled X — adding a private block". `calendarBlock` toasts the real result.
 - Triage: the prompt asks for dispatched work to be worded as handed off. If a dispatch it asked for didn't
   start (unknown id), the reply says so.
+- Triage that parks an agent: a change to the owner's own tools in "let's / we need to / should / fix it" words is a
+  request to act (chat prompt), so it dispatches `work`. If the reply still parks it ("Not dispatched; say the word",
+  `parksDispatch`) or claims an agent with `dispatch[]` empty, and set no `question`, up to 3 items it created
+  (done, dropped or with a live (queued, running, blocked) action job skipped; none left: the ones it updated) get a "Send an agent?" card
+  (`parked:<id>`, priority 75, with Mine today/later, Scheduled for…, Drop) and the reply ends "Send an agent? is on
+  a card." Chat only: meeting notes land in inbox, where the prompter's Captured card (budget allowing) carries the button. 11-06: four asks (three about his own tools) went
+  straight to Proposed with no card. Test: `test/self-tool-dispatch.test.ts`.
 - The job that runs the work reports its own outcome. Tests: `test/claim-before-run.test.ts`,
   `test/schedule-reply.test.ts`.
 - New sites can't slip in: `test/reply-sinks.test.ts` finds every `toast(`, `summary:` and `setReply(` line in

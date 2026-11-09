@@ -98,11 +98,13 @@ test("triage → dispatch that starts: reply untouched (prompt asks for intent w
   expect(r.reply).toBe("Sent an agent to ask Maryna.");
 });
 
-test("triage → reply claims an agent but dispatch[] is empty: suffix + journal line", async () => {
+test("triage → reply claims an agent but dispatch[] is empty: suffix + journal line + a card to send one", async () => {
   const { hub, agents, dispatched } = setup({ reply: "Dispatched an agent to ask Maryna.", items: [{ title: "Ask Maryna", kind: "message" }] });
   const r = await agents.triage("ask Maryna if she owns the webhook");
   expect(dispatched).toHaveLength(0);
-  expect(r.reply).toBe("Dispatched an agent to ask Maryna. (No agent started.)");
+  expect(r.reply).toBe("Dispatched an agent to ask Maryna. (No agent started. Send an agent? is on a card.)");
+  const ask = hub.store.items().find((i) => i.title === "Ask Maryna")!;
+  expect(hub.store.questions("open").find((q) => q.key === `parked:${ask.id}`)?.options[0].effect).toEqual({ type: "dispatch", action: "reply" });
   expect(hub.store.jobs().find((j) => j.kind === "triage" && j.name === "chat")!.summary).toBe(r.reply);
   expect(hub.store.journal().some((e) => e.text.includes("claimed a dispatch but dispatch[] was empty"))).toBe(true);
 });

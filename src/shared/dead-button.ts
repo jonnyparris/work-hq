@@ -81,6 +81,16 @@ export function claimsDispatch(reply: string | undefined): boolean {
   return reply.split(/(?<=[.!?;])\s+/).some((s) => DISPATCH_CLAIM.test(s) && !DISPATCH_HEDGE.test(s));
 }
 
+// A reply that leaves the agent for later and asks in prose: "Not dispatched; say the word…", "Nothing dispatched.",
+// "Want me to send an agent?". 11-06 11:47, 13:14, 16:18, 16:20: four asks parked like this with no button to say it.
+const DISPATCH_PARKED = /\b(?:not|nothing|no agent|none)\s+(?:\w+\s+)?(?:dispatched|dispatching|sent|started)\b|\bsay the word\b|\b(?:want|shall|should) (?:me|i) (?:to )?(?:dispatch|send an agent|start an agent|wire|kick)/i;
+
+/** True when a triage reply says no agent was started but one could be, or offers one. Triage turns it into a
+ *  "Send an agent?" card on the item it created, so the offer has a button (agents.ts). */
+export function parksDispatch(reply: string | undefined): boolean {
+  return Boolean(reply && DISPATCH_PARKED.test(reply));
+}
+
 // Words that say an item's status was changed. 10-23 18:26: "Marked the Joao Duarte reference calls done."
 // Nothing was marked (no update applied) until the owner did it by hand 82 min later. Past-tense verbs plus
 // "set … to/as <status>", not "moved" / "scheduled": in 233 triage replies (10-24) those mostly describe

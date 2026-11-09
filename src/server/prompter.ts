@@ -108,7 +108,7 @@ const ACTION_FOR: Partial<Record<Item["kind"], { action: ActionKind; label: stri
 export const hasPeople = (it: Pick<Item, "people">) => Boolean(it.people?.some((p) => p.trim()));
 
 /** The card's agent button for this item. A followup with no people has nobody to chase: send an agent instead. */
-function actionFor(it: Item, kind: Item["kind"] = it.kind) {
+export function actionFor(it: Item, kind: Item["kind"] = it.kind) {
   return kind === "followup" && !hasPeople(it) ? ACTION_FOR.task : ACTION_FOR[kind];
 }
 
