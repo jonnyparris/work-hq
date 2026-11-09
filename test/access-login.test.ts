@@ -2,7 +2,10 @@
 // not a free-text 🍍 that sends a triage job every run (10-22..10-29: six for one ClickHouse app, two failed triages).
 import { expect, test } from "bun:test";
 import { Store } from "../src/server/db.ts";
-import { Hub } from "../src/server/hub.ts";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { accessLoginTodo, Hub } from "../src/server/hub.ts";
 import { Agents } from "../src/server/agents.ts";
 
 const APP = "https://analytics.example.com";
@@ -89,4 +92,125 @@ test("Agents.accessLogin: a login that works closes the app's cards; one that fa
     if (prev === undefined) delete process.env.WORK_HQ_CLOUDFLARED_BIN;
     else process.env.WORK_HQ_CLOUDFLARED_BIN = prev;
   }
+});
+
+// 11-06 12:15: a failed "Log in now" left no record; the ready-analytics memory todo sat beside the keyed card
+// through four lapses (11-04..11-08).
+const withBin = async (bin: string, fn: () => Promise<void>, timeoutMs?: string) => {
+  const prev = process.env.WORK_HQ_CLOUDFLARED_BIN;
+  const prevT = process.env.WORK_HQ_CLOUDFLARED_TIMEOUT_MS;
+  process.env.WORK_HQ_CLOUDFLARED_BIN = bin;
+  if (timeoutMs) process.env.WORK_HQ_CLOUDFLARED_TIMEOUT_MS = timeoutMs;
+  try {
+    await fn();
+  } finally {
+    if (prev === undefined) delete process.env.WORK_HQ_CLOUDFLARED_BIN;
+    else process.env.WORK_HQ_CLOUDFLARED_BIN = prev;
+    if (prevT === undefined) delete process.env.WORK_HQ_CLOUDFLARED_TIMEOUT_MS;
+    else process.env.WORK_HQ_CLOUDFLARED_TIMEOUT_MS = prevT;
+  }
+};
+const setup = () => {
+  const hub = new Hub(new Store(":memory:"));
+  const agents = new Agents(hub, { available: () => false, launch: () => ({ workspace: "", statusPath: "/dev/null" }) });
+  const todo = hub.createItem({ title: "Re-login CF Access for analytics. Not done", kind: "task", status: "waiting" });
+  return { hub, agents, todo };
+};
+const journal = (hub: Hub) => hub.store.journal().map((j) => j.text);
+
+test("a failed login is journalled with its exit code and leaves the todo open", async () => {
+  await withBin("/usr/bin/false", async () => {
+    const { hub, agents, todo } = setup();
+    await agents.accessLogin(APP);
+    expect(journal(hub)).toContain("Cloudflare Access login for analytics.example.com didn't finish (exit 1)");
+    expect(hub.store.item(todo.id)?.status).toBe("waiting");
+  });
+  await withBin("/nonexistent/cloudflared", async () => {
+    const { hub, agents } = setup();
+    await agents.accessLogin(APP);
+    expect(journal(hub).some((t) => t.startsWith("Cloudflare Access login for analytics.example.com didn't finish (couldn't start"))).toBe(true);
+  });
+});
+
+test("a login that hangs past the timeout is journalled as a timeout", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cfd-"));
+  const bin = join(dir, "cloudflared");
+  writeFileSync(bin, "#!/bin/sh\nexec sleep 30\n");
+  chmodSync(bin, 0o755);
+  try {
+    await withBin(bin, async () => {
+      const { hub, agents } = setup();
+      await agents.accessLogin(APP);
+      expect(journal(hub).some((t) => t.includes("didn't finish (timed out after"))).toBe(true);
+    }, "200");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a login that works settles the app's todo, confirmed, and only that one", async () => {
+  await withBin("/usr/bin/true", async () => {
+    const { hub, agents, todo } = setup();
+    const both = hub.createItem({ title: "Re-login Jira and analytics", kind: "task", status: "waiting" });
+    const other = hub.createItem({ title: "Re-login CF Access for other-app", kind: "task", status: "waiting" });
+    const idea = hub.createItem({ title: "Make the analytics login last longer", kind: "idea", status: "proposed" });
+    const unrelated = hub.createItem({ title: "Review the analytics dashboard", kind: "task", status: "doing" });
+    await agents.accessLogin(APP);
+    expect(hub.store.item(todo.id)?.status).toBe("done");
+    expect(hub.store.item(todo.id)?.confirmedAt).toBeTruthy();
+    for (const it of [both, other, idea, unrelated]) expect(hub.store.item(it.id)?.status).toBe(it.status);
+    expect(journal(hub).some((t) => t.startsWith("Done: Re-login CF Access for analytics") && t.includes("Access login renewed"))).toBe(true);
+  });
+});
+
+test("whq access-ok (resolved) settles the todo too; a lapse doesn't", () => {
+  const { hub, todo } = setup();
+  hub.accessLoginCard({ app: APP }, day("2026-11-04"));
+  expect(hub.store.item(todo.id)?.status).toBe("waiting");
+  hub.accessLoginCard({ app: APP, resolved: true }, day("2026-11-04", 10));
+  expect(hub.store.item(todo.id)?.status).toBe("done");
+});
+
+test("accessLoginTodo matches the full host or its first label, word-bounded", () => {
+  const h = "ready-analytics-us.ch.example.com";
+  expect(accessLoginTodo("Re-login CF Access for ready-analytics-us. Not done", h)).toBe(true);
+  expect(accessLoginTodo("cloudflared access login https://ready-analytics-us.ch.example.com", h)).toBe(true);
+  expect(accessLoginTodo("Re-auth CF Access for ready-analytics-us so the daily runs", h)).toBe(true);
+  expect(accessLoginTodo("Re-login ready-analytics-eu", h)).toBe(false);
+  expect(accessLoginTodo("Re-login ready-analytics", h)).toBe(false);
+  expect(accessLoginTodo("Log in to jira and ready-analytics-us", h)).toBe(false);
+  expect(accessLoginTodo("Ship ready-analytics-us report", h)).toBe(false);
+  expect(accessLoginTodo("Login fails on ready-analytics-us dashboard", h)).toBe(false);
+  for (const t of ["Re-login Jira+ready-analytics-us", "Re-login Jira/ready-analytics-us", "Re-login Jira, ready-analytics-us", "Re-login Jira & ready-analytics-us", "Re-login Jira / ready-analytics-us", "Re-login Jira or ready-analytics-us",
+    "Re-login Jira (and ready-analytics-us)", "Re-login Jira then ready-analytics-us", "Re-login Jira; ready-analytics-us",
+    "Re-login https://ready-analytics-us.ch.example.com, then Jira", "Re-login https://ready-analytics-us.ch.example.com+Jira",
+    "Re-login https://ready-analytics-us.ch.example.com,Jira", "Re-login Jira | ready-analytics-us", "Re-login Jira — ready-analytics-us",
+    "Re-login Jira - ready-analytics-us", "Re-login Jira with ready-analytics-us", "Re-login https://jira.example.com https://ready-analytics-us.ch.example.com",
+    "Re-login https://ready-analytics-us.ch.example.com/app,Jira", "Re-login https://ready-analytics-us.ch.example.com/app|Jira",
+    "Re-login https://jira.example.com/a,https://ready-analytics-us.ch.example.com", "Re-login Jira (ready-analytics-us)"]) {
+    expect(accessLoginTodo(t, h)).toBe(false);
+  }
+  expect(accessLoginTodo("Re-auth the login provider", "login.example.com")).toBe(false);
+  expect(accessLoginTodo("Re-login https://ready-analytics-us.ch.example.com/app/x", h)).toBe(true);
+  expect(accessLoginTodo("cloudflared access login https://ready-analytics-us.ch.example.com/app?x=1&y=2", h)).toBe(true);
+  expect(accessLoginTodo("Re-login CF Access for ready-analytics-us (prod)", h)).toBe(false); // fails closed
+  expect(accessLoginTodo("Re-login Jira (and) ready-analytics-us", h)).toBe(false);
+  expect(accessLoginTodo("Re-login Jira (ready)", "ready.example.com")).toBe(false);
+  expect(accessLoginTodo("Re-login https://jira.example.com/a?next=ready-analytics-us.ch.example.com", h)).toBe(false);
+  expect(accessLoginTodo("Re-login https://ready-analytics-us.ch.example.com?x=1&y=2", h)).toBe(true);
+  expect(accessLoginTodo("Re-login plus-analytics", "plus-analytics.example.com")).toBe(true);
+  expect(accessLoginTodo("Re-login https://login.example.com", "login.example.com")).toBe(true);
+});
+
+test("the gateway login settles its todo; a memory re-import doesn't reopen a settled one", async () => {
+  await withBin("/usr/bin/true", async () => {
+    const { hub, agents } = setup();
+    const gw = hub.createItem({ title: "Re-login CF Access for aigw", kind: "task", status: "waiting", source: { type: "memory", label: "active-todos", key: "memory:active-todos:re-login-aigw" } });
+    Object.assign(agents, { sweep: async () => {} }); // gatewayLogin kicks a sweep; nothing to sweep here
+    await agents.gatewayLogin("https://aigw.example.com");
+    expect(hub.store.item(gw.id)?.status).toBe("done");
+    expect(journal(hub)).toContain("Model gateway login renewed (aigw.example.com)");
+    hub.createItem({ title: "Re-login CF Access for aigw", kind: "task", status: "waiting", source: { type: "memory", label: "active-todos", key: "memory:active-todos:re-login-aigw" } });
+    expect(hub.store.item(gw.id)?.status).toBe("done");
+  });
 });

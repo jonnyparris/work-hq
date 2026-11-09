@@ -365,7 +365,10 @@ export class Hub {
     if (typeof b.app !== "string" || !ACCESS_APP.test(b.app)) throw new Error("app must be https://<host>");
     const host = new URL(b.app).host;
     const key = `access-login:${host}:${localDay(now)}`;
-    if (b.resolved === true) return { asked: false, closed: this.closeAccessLoginCards(host, "session back") };
+    if (b.resolved === true) {
+      this.settleAccessLoginTodos(host, `Access login for ${host} works again`);
+      return { asked: false, closed: this.closeAccessLoginCards(host, "session back") };
+    }
     const closed = this.closeAccessLoginCards(host, "day moved on", key);
     if (this.store.lastAnswered(key)?.answer?.startsWith(ACCESS_LATER)) return { asked: false, closed, key };
     const reason = typeof b.reason === "string" ? b.reason.trim().slice(0, 400) : "";
@@ -382,6 +385,23 @@ export class Hub {
       ],
     });
     return { asked: !!q, closed, key };
+  }
+
+  /**
+   * The login for `host` works again: mark done the open todos that only ask for that login ("Re-login CF Access for
+   * ready-analytics-us"), so a memory todo doesn't sit beside the keyed card. A task whose title has a login word and
+   * the host or its first label; a title that joins two things ("Jira and ready-analytics") stays, one login doesn't
+   * finish it. Confirmed, so a memory re-import doesn't reopen it. Returns the ids.
+   * 11-04..11-08: the ready-analytics todo stayed open beside the card through four lapses and logins.
+   */
+  settleAccessLoginTodos(host: string, why: string) {
+    const ids: string[] = [];
+    for (const it of this.store.items()) {
+      if (it.kind !== "task" || !isOpen(it) || !accessLoginTodo(it.title, host)) continue;
+      this.setStatus(it.id, "done", why, "hq", true);
+      ids.push(it.id);
+    }
+    return ids;
   }
 
   /** Close the open `access-login:<host>:*` cards (all, or all but `keep`). Returns how many. */
@@ -1451,6 +1471,30 @@ export function openLocal(url: string) {
     Bun.spawn([process.env.WORK_HQ_OPEN_BIN || "open", url], { stdout: "ignore", stderr: "ignore" });
   } catch {}
 }
+
+/**
+ * A todo title that asks only for the Access login to `host`: a re-login phrase ("re-login", "re-auth", "log in to",
+ * "access login") and the host's full name or its first label, word-bounded. A generic first label (login, auth,
+ * sso…) only counts as the full host. A title that names a second thing is false: a joiner word or mark outside a URL
+ * ("Jira and x", "Jira / x", "x, then y", any parentheses) or a second URL. A URL's path and query name nothing.
+ * It fails closed: a todo left open beside the card is the old behaviour, a live todo closed by mistake is worse.
+ */
+export function accessLoginTodo(title: string, host: string) {
+  if (!/\bre-?(log ?in|login|sign ?-?in|auth\w*)\b|\b(log|sign) ?-?in (again|to)\b|\baccess login\b/i.test(title)) return false;
+  // A URL: scheme, host, then path/query up to a separator (`&` only inside a `k=v` pair). A second `://` is a second app.
+  if ((title.match(/:\/\//g) ?? []).length > 1) return false;
+  const url = /\b[a-z][a-z0-9.-]*:\/\/[^\s/?,;&+|()]+([/?](?:[^\s,;+|()&]|&(?=[\w.-]+=))*)?/gi;
+  const urlHosts = (title.match(url) ?? []).map((u) => u.replace(/^[^:]+:\/\//, "").split(/[/?]/)[0] ?? "");
+  const rest = title.replace(url, " ");
+  if (/(?<![\w-])(and|or|then|vs|with|plus|also)(?![\w-])|[,;&+/|()—–]|\s-\s/i.test(rest)) return false;
+  const h = host.toLowerCase().replace(/:\d+$/, "");
+  const [label = h] = h.split(".");
+  const names = [h, ...(label.length >= 3 && !GENERIC_LABEL.has(label) ? [label] : [])];
+  // Names count in the words and as a URL's host, not inside another URL's path or query.
+  const t = [rest, ...urlHosts].join(" ").toLowerCase();
+  return names.some((n) => new RegExp(`(^|[^a-z0-9-])${n.replace(/[.\-]/g, "\\$&")}($|[^a-z0-9-])`).test(t));
+}
+const GENERIC_LABEL = new Set(["login", "auth", "sso", "access", "www", "app", "api", "dash", "portal", "gateway", "signin"]);
 
 /**
  * The status a quiet re-import (createItem on a known source key, memory upsert) leaves an item on.

@@ -1478,6 +1478,7 @@ export class Agents implements Dispatcher {
     if (!(await this.cloudflaredLogin(app))) return;
     this.gateway = {};
     this.hub.journal(`Model gateway login renewed (${new URL(app).host})`, { who: "hq" });
+    this.hub.settleAccessLoginTodos(new URL(app).host, "Access login renewed");
     this.hub.toast("Logged in. Sweeps resume.", "good");
     void this.sweep("transcripts");
   }
@@ -1488,27 +1489,46 @@ export class Agents implements Dispatcher {
     const host = new URL(app).host;
     this.hub.closeAccessLoginCards(host, "logged in");
     this.hub.journal(`Cloudflare Access login renewed (${host})`, { who: "hq" });
+    this.hub.settleAccessLoginTodos(host, "Access login renewed");
     this.hub.toast(`Logged in to ${host}. Its job gets through on the next run.`, "good");
   }
 
-  /** `cloudflared access login <app>`: one browser tab, 5 min to finish. False (with a toast) if it didn't. */
+  /**
+   * `cloudflared access login <app>`: one browser tab, 5 min to finish. False if it didn't, with a toast and a journal
+   * line saying why (exit code, signal, timeout, or spawn error). 11-06 12:15: a failed "Log in now" left no record
+   * and the card came back at 14:00 with nothing to say what happened.
+   */
   private async cloudflaredLogin(app: string) {
     if (!ACCESS_APP.test(app)) return false;
     const bin = process.env.WORK_HQ_CLOUDFLARED_BIN || (existsSync("/opt/homebrew/bin/cloudflared") ? "/opt/homebrew/bin/cloudflared" : "cloudflared");
+    // Test hook. Only a positive value under setTimeout's cap counts; anything else is the 5 min default.
+    const envT = Number(process.env.WORK_HQ_CLOUDFLARED_TIMEOUT_MS);
+    const timeoutMs = Number.isFinite(envT) && envT > 0 && envT < 2 ** 31 ? envT : 5 * 60_000;
     this.hub.toast("Opening the Access login in your browser…", "info");
-    const ok = await new Promise<boolean>((done) => {
+    // undefined = it worked; otherwise why it didn't.
+    const failed = await new Promise<string | undefined>((done) => {
+      let settled = false;
+      const finish = (why: string | undefined) => { if (!settled) { settled = true; clearTimeout(t); done(why); } };
       let p: ReturnType<typeof spawn>;
+      let t: ReturnType<typeof setTimeout> | undefined;
       try {
         p = spawn(bin, ["access", "login", app], { stdio: "ignore" });
-      } catch {
-        return done(false);
+      } catch (e) {
+        return finish(`couldn't start ${bin}: ${e instanceof Error ? e.message : String(e)}`);
       }
-      const t = setTimeout(() => { p.kill(); done(false); }, 5 * 60_000);
-      p.on("exit", (code) => { clearTimeout(t); done(code === 0); });
-      p.on("error", () => { clearTimeout(t); done(false); });
+      t = setTimeout(() => {
+        finish(`timed out after ${Math.round(timeoutMs / 1000)}s`);
+        p.kill();
+        setTimeout(() => { if (p.exitCode === null && p.signalCode === null) p.kill("SIGKILL"); }, 5_000).unref();
+      }, timeoutMs);
+      p.on("exit", (code, signal) => finish(code === 0 ? undefined : code != null ? `exit ${code}` : `killed by ${signal ?? "a signal"}`));
+      p.on("error", (e) => finish(`couldn't start ${bin}: ${e.message}`));
     });
-    if (!ok) this.hub.toast("Login didn't finish. Run `cloudflared access login " + app + "` yourself.", "warn");
-    return ok;
+    if (failed === undefined) return true;
+    const host = new URL(app).host;
+    this.hub.journal(`Cloudflare Access login for ${host} didn't finish (${failed})`, { who: "hq" });
+    this.hub.toast("Login didn't finish. Run `cloudflared access login " + app + "` yourself.", "warn");
+    return false;
   }
 
   /** The cmux workspace running this job, if listed. Only real cmux (or an injected finder) is asked: tests never reach the CLI. */

@@ -44,6 +44,10 @@
   A local job that needs another Access app (launchd scripts; first user: browser-run-growth) calls
   `whq access-login <app>` instead of a free-text `whq say`: one "Log in now" card per app per day
   (`access-login:<host>:<day>`, `Hub.accessLoginCard`), no triage job; `whq access-ok <app>` closes it.
+  A "Log in now" that doesn't finish leaves a journal line with why (exit code, signal, timeout, spawn
+  error). A login that works (or `whq access-ok`) also marks done the open todo that asks only for that
+  login (`Hub.settleAccessLoginTodos`, `accessLoginTodo`: an open task whose title has a re-login phrase and
+  names the host or its first label; titles naming two things, "X and Y", "X/Y", "X, then Y", stay open).
 - **Headless pi runs over RPC, never with the prompt in argv** (`src/server/pi-rpc.ts`). Endpoint
   security (SentinelOne) SIGKILLs any exec whose argv holds a string over ~1 KB, so prompts go over
   stdin (`pi --mode rpc`) and `assertShortArgs` rejects anything over 512 bytes. Each tool run gets its
