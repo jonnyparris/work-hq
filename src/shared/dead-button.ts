@@ -71,7 +71,10 @@ export function stallsOptions(q: Pick<Question, "options">): QuestionOption[] {
 // Words that say an agent is already on it. Past/present tense only: "dispatch" alone is mostly
 // "Want me to dispatch…?" or "you can dispatch it" (3 of 35 naive hits in 182 triage replies, 10-20).
 const DISPATCH_CLAIM = /\b(dispatched|dispatching|sent an agent|sending an agent|handed (?:it )?off|asking|chasing)\b/i;
-const DISPATCH_HEDGE = /\b(not|no|never|want me|shall i|should i|i can|you can|could|would|asking (?:you|whether|if))\b|n't\b|\?/i;
+// "Nothing/None … dispatched" (same clause, a few words apart) or "dispatched nothing": a bare "nothing" is
+// often the object ("…why nothing renders"), so it only hedges next to a claim verb.
+const NOTHING_CLAIMED = String.raw`\b(?:nothing|none)\b[^.!?;,]{0,40}?\b(?:dispatched|dispatching|sent|sending|handed|asking|chasing|started)\b|\b(?:dispatched|dispatching|sent|started|handed off)\s+(?:nothing|none)\b`;
+const DISPATCH_HEDGE = new RegExp(String.raw`${NOTHING_CLAIMED}|\b(not|no|never|want me|shall i|should i|i can|you can|could|would|asking (?:you|whether|if))\b|n't\b|\?`, "i");
 
 /** True when some sentence of a triage reply says an agent was started ("Dispatched an agent", "Asking Maryna"),
  *  skipping negated or offered ones ("Not dispatched", "Want me to dispatch?"). A heuristic: hits go to the journal.

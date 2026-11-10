@@ -121,6 +121,11 @@ test("claimsDispatch: past-tense claims hit; offers, negations and questions don
   for (const r of [
     "Dispatched an agent to tighten the spec and add SVGs; fixed Riri → Rui.",
     "Sent an agent to check the policy.",
+    "Dispatched an agent.",
+    // "nothing"/"none" as an object, not a negation of the dispatch.
+    "Dispatched an agent to check why nothing renders on the settings page.",
+    "Sent an agent to find out why none of the builds pass.",
+    "Dispatched an agent, nothing blocked.",
     "Sending an agent to smoke-test the RTK ear in TechVibeSync.",
     "Asking Beatriz to figure it out; marked waiting on her.",
     "Queued: archive the old wiki page. Agent dispatched.",
@@ -129,6 +134,18 @@ test("claimsDispatch: past-tense claims hit; offers, negations and questions don
   for (const r of [
     "Captured as a task to auto-prune idle cmux sessions. Not dispatched.",
     "Captured the bridge idea. Not dispatching anything yet.",
+    // 11-09: "Nothing dispatched" read as a claim (DISPATCH_HEDGE had no nothing|none).
+    "Logged a task. Nothing dispatched.",
+    "Logged it. None dispatched yet.",
+    "Logged it. Nothing was dispatched.",
+    "Nothing has been dispatched.",
+    "Nothing's been dispatched.",
+    "Nothing was actually dispatched.",
+    "None of them was dispatched.",
+    "Nothing is being dispatched.",
+    "Nothing handed off yet.",
+    "I dispatched nothing yet.",
+    "Dispatching nothing yet.",
     "I can't open PROJ-1696 from here. Want me to dispatch a prep task to read the ticket?",
     "Can't generate images from here. Logged it as a task so you can dispatch it to an agent or do it yourself.",
     "There's no reopen-from-journal yet. For now, tell me the item and I'll set it back to doing or re-dispatch it.",

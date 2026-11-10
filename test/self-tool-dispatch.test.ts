@@ -61,7 +61,8 @@ for (const ask of ASKS) {
     const cards = parkedCards(hub);
     expect(cards.map((q) => [q.itemId, q.kind])).toEqual([[item.id, "dispatch"]]);
     expect(cards[0].options[0]).toMatchObject({ id: "go", label: "Send an agent", effect: { type: "dispatch", action: "work" } });
-    expect(r.reply).toEndWith("Send an agent? is on a card.)"); // "Nothing dispatched" also reads as a claim: "(No agent started. Send…)"
+    // "Nothing dispatched" is not a dispatch claim, so no "(No agent started." suffix.
+    expect(r.reply).toBe(`${ask.reply} (Send an agent? is on a card.)`);
     expect(dispatched).toHaveLength(0);
     await hub.answer(cards[0].id, "go");
     expect(dispatched.map((d) => d.slice(0, 2))).toEqual([[item.id, "work"]]);
