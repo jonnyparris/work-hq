@@ -6,7 +6,7 @@ import type { ActionKind, CalendarEvent, Coaching, Item, Job, Question, Question
 import { config, sweepOn } from "./config.ts";
 import { isAgentCard } from "../shared/boss.ts";
 import { isOpen } from "./dedupe.ts";
-import type { Hub } from "./hub.ts";
+import { awayMs, type Hub } from "./hub.ts";
 import { localDate } from "./memory-sync.ts";
 import { type JiraDone, JiraStates } from "./jira-state.ts";
 import { type MrRef, MrStates, mrRefs } from "./mr-state.ts";
@@ -319,8 +319,18 @@ export class Prompter {
       }
     }
 
-    // 3. Morning plan, once per workday.
-    if (workday && hour >= dayStart && hour < 12) {
+    // 3. Morning plan, once per workday. Not while an out-of-office block covers now: a day off never gets it, and a
+    // morning off gets it once you're back (still before noon). Other cards don't look at OOO (yet).
+    // A card asked before the sweep reported the block (a boot tick, an OOO added this morning): a morning block that
+    // runs past noon expires it; one that ends before noon holds it until then (expiring a `once` card would stop it
+    // coming back when you do). A hold that ends earlier (a snooze, the previous of back-to-back blocks) moves to the
+    // block's end; one already at or past it stays. A block that starts after noon leaves it alone.
+    const away = this.hub.awayAt(now);
+    const noon = atLocal(12, 0, 0, now).getTime();
+    const openPlan = away && awayMs(away.start) < noon ? this.hub.store.openQuestionByKey(`plan:${today}`) : undefined;
+    if (openPlan && away && awayMs(away.end) >= noon) this.hub.expireQuestion(openPlan.id, `out of office: ${away.title || "calendar"}`);
+    else if (openPlan && away && !(openPlan.notBefore && Date.parse(openPlan.notBefore) >= awayMs(away.end))) this.hub.park(openPlan, new Date(awayMs(away.end)).toISOString());
+    if (workday && hour >= dayStart && hour < 12 && !away) {
       this.ask({
         kind: "plan",
         key: `plan:${today}`,

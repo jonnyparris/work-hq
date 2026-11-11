@@ -314,6 +314,15 @@ export interface CalendarEvent {
   response?: "accepted" | "declined" | "tentative" | "needsAction";
 }
 
+/** An out-of-office / time-off block from the calendar sweep. Kept apart from events: it isn't a meeting. */
+export interface AwayBlock {
+  title: string;
+  /** ISO with offset, or YYYY-MM-DD for an all-day block (local midnight). */
+  start: string;
+  /** Exclusive. Same formats as start. */
+  end: string;
+}
+
 export interface JournalEntry {
   id: string;
   at: string;
@@ -461,6 +470,8 @@ export interface AgentReport {
   events?: CalendarEvent[];
   /** With `events`: the last local day (YYYY-MM-DD) they cover, so empty days get cleared too. */
   eventsThrough?: string;
+  /** Calendar sweep: every out-of-office / time-off block in the range, including ones that began earlier. */
+  away?: AwayBlock[];
   journal?: string[];
   /** Boss check: open questions whose premise no longer holds (the PR merged, the job died). Each is expired with
    *  the reason, no effect runs. To also move the item, send an `updates` entry for it. */

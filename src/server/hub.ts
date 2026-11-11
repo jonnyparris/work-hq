@@ -3,7 +3,7 @@
 // decision lands in the journal (and from there, in memory).
 
 import type {
-  ActionKind, AgentReport, CalendarEvent, Effect, Item, ItemKind, ItemStatus, Job, JournalEntry, NoteDecision, Question,
+  ActionKind, AgentReport, AwayBlock, CalendarEvent, Effect, Item, ItemKind, ItemStatus, Job, JournalEntry, NoteDecision, Question,
   QuestionOption, ServerEvent, Snapshot, SyncState, Coaching, CoachOutcome,
 } from "../shared/types.ts";
 import { type BulkRequest, deckGroup, deferHorizon, localDay, optionFor, setsStatus } from "../shared/batch.ts";
@@ -1118,7 +1118,7 @@ export class Hub {
   }
 
   /** Hide an open question until `until`. */
-  private park(q: Question, until: string) {
+  park(q: Question, until: string) {
     const cur = this.store.question(q.id);
     if (!cur || cur.status !== "open") return;
     cur.notBefore = until;
@@ -1301,6 +1301,32 @@ export class Hub {
     this.emit({ type: "upcoming", data: this.upcomingEvents() });
   }
 
+  /** The calendar sweep's out-of-office blocks. Replaced whole on each sweep that sends them; kept when one doesn't,
+   *  or when every block it sent is unreadable (a garbled list shouldn't clear a real day off). */
+  setAway(blocks: AwayBlock[]) {
+    const ok = blocks.filter((b) => b && typeof b.start === "string" && typeof b.end === "string" && awayMs(b.end) > awayMs(b.start));
+    if (blocks.length && !ok.length) return;
+    const list = ok.slice(0, 200).map((b) => ({ title: String(b.title ?? "").slice(0, 200), start: b.start, end: b.end }));
+    this.store.setKv("calendarAway", JSON.stringify(list));
+  }
+
+  away(): AwayBlock[] {
+    try {
+      const v = JSON.parse(this.store.kv("calendarAway") ?? "[]");
+      return Array.isArray(v) ? v : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** The out-of-office block covering `now` that ends last (overlapping blocks: the day off wins over a short one). */
+  awayAt(now = new Date()): AwayBlock | undefined {
+    const t = now.getTime();
+    return this.away()
+      .filter((b) => awayMs(b.start) <= t && t < awayMs(b.end))
+      .sort((a, b) => awayMs(b.end) - awayMs(a.end))[0];
+  }
+
   // ── agent reports ──────────────────────────────────────────────────────
   ingestReport(r: AgentReport, fallbackSource: Item["source"]["type"] = "agent") {
     const job = r.jobId ? this.store.job(r.jobId) : undefined;
@@ -1377,6 +1403,7 @@ export class Hub {
     }
     for (const line of r.journal ?? []) this.journal(line, { who: "agent" });
     if (r.events) this.setEvents(r.events, r.eventsThrough);
+    if (fallbackSource === "calendar" && Array.isArray(r.away)) this.setAway(r.away);
     if (job) {
       const foldLine = folded.length ? `Could also: ${folded.join("; ")}` : "";
       const summary = r.summary && foldLine ? `${r.summary} ${foldLine}` : r.summary ?? (foldLine ? [job.summary, foldLine].filter(Boolean).join(" ") : undefined);
@@ -1654,6 +1681,15 @@ export function quickNote(text: string, q: Pick<Question, "options">): NoteDecis
 }
 
 const normTitle = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/** An away block's time: YYYY-MM-DD is local midnight (Date.parse would read it as UTC); anything else is ISO. NaN if neither. */
+export function awayMs(s: string) {
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!d) return Date.parse(s);
+  const t = new Date(+d[1]!, +d[2]! - 1, +d[3]!);
+  // 2026-02-31 would roll over to March: not a date.
+  return t.getMonth() === +d[2]! - 1 && t.getDate() === +d[3]! ? t.getTime() : NaN;
+}
 
 /** A meeting from the notes doc is this calendar event: same (or contained) title, close start, else read after it began. */
 export function meetingMatches(m: { title: string; start?: string; at: string }, ev: Pick<CalendarEvent, "title" | "start">) {

@@ -308,14 +308,17 @@ export function calendarSweepPrompt(jobId: string, day: string, through = day) {
   return `You are Work HQ's calendar reader: headless and READ-ONLY.
 ${template("sweeps/calendar", { day, through })}
 
-Skip all-day OOO/holiday markers. For each event output:
+Out-of-office and time-off blocks (eventType "outOfOffice", or an all-day event that marks ${owner.name} off: OOO,
+PTO, vacation, leave, holiday, sick) are not events: list each in "away" as { "title", "start", "end" } (ISO with
+offset; an all-day one as YYYY-MM-DD, end exclusive), on every day in the range, including ones that began
+before ${day}. Skip other all-day markers (working location, birthdays). For each event output:
 { "id", "title", "start": ISO with offset, "end": ISO with offset, "attendees": [first names or emails, max 8],
   "oneOnOne": true if exactly 2 humans, "url": meeting link or htmlLink, "response": "accepted|declined|tentative|needsAction" }
 
 ${toolRoutes()}
 
-OUTPUT: final message must be ONLY JSON (no prose, no fences): { "summary": "N events", "events": [...] }
-Job id: ${jobId}.`;
+OUTPUT: final message must be ONLY JSON (no prose, no fences): { "summary": "N events", "events": [...], "away": [...] }
+("away": [] when there are none.) Job id: ${jobId}.`;
 }
 
 export interface TriageContext {
