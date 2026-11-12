@@ -16,7 +16,7 @@ import * as cmux from "./cmux.ts";
 import { config } from "./config.ts";
 import { newId, nowIso } from "./db.ts";
 import { type DemoScript, demoActionScript, demoSweepScript, feedLine } from "./demo.ts";
-import { ACCESS_APP, type Dispatcher, errText, type Hub, isCrash, queuedNote } from "./hub.ts";
+import { ACCESS_APP, type Dispatcher, errText, type Hub, isCrash, queuedNote, rerunLabel } from "./hub.ts";
 import { GatewayToken } from "./gateway-token.ts";
 import { backoffMs, isRateLimited, isTransient, LaunchGate, RunCap } from "./launch-gate.ts";
 import { overloaded } from "./load.ts";
@@ -1483,14 +1483,47 @@ export class Agents implements Dispatcher {
     void this.sweep("transcripts");
   }
 
-  /** "Log in now" on an `access-login:` card (`whq access-login`): log in, close the app's open cards. */
-  async accessLogin(app: string) {
+  /**
+   * "Log in now" on an `access-login:` card (`whq access-login`): log in, close the app's open cards, and kickstart
+   * the job (`rerun`, a launchd label) if the card names one. A login back in under 2 s opened no browser: the session
+   * was already live, so the job's own check failed for another reason (11-11: "renewed" at 13:02 and 20:48 in under
+   * 0.5 s, after a 10:44 login; `cloudflared access token` needs the network). Journal that, not "renewed".
+   */
+  async accessLogin(app: string, rerun?: string) {
+    const t0 = Date.now();
     if (!(await this.cloudflaredLogin(app))) return;
+    const envF = Number(process.env.WORK_HQ_ACCESS_FAST_MS); // test hook
+    const live = Date.now() - t0 < (Number.isFinite(envF) && envF >= 0 ? envF : 2_000);
     const host = new URL(app).host;
     this.hub.closeAccessLoginCards(host, "logged in");
-    this.hub.journal(`Cloudflare Access login renewed (${host})`, { who: "hq" });
+    this.hub.journal(live ? `Cloudflare Access login for ${host} was already live (login returned in under 2 s, no browser): the job's own check failed, see its log` : `Cloudflare Access login renewed (${host})`, { who: "hq" });
     this.hub.settleAccessLoginTodos(host, "Access login renewed");
-    this.hub.toast(`Logged in to ${host}. Its job gets through on the next run.`, "good");
+    const ran = rerun && rerunLabel(rerun) ? await this.kickstart(rerun) : undefined;
+    const next = ran === undefined ? "Its job gets through on the next run." : ran ? `Reran ${rerun}.` : `Couldn't rerun ${rerun}; the next run gets through.`;
+    this.hub.toast(`${live ? `${host} was already logged in.` : `Logged in to ${host}.`} ${next}`, ran === false ? "warn" : "good");
+  }
+
+  /** `launchctl kickstart gui/<uid>/<label>`: start a local launchd job now. No `-k`: a run in progress is left alone. */
+  private async kickstart(label: string) {
+    const bin = process.env.WORK_HQ_LAUNCHCTL_BIN || "/bin/launchctl";
+    const target = `gui/${process.getuid?.() ?? 0}/${label}`;
+    const why = await new Promise<string | undefined>((done) => {
+      let p: ReturnType<typeof spawn>;
+      try {
+        p = spawn(bin, ["kickstart", target], { stdio: "ignore" });
+      } catch (e) {
+        return done(e instanceof Error ? e.message : String(e));
+      }
+      const t = setTimeout(() => {
+        done("timed out");
+        p.kill();
+        setTimeout(() => { if (p.exitCode === null && p.signalCode === null) p.kill("SIGKILL"); }, 5_000).unref();
+      }, 15_000);
+      p.on("exit", (code, signal) => { clearTimeout(t); done(code === 0 ? undefined : code != null ? `exit ${code}` : `killed by ${signal ?? "a signal"}`); });
+      p.on("error", (e) => { clearTimeout(t); done(e.message); });
+    });
+    this.hub.journal(why === undefined ? `Reran ${label} after the Access login` : `Couldn't rerun ${label} after the Access login (${why})`, { who: "hq" });
+    return why === undefined;
   }
 
   /**

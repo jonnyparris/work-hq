@@ -48,6 +48,11 @@
   error). A login that works (or `whq access-ok`) also marks done the open todo that asks only for that
   login (`Hub.settleAccessLoginTodos`, `accessLoginTodo`: an open task whose title has a re-login phrase and
   names the host or its first label; titles naming two things, "X and Y", "X/Y", "X, then Y", stay open).
+  `--rerun <launchd-label>` puts the job's label on the card: a login that works then runs `launchctl kickstart`
+  on it (journalled), so the job doesn't wait for its next slot. Work HQ's own label is refused: its restarts
+  go through `POST /api/restart`. A login back in under 2 s opened no browser:
+  the session was already live, and the journal says so instead of "renewed" (11-11: two such "renewals" hid a
+  job check that failed with a valid token).
 - **Headless pi runs over RPC, never with the prompt in argv** (`src/server/pi-rpc.ts`). Endpoint
   security (SentinelOne) SIGKILLs any exec whose argv holds a string over ~1 KB, so prompts go over
   stdin (`pi --mode rpc`) and `assertShortArgs` rejects anything over 512 bytes. Each tool run gets its

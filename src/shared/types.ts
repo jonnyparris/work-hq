@@ -183,7 +183,7 @@ export type Effect =
   /** Run `cloudflared access login <app>` for the model gateway pi uses (one browser tab). */
   | { type: "gatewayLogin"; app: string }
   /** Run `cloudflared access login <app>` for any other Access app a local job needs (`whq access-login`). */
-  | { type: "accessLogin"; app: string }
+  | { type: "accessLogin"; app: string; rerun?: string }
   /** Run triage again on words a failed triage kept (command bar, review notes). */
   | { type: "triage"; text: string; mode: "chat" | "review" }
   /** Morning plan: the items picked on the card (sent with the answer as `itemIds`) go to today. */

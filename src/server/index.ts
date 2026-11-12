@@ -190,7 +190,7 @@ const server = Bun.serve({
     "/api/access-login": {
       POST: (req) =>
         handle(async () => {
-          const b = await body<{ app: string; reason?: unknown; resolved?: unknown }>(req);
+          const b = await body<{ app: string; reason?: unknown; resolved?: unknown; rerun?: unknown }>(req);
           return hub.accessLoginCard(b);
         }),
     },

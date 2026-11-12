@@ -4,7 +4,7 @@
 #   whq report <jobId>        # JSON report on stdin → POST /api/agent/report (whq report --help: schema)
 #   whq say "<text>"          # talk to Work HQ like the command bar does
 #   whq journal "<text>"      # add a line to the journal as an agent (no triage)
-#   whq access-login <app> ["<why>"]  # Access login lapsed: one "Log in now" card per app per day (no triage)
+#   whq access-login [--rerun <launchd-label>] <app> ["<why>"]  # Access login lapsed: one "Log in now" card a day; --rerun: its login kickstarts the job
 #   whq access-ok <app>       # the login works again: close that app's card
 #   whq sync <memory|journal|calendar|transcripts>
 #   whq recheck               # re-read every open item's MRs / PRs / tickets; result shows in the dashboard
@@ -37,7 +37,10 @@ except Exception: fo=[]
 if fo: print("Not filed (idea cap per job; added to the summary as \"Could also:\"): "+"; ".join(fo))' ;;
   say)       echo "{\"text\": $(jstr "$*")}" | post /api/say ;;
   journal)   echo "{\"text\": $(jstr "$*")}" | post /api/journal ;;
-  access-login) echo "{\"app\": $(jstr "${1:?usage: whq access-login <app> [why]}"), \"reason\": $(jstr "${*:2}")}" | post /api/access-login ;;
+  access-login)
+    rerun=""; if [[ "${1:-}" == --rerun ]]; then rerun="${2:-}"; [[ -n "$rerun" ]] || { echo "usage: whq access-login [--rerun <launchd-label>] <app> [why]" >&2; exit 2; }; shift 2; fi
+    [[ -n "${1:-}" ]] || { echo "usage: whq access-login [--rerun <launchd-label>] <app> [why]" >&2; exit 2; }
+    echo "{\"app\": $(jstr "${1:?usage: whq access-login [--rerun <launchd-label>] <app> [why]}"), \"reason\": $(jstr "${*:2}"), \"rerun\": $(jstr "$rerun")}" | post /api/access-login ;;
   access-ok)    echo "{\"app\": $(jstr "${1:?usage: whq access-ok <app>}"), \"resolved\": true}" | post /api/access-login ;;
   sync)      echo '{}' | post "/api/sync/${1:?name}" ;;
   recheck)   echo '{}' | post /api/recheck ;;

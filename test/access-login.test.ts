@@ -2,7 +2,7 @@
 // not a free-text 🍍 that sends a triage job every run (10-22..10-29: six for one ClickHouse app, two failed triages).
 import { expect, test } from "bun:test";
 import { Store } from "../src/server/db.ts";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { accessLoginTodo, Hub } from "../src/server/hub.ts";
@@ -86,7 +86,7 @@ test("Agents.accessLogin: a login that works closes the app's cards; one that fa
       hub.accessLoginCard({ app: APP });
       await agents.accessLogin(APP);
       expect(open(hub)).toHaveLength(left);
-      expect(toasts.at(-1)).toContain(left ? "Login didn't finish" : "Logged in to analytics.example.com");
+      expect(toasts.at(-1)).toContain(left ? "Login didn't finish" : "analytics.example.com was already logged in");
     }
   } finally {
     if (prev === undefined) delete process.env.WORK_HQ_CLOUDFLARED_BIN;
@@ -213,4 +213,84 @@ test("the gateway login settles its todo; a memory re-import doesn't reopen a se
     hub.createItem({ title: "Re-login CF Access for aigw", kind: "task", status: "waiting", source: { type: "memory", label: "active-todos", key: "memory:active-todos:re-login-aigw" } });
     expect(hub.store.item(gw.id)?.status).toBe("done");
   });
+});
+
+// 11-11: "Log in now" said "renewed" at 13:02 and 20:48 in under 0.5 s with no browser, after a 10:44 login. The
+// session was live; daily.sh's own check had failed for another reason (`cloudflared access token` needs the network).
+test("a login back in under 2 s journals 'already live', a slower one 'renewed'", async () => {
+  await withBin("/usr/bin/true", async () => {
+    const { hub, agents } = setup();
+    await agents.accessLogin(APP); // /usr/bin/true is far under 2 s
+    expect(journal(hub).some((t) => t.startsWith("Cloudflare Access login for analytics.example.com was already live"))).toBe(true);
+    expect(journal(hub)).not.toContain("Cloudflare Access login renewed (analytics.example.com)");
+  });
+  const prev = process.env.WORK_HQ_ACCESS_FAST_MS;
+  process.env.WORK_HQ_ACCESS_FAST_MS = "0"; // every login counts as slow, as one that opened the browser
+  try {
+    await withBin("/usr/bin/true", async () => {
+      const { hub, agents } = setup();
+      await agents.accessLogin(APP);
+      expect(journal(hub)).toContain("Cloudflare Access login renewed (analytics.example.com)");
+    });
+  } finally {
+    if (prev === undefined) delete process.env.WORK_HQ_ACCESS_FAST_MS;
+    else process.env.WORK_HQ_ACCESS_FAST_MS = prev;
+  }
+});
+
+test("--rerun puts the launchd label on the card's login and hands it to the dispatcher; a bad label is refused", async () => {
+  const hub = new Hub(new Store(":memory:"));
+  const calls: [string, string | undefined][] = [];
+  hub.dispatcher = { dispatch: async () => undefined, scheduleFromWords: async () => {}, accessLogin: async (app, rerun) => void calls.push([app, rerun]) };
+  hub.accessLoginCard({ app: APP, rerun: "com.example.nightly" }, day("2026-11-04"));
+  const card = open(hub)[0]!;
+  expect(card.options.find((o) => o.id === "login")?.effect).toEqual({ type: "accessLogin", app: APP, rerun: "com.example.nightly" });
+  expect(card.context).toContain("Log in and the job reruns.");
+  await hub.answer(card.id, "login");
+  expect(calls).toEqual([[APP, "com.example.nightly"]]);
+  for (const rerun of ["a b", "x;rm -rf ~", "../x", "-k", 42, "com.example.work-hq", "work-hq", "work-hq.dashboard", "WORK-HQ.Dashboard"]) expect(() => hub.accessLoginCard({ app: APP, rerun })).toThrow();
+  // The CLI sends "" when --rerun isn't given: no label, the old card.
+  hub.accessLoginCard({ app: "https://z.example.com", rerun: "" }, day("2026-11-04"));
+  expect(open(hub).find((q) => q.key.includes("z.example.com"))?.options.find((o) => o.id === "login")?.effect).toEqual({ type: "accessLogin", app: "https://z.example.com" });
+});
+
+test("Agents.accessLogin with a label kickstarts that launchd job and journals it; a failed kickstart says so", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "lctl-"));
+  const bin = join(dir, "launchctl");
+  const log = join(dir, "args");
+  writeFileSync(bin, `#!/bin/sh\necho "$@" >> ${log}\n`);
+  chmodSync(bin, 0o755);
+  const prev = process.env.WORK_HQ_LAUNCHCTL_BIN;
+  try {
+    await withBin("/usr/bin/true", async () => {
+      process.env.WORK_HQ_LAUNCHCTL_BIN = bin;
+      const { hub, agents } = setup();
+      const toasts: string[] = [];
+      hub.subscribe((e) => { if (e.type === "toast") toasts.push((e.data as { text: string }).text); });
+      await agents.accessLogin(APP, "com.example.nightly");
+      expect(readFileSync(log, "utf8").trim()).toBe(`kickstart gui/${process.getuid!()}/com.example.nightly`);
+      expect(journal(hub)).toContain("Reran com.example.nightly after the Access login");
+      expect(toasts.at(-1)).toContain("Reran com.example.nightly.");
+
+      process.env.WORK_HQ_LAUNCHCTL_BIN = "/usr/bin/false";
+      const b = setup();
+      await b.agents.accessLogin(APP, "com.example.nightly");
+      expect(journal(b.hub)).toContain("Couldn't rerun com.example.nightly after the Access login (exit 1)");
+
+      // A bad label from a stale card never reaches launchctl.
+      process.env.WORK_HQ_LAUNCHCTL_BIN = bin;
+      const c = setup();
+      await c.agents.accessLogin(APP, "x; rm -rf ~");
+      expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(1);
+      expect(journal(c.hub).some((t) => t.includes("rerun") || t.startsWith("Reran"))).toBe(false);
+      // Nor does Work HQ's own label: its restarts go through POST /api/restart.
+      for (const own of ["com.example.work-hq", "work-hq.dashboard"]) await c.agents.accessLogin(APP, own);
+      expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(1);
+      expect(journal(c.hub).some((t) => t.includes("rerun") || t.startsWith("Reran"))).toBe(false);
+    });
+  } finally {
+    if (prev === undefined) delete process.env.WORK_HQ_LAUNCHCTL_BIN;
+    else process.env.WORK_HQ_LAUNCHCTL_BIN = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -22,6 +22,12 @@ type Listener = (e: ServerEvent) => void;
 
 /** A Cloudflare Access app origin `cloudflared access login` may be run against: https and a bare host, nothing to inject. */
 export const ACCESS_APP = /^https:\/\/[a-z0-9.-]+\/?$/i;
+/** The shape of a launchd label (`whq access-login --rerun`); `rerunLabel` is the full gate. */
+export const LAUNCHD_LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+/** Work HQ's own launchd job (`work-hq.dashboard`, `com.example.work-hq`, …): restarts go through POST /api/restart. */
+export const ownLabel = (label: string) => /(^|\.)work-hq(\.|$)/i.test(label);
+/** True for a label "Log in now" may kickstart: launchd-shaped, and not Work HQ's own job. */
+export const rerunLabel = (label: string) => LAUNCHD_LABEL.test(label) && !ownLabel(label);
 const ACCESS_LATER = "Later";
 /** An item's own state cards (prompter; when-retry: from Agents.scheduleFromWords): closed once an agent is sent on it (closeStateCards). */
 const STATE_CARD = /^(wait|state|inbox|kill|due|when-retry|doing|proposal):/;
@@ -33,7 +39,7 @@ export interface Dispatcher {
   /** Read a typed note against the question it was typed on. Throws if the read failed; undefined = question gone. */
   readNote?(questionId: string, text: string): Promise<NoteDecision | undefined>;
   gatewayLogin?(app: string): Promise<void>;
-  accessLogin?(app: string): Promise<void>;
+  accessLogin?(app: string, rerun?: string): Promise<void>;
   triage?(text: string, mode: "chat" | "review"): Promise<unknown>;
   sweep?(name: "transcripts" | "calendar", opts?: { since?: string }): Promise<unknown>;
   /** Focus a job's cmux workspace. */
@@ -359,10 +365,16 @@ export class Hub {
    * app per day, key `access-login:<host>:<day>`. Replaces a free-text capture per run (`whq pineapple`, since removed), which sent a triage job each time
    * (10-22..10-29: six of them for a ClickHouse app). Asking again while the card is open, or after "Later" that
    * day, does nothing; after a login (that failed, or lapsed again) or `resolved`, a lapse asks again. Yesterday's
-   * card closes. `resolved`: the job got through, so close any open card for the app instead.
+   * card closes. `resolved`: the job got through, so close any open card for the app instead. `rerun`: the job's
+   * launchd label; the card's login kickstarts it once the login works.
    */
-  accessLoginCard(b: { app: string; reason?: unknown; resolved?: unknown }, now = new Date()) {
+  accessLoginCard(b: { app: string; reason?: unknown; resolved?: unknown; rerun?: unknown }, now = new Date()) {
     if (typeof b.app !== "string" || !ACCESS_APP.test(b.app)) throw new Error("app must be https://<host>");
+    if (b.rerun != null && b.rerun !== "") {
+      if (typeof b.rerun !== "string" || !LAUNCHD_LABEL.test(b.rerun)) throw new Error("rerun must be a launchd label");
+      if (ownLabel(b.rerun)) throw new Error("rerun can't be Work HQ's own launchd job");
+    }
+    const rerun = typeof b.rerun === "string" && b.rerun ? b.rerun : undefined;
     const host = new URL(b.app).host;
     const key = `access-login:${host}:${localDay(now)}`;
     if (b.resolved === true) {
@@ -378,9 +390,9 @@ export class Hub {
       badge: "Login expired",
       priority: 80,
       prompt: `Your Cloudflare Access login for ${host} lapsed`,
-      context: `${reason || "A local job needs it and can't open the browser itself."} Log in and the job's next run gets through.`,
+      context: `${reason || "A local job needs it and can't open the browser itself."} ${rerun ? "Log in and the job reruns." : "Log in and the job's next run gets through."}`,
       options: [
-        { id: "login", label: "Log in now (opens one tab)", tone: "primary", effect: { type: "accessLogin", app: `https://${host}` } },
+        { id: "login", label: "Log in now (opens one tab)", tone: "primary", effect: { type: "accessLogin", app: `https://${host}`, ...(rerun ? { rerun } : {}) } },
         { id: "later", label: ACCESS_LATER, tone: "quiet", effect: { type: "noop" } },
       ],
     });
@@ -530,7 +542,7 @@ export class Hub {
         void this.dispatcher?.gatewayLogin?.(effect.app);
         break;
       case "accessLogin":
-        void this.dispatcher?.accessLogin?.(effect.app)?.catch((e) => this.toast(`Login failed: ${errText(e)}`, "warn"));
+        void this.dispatcher?.accessLogin?.(effect.app, effect.rerun)?.catch((e) => this.toast(`Login failed: ${errText(e)}`, "warn"));
         break;
       case "triage":
         // Not awaited: triage takes seconds and the card has already been answered.
@@ -1436,7 +1448,7 @@ export function effectText(e: Effect): string {
     case "when": return "ask when (needs a note)";
     case "noop": return "noop (does nothing)";
     case "gatewayLogin": return "gateway login";
-    case "accessLogin": return `cloudflared access login ${e.app}`;
+    case "accessLogin": return `cloudflared access login ${e.app}${e.rerun ? `, then launchctl kickstart ${e.rerun}` : ""}`;
     case "commitPlan": return "commit the picked items to today";
     case "prepMeetings": return "dispatch prep for each ticked meeting";
     case "donePicks": return e.all ? "mark every listed item done" : "mark each ticked item done";
