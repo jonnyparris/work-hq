@@ -176,6 +176,11 @@ The journal (`memory.journalPath`) is capped at ~20 KB (older days spill to
 `…-archive-YYYY-MM.md`) to stay under typical embedding size limits. Its header
 (`prompts/journal-header.md`) tells reflections it outranks stale state.
 
+The flush read-modify-writes both files, so `MemoryClient.read` must return the whole file. agent-memory-mcp
+returns 50K chars a call; read follows `next_offset` and throws on anything that could be short or stitched (no
+next_offset, a gap, a file that changes between pages, an unknown reply). The flush then fails and retries instead
+of writing a cut file back (11-10, 11-11: one-page reads deleted the archive's 11-05..11-09).
+
 ### Duplicates across sources (src/server/dedupe.ts)
 
 Each source has its own stable key (`memory:active-todos:<slug>`, `transcript:<doc>:<slug>`, a check's key),

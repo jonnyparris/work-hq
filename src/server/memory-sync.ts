@@ -191,7 +191,7 @@ export class MemorySync {
       // Archive first: the new main body has already dropped the spilled days, so writing it first and then failing
       // the archive write would lose them. A failure after the archive write retries into appendArchive's dedupe.
       if (overflow) {
-        const archivePath = config.memory.journalPath.replace(/\.md$/, `-archive-${new Date().toISOString().slice(0, 7)}.md`);
+        const archivePath = journalArchivePath();
         const prev = (await this.memory.read(archivePath)) ?? `---\ntags: [workload, work-hq, journal, archive]\n---\n\n# Work HQ Journal — archive\n`;
         await this.memory.write(archivePath, appendArchive(prev, overflow));
       }
@@ -285,6 +285,11 @@ export function mergeJournal(
     body = `${JOURNAL_HEADER}\n${render(keep)}`;
   }
   return { body, overflow: spill.length ? render(spill.reverse()) : undefined, added };
+}
+
+/** This month's journal archive, where days that spill out of the main journal go. */
+export function journalArchivePath(now = new Date()) {
+  return config.memory.journalPath.replace(/\.md$/, `-archive-${now.toISOString().slice(0, 7)}.md`);
 }
 
 /**
