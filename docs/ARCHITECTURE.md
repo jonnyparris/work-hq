@@ -313,7 +313,10 @@ the job that does it hasn't started, and sometimes fails. So:
   (done, dropped or with a live (queued, running, blocked) action job skipped; none left: the ones it updated) get a "Send an agent?" card
   (`parked:<id>`, priority 75, with Mine today/later, Scheduled for…, Drop) and the reply ends "Send an agent? is on
   a card." Chat only: meeting notes land in inbox, where the prompter's Captured card (budget allowing) carries the button. 11-06: four asks (three about his own tools) went
-  straight to Proposed with no card. Test: `test/self-tool-dispatch.test.ts`.
+  straight to Proposed with no card. Test: `test/self-tool-dispatch.test.ts`. Asks parked before this existed got
+  their card once at boot (`Agents.backfillParkedOffers`, kv `parkedBackfill`; item = a voice item created in the
+  5 s before the triage job finished and in no other chat or review triage's window; skips items any action job was started for or
+  that had a parked card). Remove after 2026-11-17. Test: `test/parked-backfill.test.ts`.
 - The job that runs the work reports its own outcome. Tests: `test/claim-before-run.test.ts`,
   `test/schedule-reply.test.ts`.
 - New sites can't slip in: `test/reply-sinks.test.ts` finds every `toast(`, `summary:` and `setReply(` line in

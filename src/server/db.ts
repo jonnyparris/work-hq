@@ -198,6 +198,10 @@ export class Store {
     }
     return this.lastJobAt;
   }
+  /** Every job of one kind, not just the last `jobs()` page. A full scan: boot-time one-offs only. */
+  jobsOfKind(kind: Job["kind"]): Job[] {
+    return this.all<Job>("jobs", "WHERE json_extract(doc, '$.kind') = ?", kind);
+  }
   /** Anything that deletes jobs behind putJob's back (the demo reset) calls this. */
   forgetJobCache() {
     this.lastJobAt = undefined;

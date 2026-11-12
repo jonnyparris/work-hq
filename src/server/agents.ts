@@ -208,6 +208,8 @@ function findJobWorkspace(jobId: string) {
 const promptFile = (jobId: string) => resolve(cmux.jobDir(jobId), "prompt.md");
 /** The owner's words for a triage job, so a restart mid-triage can still offer them back. */
 const triageFile = (jobId: string) => resolve(cmux.jobDir(jobId), "triage.json");
+/** When a parked chat triage started raising its own "Send an agent?" card (2b214e6). */
+const PARKED_CARDS_SINCE = "2026-11-09T16:34:53.000Z";
 type TriageMode = "chat" | "review";
 
 export class Agents implements Dispatcher {
@@ -235,6 +237,7 @@ export class Agents implements Dispatcher {
     hub.dispatcher = this;
     ensureSiteLink();
     this.migrateAfterCards();
+    this.backfillParkedOffers();
     // One `cmux tree` for every job the restart caught, not one per job: it's a blocking CLI call at boot.
     // Only a successful tree is cached: a failed call falls back to a per-job lookup rather than "no workspace".
     let tree: Map<string, string> | undefined;
@@ -283,6 +286,64 @@ export class Agents implements Dispatcher {
       }
       if (job.status === "failed") options = leadWithCheck(options);
       if (JSON.stringify(options) !== JSON.stringify(q.options)) this.hub.store.putQuestion({ ...q, options });
+    }
+  }
+
+  /**
+   * One-off (it_mwahl8nte50sv): asks a chat triage parked before parked cards existed (2b214e6, 11-09 16:34 UTC) get
+   * their "Send an agent?" card now. 11-06: four asks sat on Proposed with "Not dispatched; say the word" and no
+   * button. Triage jobs don't record their items, so the match is a heuristic: a voice item created in the 5 s before
+   * the job finished (applyTriage creates them a millisecond before the job is marked done; the model call before
+   * that can take minutes). An item inside two chat/review triage jobs' windows is ambiguous and gets no card, and so do items
+   * triage only updated or made more than 5 s before it finished. Skips items done or dropped, ones any action job
+   * was ever started for, and ones that already had a parked card. Runs once (kv), even if it fails, so it can never
+   * block or loop boot. Remove after 2026-11-17, the item's kill date.
+   */
+  private backfillParkedOffers() {
+    const KEY = "parkedBackfill";
+    try {
+      if (this.hub.store.kv(KEY)) return;
+      this.hub.store.setKv(KEY, nowIso());
+      this.raiseParkedBackfill();
+    } catch (e) {
+      console.warn("[work-hq] parked-card backfill failed:", e);
+      try {
+        this.hub.journal(`Backfill of "Send an agent?" cards failed: ${errText(e)}`, { who: "hq" });
+      } catch {}
+    }
+  }
+
+  private raiseParkedBackfill() {
+    const store = this.hub.store;
+    const agented = new Set(store.jobsOfKind("action").map((j) => j.itemId).filter(Boolean));
+    const items = store.items().filter((i) => i.source?.type === "voice");
+    // Only chat and review triage run applyTriage and create items; note, explain and when reads don't.
+    const triages = store.jobsOfKind("triage").filter((j) => (j.name === "chat" || j.name === "review") && j.status === "done" && j.finishedAt);
+    const windowOf = (j: Job) => [Date.parse(j.finishedAt!) - 5000, Date.parse(j.finishedAt!)] as const;
+    const inside = (i: Item, [from, to]: readonly [number, number]) => {
+      const at = Date.parse(i.createdAt);
+      return at >= from && at <= to;
+    };
+    let cards = 0;
+    const failed: string[] = [];
+    const parked = triages
+      .filter((j) => j.name === "chat" && j.finishedAt! < PARKED_CARDS_SINCE && parksDispatch(j.summary))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    for (const job of parked) {
+      try {
+        const w = windowOf(job);
+        const made = items.filter((i) =>
+          inside(i, w) && !agented.has(i.id) && !store.lastAnswered(`parked:${i.id}`) &&
+          !triages.some((o) => o.id !== job.id && inside(i, windowOf(o))));
+        // parkedTargets drops done/dropped and items with a live action job; offerAgents skips an open card.
+        const reply = (job.summary ?? "").replace(/\s*\((?:No agent started|Nothing was marked)[^)]*\)/g, "").trim();
+        cards += this.offerAgents(this.parkedTargets(made, []), reply);
+      } catch (e) {
+        failed.push(`${job.id} (${errText(e)})`);
+      }
+    }
+    if (cards || failed.length) {
+      this.hub.journal(`Backfill: ${cards} "Send an agent?" card(s) for asks triage parked before parked cards existed${failed.length ? `; failed on ${failed.join(", ")}` : ""}`, { who: "hq" });
     }
   }
 
