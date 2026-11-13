@@ -11,6 +11,7 @@ import { config } from "../server/config.ts";
 import { AFFIRMATIVE } from "../shared/dead-button.ts";
 import { type LoadSample, summarise } from "../server/load.ts";
 import { isFoldCard } from "../server/stopped-fold.ts";
+import { AGENT_ASKS } from "../shared/boss.ts";
 
 const arg = (name: string) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -90,8 +91,10 @@ p("## Asked more than once (same item)");
 // Agent follow-ups (`agent:<prompt hash>`, `after:<job id>`) are each a different question from a different run, not
 // the owner being asked the same thing again: "Kitesurf shadow mode (5×)" was 4 agent follow-ups (11-04). They get
 // their own list. Stopped-run fold cards (`after:fold:`) are Work HQ's own ask, so they stay in the main list.
+// An agent report question on its own key (`ticket-1818-1866-ready`) carries the "Agent asks" badge instead: 2 of 13
+// repeats on 11-11 were a dispatch tap plus one of these.
 // The trail shows when each was answered (asked, if open): a 10-29 createdAt printed for an 11-02 answer.
-const isAgentAsk = (q: Question) => /^(agent|after):/.test(q.key) && !isFoldCard(q);
+const isAgentAsk = (q: Question) => (q.badge === AGENT_ASKS || /^(agent|after):/.test(q.key)) && !isFoldCard(q);
 // A fold card the item's own done/dropped closed (hub setStatus / an agent report expire its cards "item done") was never
 // answered, so it isn't a second ask: 2 of 11 repeats on 11-05 were a dispatch tap plus one of these.
 const closedByItem = (q: Question) => isFoldCard(q) && q.status === "expired" && /^item (done|dropped)$/.test(q.answer ?? "");

@@ -91,6 +91,9 @@ export const REPORT_HELP = `whq report <jobId> < report.json   (JSON on stdin; e
 - summary: one plain sentence of what happened.
 - status: "done" | "failed" | "progress" (progress for mid-run notes; report once at the end otherwise).
 - updates: [{ "id": "<item id>", "status": "done|waiting|today|dropped|...", "links": ["https://..."], "detail": "...", "note": "why" }]
+  Next step waits on a merge (you hand back a train)? Add "next": { "refs": ["<MR / PR / JIRA URL>"], "prompt": "what the next agent does", "action": "work" }
+  and set status "waiting". Once every ref has landed (merged and on its target), ${owner.name} gets one "Send an agent" card with your prompt.
+  The prompt must stand alone: the next agent sees only it and the item. "next": null clears it. At most 5 refs; a bad ref or a closed item is refused (output: "Not applied").
 - items: new items [{ "title", "kind": "task|ticket|message|email|followup|decision|review|meeting|idea",
   "detail", "project", "people": [], "links": [], "status": "inbox",
   "source": { "type": "agent", "label", "url", "quote": "verbatim words", "key": "stable-dedupe-key" } }]
@@ -111,7 +114,8 @@ Full schema and rules: \`${WHQ} report --help\`.
     "journal": ["one fact"] }
   JSON
 ${IDEA_RULE}
-A button's status only moves the item; one that approves work (Approve, Merge, Land) needs action "work" + note.`;
+A button's status only moves the item; one that approves work (Approve, Merge, Land) needs action "work" + note.
+A next step that waits on a merge: updates[].next = { "refs", "prompt" } (see --help), not a "when it merges…" question.`;
 
 function itemBlock(it: Item) {
   return [

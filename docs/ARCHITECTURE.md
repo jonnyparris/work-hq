@@ -211,6 +211,7 @@ server? Work HQ still runs; you just lose import and the flush.
 |---|---|---|
 | Morning plan | first tick in work hours before noon, not while a calendar out-of-office block covers now (the calendar sweep reports them as `away`, kv `calendarAway`); backs off like Wrap up (an OOO-expired day doesn't count) | 95 |
 | It's time | scheduled item's time has passed | 90 (notifies) |
+| Landed: next step | `next-step.ts`: an agent set `updates[].next` (`{ refs, prompt, action? }`, refs = MR / PR / JIRA URLs, checked on report) and every ref has landed (MR merged and on target, PR merged, ticket done; a failed lookup or a merge that didn't land never fires), no agent on the item. One card (`next:<id>:<setAt>`, once): "Send an agent" dispatches with the stored prompt as the note. Then `next.firedAt` is set: never a second card. A ref closed unmerged spends the step (`next.closed`, journalled). The merged and recheck "mark done?" cards skip the item while the step is armed or its card is open. Recheck forgets the refs too. Report limits: 5 http(s) refs, 4000-char prompt, open items only (else a `warnings` line). A step that never lands (MR left open, merged-not-landed, failed lookups) keeps holding the merged card back; the 3-day Still waiting card still asks. A closed ref is cached for good, so a reopened MR needs the step re-armed. No budget, like It's time. 11-06..11-10: four "X merged, so is Y ready?" sessions | 88 (notifies) |
 | Wrap up | 90 min before end of day, not while an out-of-office block covers now (a short one only delays it; a card asked before the sweep knew is expired, or held until a block ends inside the window). Back-off (`cardDue`, shared with plan and prep): one ignored day is forgiven; two in a row → wait 2 calendar days after the last card, three or more → 4; a real answer resets it (a bare snooze doesn't) | 88 |
 | M5 move | the coaching move's time has passed (day: MM-DD, weekday or next workday after the reflection; time: last HH:MM, else 09:30); once per reflection date, never > 2 days late; a newer reflection expires it; journaled as `M5 move: … → answer` | 85 (notifies) |
 | 🍍 capture triage | new item with the pineapple signal (meeting transcripts) | 82 |
@@ -419,7 +420,8 @@ to work from. The "nothing happened" check looks for a state change, schedule or
 5 minutes of a note typed while its card was open. Notes added from the item drawer with no card open are
 reported as context. Lines an agent posted (`PATCH /api/items/:id` with `who: "agent"`) journal as `agent`, so
 the digest's typed-input sections leave them out. "Asked more than once" counts only cards Work HQ itself put
-up; agent follow-ups (`agent:*`, `after:<job>`) are different questions from different runs, so they get their own
+up; agent follow-ups (`agent:*`, `after:<job>`, and a job's report questions on its own key, badged "Agent asks";
+stopped-run fold cards `after:fold:*` excepted) are different questions from different runs, so they get their own
 "Agent follow-ups" list. Each trail entry shows when it was answered (asked, if still open).
 
 ## Files

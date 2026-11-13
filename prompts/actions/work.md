@@ -13,3 +13,5 @@ Code: follow the repo's conventions; open a draft PR/MR, never merge. Keep worki
 this session, and the check after a stopped job is pointed at it.
 Messages to humans: show {{owner.name}} the draft first. Anything irreversible or high-stakes: ask in this session.
 Report: update the item's status and links, and add follow-up items or questions for anything left.
+Handing back a train (the next step waits on an MR/PR merging)? Set `next` on the item in your report (`whq report --help`)
+so the next step is offered once it lands and you have finished.

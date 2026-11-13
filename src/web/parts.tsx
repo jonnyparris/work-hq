@@ -1096,6 +1096,16 @@ export function Drawer({ it, journal, jobs, onClose }: { it: Item; journal: Jour
             ) : null}
           </div>
 
+          {it.next && (
+            <div className="sec">
+              <h4>Next step{it.next.closed ? ` won't run: ${shortUrl(it.next.closed)} closed unmerged` : it.next.firedAt ? `, offered ${ago(it.next.firedAt)}` : ", once these land"}</h4>
+              <div className="meta">
+                {it.next.refs.map((l) => <a key={l} className="tag" href={l} target="_blank" rel="noreferrer">{shortUrl(l)}</a>)}
+              </div>
+              <div className="md" style={{ marginTop: 6 }}>{it.next.prompt}</div>
+            </div>
+          )}
+
           {itemJobs.length > 0 && (
             <div className="sec">
               <h4>Agents on this</h4>

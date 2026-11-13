@@ -15,6 +15,7 @@ import { newId, nowIso, type Store } from "./db.ts";
 import { findTwin, isOpen } from "./dedupe.ts";
 import { LoadLog, loadNow } from "./load.ts";
 import { stoppedJobNote } from "./prompts.ts";
+import { parseNextStep } from "./next-step.ts";
 import { pruneReviews } from "./review-fold.ts";
 import { foldRest } from "./stopped-fold.ts";
 
@@ -1367,10 +1368,30 @@ export class Hub {
         }),
       );
     }
+    const warnings: string[] = [];
     for (const u of r.updates ?? []) {
       if (!this.store.item(u.id)) continue;
-      const { id, note, ...patch } = u;
-      this.updateItem(id, withoutCheckClosed(patch as Partial<Item>));
+      const { id, note, next: rawNext, ...patch } = u;
+      const after = this.updateItem(id, withoutCheckClosed(patch as Partial<Item>));
+      if (rawNext === null) {
+        if (after.next) {
+          this.updateItem(id, { next: null }, { quiet: true });
+          this.journal(`Next step cleared: ${after.title}`, { itemId: id, who: "agent" });
+        }
+      } else if (rawNext !== undefined) {
+        const next = parseNextStep(rawNext, job?.id);
+        if ("error" in next) warnings.push(`${id}: ${next.error} (not set)`);
+        // A closed item never fires (nextStepCards wants it open): say so rather than store a step that can't run.
+        else if (!isOpen(after)) {
+          warnings.push(`${id}: next not set, the item is ${after.status}`);
+          // The report meant to replace the old step: don't leave it to fire if the item is ever reopened.
+          if (after.next) this.updateItem(id, { next: null }, { quiet: true });
+        }
+        else {
+          this.updateItem(id, { next }, { quiet: true });
+          this.journal(`Next step armed: ${after.title} — when ${next.refs.join(" ")} land${next.refs.length === 1 ? "s" : ""}: ${next.prompt.slice(0, 160)}`, { itemId: id, who: "agent" });
+        }
+      }
       if (note || patch.status) this.journal(`${patch.status ? label(patch.status) + ": " : ""}${this.store.item(id)!.title}${note ? ` — ${note}` : ""}`, { itemId: id, who: "agent" });
       // A closed item's agent cards are moot, as with setStatus (which closes every card). Only agent cards here: an
       // agent's "done" shouldn't silently take the owner's own questions with it. Lets the boss check close an item
@@ -1429,7 +1450,7 @@ export class Hub {
         for (const q of this.store.questions("open").filter((q) => q.key === `after:${job.id}`)) this.expireQuestion(q.id, "agent reported");
       }
     }
-    return { created: created.map((i) => i.id), ...(asked.length ? { questions: asked } : {}), ...(folded.length ? { folded } : {}), ...(closed ? { closed } : {}) };
+    return { created: created.map((i) => i.id), ...(asked.length ? { questions: asked } : {}), ...(folded.length ? { folded } : {}), ...(closed ? { closed } : {}), ...(warnings.length ? { warnings } : {}) };
   }
 }
 

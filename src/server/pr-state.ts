@@ -75,6 +75,11 @@ export class PrStates {
     this.cache.forget(items.flatMap((it) => prRefs(it).map((r) => r.url)));
   }
 
+  /** The item's PRs the cache says closed without merging (no lookup). */
+  closed(it: Pick<Item, "links" | "source">): string[] {
+    return prRefs(it).filter((r) => this.cache.peek(r.url)?.state === "closed").map((r) => r.url);
+  }
+
   /** How many of the item's refs the last lookup couldn't read (glab / gh / Access failed). */
   failed(it: Pick<Item, "links" | "source">) {
     return prRefs(it).filter((r) => this.cache.peek(r.url)?.state === "unknown").length;

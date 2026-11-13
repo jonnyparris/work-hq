@@ -121,6 +121,7 @@ and cheap to run every 30 seconds. The model decides what things *mean*. The rul
 | **Still on it?** | an item on *doing* with no agent running and no open card, quiet for 4 work hours | Done / Waiting / Today / Drop; at most daily per item, max 3 open |
 | **Still waiting** | waiting on someone for > 3 days | |
 | **Stale proposals** | proposed items nobody touched in 14 days (no status call, owner note, job or earlier keep; a later slot or a kill date keeps one off) | one card, at most once per 20 h: tick the ones to retire (dropped), the rest stay proposed and off the card for 14 days. Nothing is dropped without a tap |
+| **Landed: next step** | an agent handed back a train ("merge !12, then flip the flag") and set a next step on the item; everything it waits on has landed | one card: **Send an agent** runs the stored next step, once |
 | **PR / MR merged · Ticket done** | waiting items whose GitLab MRs all merged and JIRA tickets are all done (status category Done) | one card for all, at most daily: mark all done, one by one, or keep waiting. A JIRA lookup that fails (stale Access token) keeps the item off |
 | **Wrap up** | 90 min before end of day. Ignored two days running → next one 2 days after the last, 4 after three or more; an answer resets it, a bare snooze doesn't (plan and prep too) | what actually happened |
 | **Post idea / Draft to review** | the weekly writing scout found something | never nags |

@@ -91,8 +91,34 @@ export interface Item {
   staleKeptAt?: string;
   /** "Explain simply" in the drawer: a plain-English read of title + detail + quote. `for` = what it was written from. */
   explain?: ItemExplain;
+  /** "When <ref> lands → run the next step" (server/next-step.ts). Set by an agent's report (`updates[].next`); null = cleared. */
+  next?: NextStep | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface NextStep {
+  /** MR / GitHub PR / JIRA URLs. Due once every one has landed: MR merged and on its target, PR merged, ticket done. */
+  refs: string[];
+  /** What the next agent should do. Rides along as the dispatch note. */
+  prompt: string;
+  /** Absent = work. */
+  action?: ActionKind;
+  setAt: string;
+  /** The job that set it. */
+  by?: string;
+  /** When it was spent: its card raised, or a ref closed unmerged (`closed`). Set once: the step never asks twice. */
+  firedAt?: string;
+  /** The ref that closed without merging, so the step won't run. */
+  closed?: string;
+}
+
+/** What `updates[].next` may hold in a report (checked by server/next-step.ts parseNextStep). `ref` = one ref. */
+export interface NextStepInput {
+  refs?: string[];
+  ref?: string;
+  prompt?: string;
+  action?: ActionKind;
 }
 
 export interface ItemExplain {
@@ -450,7 +476,11 @@ export interface AgentReport {
   summary?: string;
   status?: "done" | "failed" | "progress";
   items?: Array<Partial<Item> & { title: string; kind?: ItemKind }>;
-  updates?: Array<{ id: string } & Partial<Pick<Item, "status" | "title" | "detail" | "links" | "when" | "scheduledFor" | "project" | "people" | "post">> & { note?: string }>;
+  updates?: Array<{ id: string } & Partial<Pick<Item, "status" | "title" | "detail" | "links" | "when" | "scheduledFor" | "project" | "people" | "post">> & {
+    note?: string;
+    /** "When these land, run this": checked and stored as Item.next (server/next-step.ts). null clears it. */
+    next?: NextStepInput | null;
+  }>;
   questions?: Array<{
     prompt: string;
     context?: string;

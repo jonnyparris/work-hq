@@ -235,6 +235,8 @@ test("usage digest: agent follow-ups on one item aren't repeats; the trail shows
   const kite = hub.createItem({ title: "Kitesurf shadow mode", status: "inbox" });
   for (const k of ["a", "b", "c"]) hub.ask({ kind: "open", itemId: kite.id, key: `agent:${k}`, priority: 1, prompt: `Agent question ${k}?`, options: [] });
   hub.ask({ kind: "open", itemId: kite.id, key: "after:job1", priority: 1, prompt: "Agent finished?", options: [] });
+  // An agent report question on its own key carries the "Agent asks" badge instead of an agent: prefix (11-11).
+  hub.ask({ kind: "open", itemId: kite.id, key: "ticket-1818-1866-ready", badge: "Agent asks", priority: 1, prompt: "Land them?", options: [] });
   hub.ask({ kind: "confirm", itemId: kite.id, key: "k:kite", priority: 1, prompt: kite.title, options: [] });
   // Stopped-run fold cards are Work HQ's own ask: they still count as repeats.
   const fold = hub.createItem({ title: "Flaky deploy", status: "inbox" });
@@ -252,7 +254,7 @@ test("usage digest: agent follow-ups on one item aren't repeats; the trail shows
   const repeats = out.split("## Asked more than once")[1]!.split("\n## ")[0]!;
   const [human = "", agent = ""] = repeats.split("### Agent follow-ups");
   expect(human).not.toContain("Kitesurf shadow mode");
-  expect(agent).toContain("Kitesurf shadow mode** (4)");
+  expect(agent).toContain("Kitesurf shadow mode** (5)");
   expect(human).toContain("Flaky deploy** (2×)");
   expect(agent).not.toContain("Flaky deploy");
   const pad = (n: number) => String(n).padStart(2, "0");

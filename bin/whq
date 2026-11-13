@@ -34,7 +34,10 @@ if any(" noop " in o for q in qs for o in q["options"]): print("A noop button do
 if any(o.endswith("(no agent starts)") for q in qs for o in q["options"]): print("A button that approves work but only sets a status starts no agent. Re-report it with action \"work\" and a note, under a new key.")
 try: fo=json.loads(raw).get("folded") or []
 except Exception: fo=[]
-if fo: print("Not filed (idea cap per job; added to the summary as \"Could also:\"): "+"; ".join(fo))' ;;
+if fo: print("Not filed (idea cap per job; added to the summary as \"Could also:\"): "+"; ".join(fo))
+try: wa=json.loads(raw).get("warnings") or []
+except Exception: wa=[]
+for w in wa: print("Not applied: "+w)' ;;
   say)       echo "{\"text\": $(jstr "$*")}" | post /api/say ;;
   journal)   echo "{\"text\": $(jstr "$*")}" | post /api/journal ;;
   access-login)

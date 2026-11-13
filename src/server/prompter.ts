@@ -10,6 +10,7 @@ import { awayMs, type Hub } from "./hub.ts";
 import { localDate } from "./memory-sync.ts";
 import { type JiraDone, JiraStates } from "./jira-state.ts";
 import { type MrRef, MrStates, mrRefs } from "./mr-state.ts";
+import { armed, holdsDone, nextStepKey, nextStepProbe } from "./next-step.ts";
 import { plain } from "./parse.ts";
 import { type PrRef, PrStates, prRefs } from "./pr-state.ts";
 import { openUrl } from "./prompts.ts";
@@ -185,22 +186,26 @@ export class Prompter {
     const store = this.hub.store;
     const hasRefs = (it: Item) => mrRefs(it).length > 0 || prRefs(it).length > 0 || this.jira.refs(it).length > 0;
     const before = store.items().filter((it) => isOpen(it) && hasRefs(it));
+    // Armed next steps' refs too (often not in the item's links): the tick after this fires the ones that landed.
+    const probes = store.items().flatMap((it) => (isOpen(it) && it.next && armed(it) ? [nextStepProbe(it, it.next)] : []));
     this.hub.putSync({ ...store.syncState("recheck"), lastRunAt: new Date().toISOString(), error: undefined });
     // A lookup the 30-s tick started before the click may predate the merge, and get() won't start another while
     // it runs: let those land, then forget them too.
     await Promise.all([this.mrs.settled(), this.prs.settled(), this.jira.settled()]);
-    this.mrs.forget(before);
-    this.prs.forget(before);
-    this.jira.forget(before);
-    for (const it of before) this.landed(it);
+    this.mrs.forget([...before, ...probes]);
+    this.prs.forget([...before, ...probes]);
+    this.jira.forget([...before, ...probes]);
+    for (const it of [...before, ...probes]) this.landed(it);
     await Promise.all([this.mrs.settled(), this.prs.settled(), this.jira.settled()]);
     // Re-read: lookups take a while, and items close in the meantime.
     const busy = new Set(store.liveJobs().map((j) => j.itemId).filter(Boolean));
     const items = store.items().filter((it) => isOpen(it) && hasRefs(it));
     const failed = items.reduce((n, it) => n + this.mrs.failed(it) + this.prs.failed(it) + this.jira.failed(it), 0);
     const found: Array<{ it: Item; l: Landed }> = [];
+    const openKeys = new Set(store.questions("open").map((q) => q.key));
     for (const it of items) {
-      if (busy.has(it.id)) continue;
+      // An armed next step: Done on the recheck card would close the item before the step runs.
+      if (busy.has(it.id) || holdsDone(it, openKeys)) continue;
       const l = this.landed(it);
       if (l && l !== "pending") found.push({ it, l });
     }
@@ -265,6 +270,10 @@ export class Prompter {
 
     // Items an agent is already working on (verify leaves them in inbox): don't re-ask and re-dispatch.
     const busy = new Set(store.liveJobs().map((j) => j.itemId).filter(Boolean));
+
+    // 0. Next steps whose refs have all landed: one "Send an agent" card each. Promises, like scheduled items: no budget.
+    // It spends steps (firedAt): re-read so the merged card below stops holding them back this tick.
+    if (this.nextStepCards(items, busy)) items = store.items();
 
     // 1. Scheduled items that are due. Always ask — these are promises.
     for (const it of items) {
@@ -675,8 +684,11 @@ export class Prompter {
     let pending = false;
     // On the open recheck card already: one card per item.
     const onRecheck = new Set((store.openQuestionByKey(RECHECK_KEY)?.picks ?? []).map((p) => p.id));
+    const openKeys = new Set(store.questions("open").map((q) => q.key));
     for (const it of items) {
       if (it.status !== "waiting" || onRecheck.has(it.id)) continue;
+      // A step waits on the merge (armed), or its card is open: "mark done?" would close the item before it runs.
+      if (holdsDone(it, openKeys)) continue;
       const mr = this.landed(it);
       if (mr === "pending") pending = true;
       else if (mr && !(kept[it.id] !== undefined && (mr.at ?? "") <= kept[it.id]!)) found.push({ it, mr });
@@ -697,6 +709,59 @@ export class Prompter {
     }
     if (!found.length) return { asked: false, ids };
     return { asked: Boolean(this.ask({ ...mergedCard(found), kind: "state", key: MERGED_KEY })), ids };
+  }
+
+  /**
+   * "When <ref> lands → run the next step" (next-step.ts). An armed item whose refs have all landed (MR merged and on
+   * its target, PR merged, ticket done) gets one card whose "Send an agent" carries the stored prompt, then the step is
+   * spent (firedAt). Waits while an agent is on the item: the one that set it may still be running. A lookup that
+   * fails or a merge that didn't land never fires. A card, not a silent dispatch: the owner still taps go.
+   */
+  private nextStepCards(items: Item[], busy: Set<string | undefined>) {
+    let spent = false;
+    for (const it of items) {
+      const next = it.next;
+      if (!next || next.firedAt || !isOpen(it) || busy.has(it.id)) continue;
+      const probe = nextStepProbe(it, next);
+      const l = this.landed(probe);
+      if (!l) {
+        // A ref closed without merging never lands: spend the step, so it stops holding the merged card back.
+        const closed = [...this.mrs.closed(probe), ...this.prs.closed(probe)][0];
+        if (closed) {
+          this.hub.updateItem(it.id, { next: { ...next, firedAt: new Date().toISOString(), closed } }, { quiet: true });
+          this.hub.journal(`Next step won't run, ${closed} closed without merging: ${it.title} — ${next.prompt.slice(0, 160)}`, { itemId: it.id, who: "hq" });
+          spent = true;
+        }
+        continue;
+      }
+      if (l === "pending") continue;
+      const action = next.action ?? "work";
+      const landedLine = mergedLine(l);
+      const q = this.ask({
+        kind: "dispatch",
+        itemId: it.id,
+        key: nextStepKey(it.id, next),
+        once: true,
+        badge: "Landed: next step",
+        priority: 88,
+        prompt: `${landedLine.replace(/\.$/, "")}. Next: ${next.prompt.length > 160 ? `${next.prompt.slice(0, 159)}…` : next.prompt}`,
+        context: `${it.title}\nSet ${next.setAt.slice(5, 10)}${next.by ? ` by ${next.by}` : ""}, to run once ${next.refs.join(" ")} landed.${next.prompt.length > 160 ? `\n\nNext step: ${next.prompt}` : ""}`,
+        options: [
+          opt("go", action === "work" ? "Send an agent" : `Send an agent (${action})`, { type: "dispatch", action, note: `${landedLine} The next step, set when this was handed back: ${next.prompt}` }, "primary"),
+          opt("today", "Mine, today", { type: "status", status: "today" }),
+          WHEN_OPT,
+          opt("skip", "Not needed", { type: "noop" }, "quiet"),
+        ],
+      });
+      // Spent whether this asked or the key was already taken (answered once): never a second card for the same step.
+      const key = nextStepKey(it.id, next);
+      if (q || this.hub.store.openQuestionByKey(key) || this.hub.store.lastAnswered(key)) {
+        this.hub.updateItem(it.id, { next: { ...next, firedAt: new Date().toISOString() } }, { quiet: true });
+        this.hub.journal(`Next step due, ${landedLine} ${it.title}`, { itemId: it.id, who: "hq" });
+        spent = true;
+      }
+    }
+    return spent;
   }
 
   /** Items on the open merged-MRs card, when the sweep doesn't run this tick. */
