@@ -2,7 +2,7 @@
 // what to ask. Rules are deliberately boring and deterministic — the AI does
 // extraction and verification; *when to interrupt* stays predictable.
 
-import type { ActionKind, CalendarEvent, Coaching, Item, Job, Question, QuestionOption, QuestionPick } from "../shared/types.ts";
+import type { ActionKind, AwayBlock, CalendarEvent, Coaching, Item, Job, Question, QuestionOption, QuestionPick } from "../shared/types.ts";
 import { config, sweepOn } from "./config.ts";
 import { isAgentCard } from "../shared/boss.ts";
 import { isOpen } from "./dedupe.ts";
@@ -22,7 +22,7 @@ const DAY = 86_400_000;
 /** "X just ended" waits this long after the meeting: the end of the scheduler's last notes-sweep window
  * (NOTES_WINDOWS_MIN). 10-23: of 10 cards a scan closed in October, 3 closed by 25 min and 9 by 60. */
 export const REVIEW_HOLD_MIN = 60;
-/** Why an out-of-office block expired the plan card. cardDue skips those days: not ignored, just away. */
+/** Why an out-of-office block expired a plan / prep / wrap card (holdForAway). cardDue skips those days: not ignored, just away. */
 export const OOO_EXPIRY = "out of office";
 /** Minutes after a meeting ends when the scheduler scans for its notes, once per window, if it's still unscanned. */
 export const NOTES_WINDOWS_MIN: ReadonlyArray<readonly [number, number]> = [[10, 25], [45, REVIEW_HOLD_MIN]];
@@ -328,16 +328,12 @@ export class Prompter {
     }
 
     // 3. Morning plan, once per workday. Not while an out-of-office block covers now: a day off never gets it, and a
-    // morning off gets it once you're back (still before noon). Other cards don't look at OOO (yet).
-    // A card asked before the sweep reported the block (a boot tick, an OOO added this morning): a morning block that
-    // runs past noon expires it; one that ends before noon holds it until then (expiring a `once` card would stop it
-    // coming back when you do). A hold that ends earlier (a snooze, the previous of back-to-back blocks) moves to the
-    // block's end; one already at or past it stays. A block that starts after noon leaves it alone.
+    // morning off gets it once you're back (still before noon). Prep (3b) and wrap-up (4) do the same, each over its
+    // own window (the workday; the wrap-up window).
+    // A card asked before the sweep reported the block: holdForAway.
     const away = this.hub.awayAt(now);
     const noon = atLocal(12, 0, 0, now).getTime();
-    const openPlan = away && awayMs(away.start) < noon ? this.hub.store.openQuestionByKey(`plan:${today}`) : undefined;
-    if (openPlan && away && awayMs(away.end) >= noon) this.hub.expireQuestion(openPlan.id, `${OOO_EXPIRY}: ${away.title || "calendar"}`);
-    else if (openPlan && away && !(openPlan.notBefore && Date.parse(openPlan.notBefore) >= awayMs(away.end))) this.hub.park(openPlan, new Date(awayMs(away.end)).toISOString());
+    this.holdForAway(`plan:${today}`, away, noon);
     // Ignored two days running → back off, like the wrap-up (cardDue). 11-09..11-12: four plan cards expired unanswered.
     if (workday && hour >= dayStart && hour < 12 && !away && this.dueToday("plan:", today)) {
       this.ask({
@@ -357,13 +353,20 @@ export class Prompter {
     // 3b. Prep: one card for the day's 1-1s and small meetings, after the plan.
     // Asked before noon only, but an open card keeps following the calendar all day (drops started meetings, expires).
     // Ignored two days running → back off (cardDue); an open card still follows the calendar.
-    if (workday && hour >= dayStart && (this.hub.store.openQuestionByKey(`prep:${today}`) || (hour < 12 && this.dueToday("prep:", today)))) this.askPrep(now, today);
+    // Not while away. A new card is still asked before noon only (a morning off past noon gets none, like the plan),
+    // but an open card's hold window is the workday: a block over lunch holds it (a 15:00 1-1 still wants its
+    // brief), one to the end of the day expires it. It follows the calendar again once you're back.
+    this.holdForAway(`prep:${today}`, away, atLocal(0, Math.round(dayEnd * 60), 0, now).getTime());
+    if (workday && hour >= dayStart && !away && (this.hub.store.openQuestionByKey(`prep:${today}`) || (hour < 12 && this.dueToday("prep:", today)))) this.askPrep(now, today);
 
     // 4. Wrap-up, once per workday, 90 min before the end of the day. Ignored two days running → back off (cardDue).
     // The journal still flushes on the scheduler's cadence on a skipped day; only the "is this the truth" check is lost.
     // Today's card already exists: ask() won't re-ask it (once), so skip the history query on every later tick.
+    // Not while away (11-11: an all-day OOO still got one at 17:30); a short block (creche pickup) only delays it.
     const wrapKey = `wrap:${today}`;
-    if (workday && hour >= dayEnd - 1.5 && hour < dayEnd + 3 && this.dueToday("wrap:", today)) {
+    const wrapEnd = atLocal(0, Math.round((dayEnd + 3) * 60), 0, now).getTime();
+    this.holdForAway(wrapKey, away, wrapEnd);
+    if (workday && hour >= dayEnd - 1.5 && now.getTime() < wrapEnd && !away && this.dueToday("wrap:", today)) {
       this.ask({
         kind: "wrap",
         key: wrapKey,
@@ -743,6 +746,22 @@ export class Prompter {
   }
 
   /**
+   * Today's plan / prep / wrap card asked before the calendar sweep reported the block covering now (a boot tick, an
+   * OOO added today). A block that runs to the end of the card's window (`windowEnd`) expires it; one that ends
+   * sooner holds it until then (expiring a `once` card would stop it coming back when you do). A hold that ends
+   * earlier (a snooze, the previous of back-to-back blocks) moves to the block's end; one already at or past it
+   * stays. A block that starts at or after `windowEnd` leaves it alone.
+   */
+  private holdForAway(key: string, away: AwayBlock | undefined, windowEnd: number) {
+    if (!away || awayMs(away.start) >= windowEnd) return;
+    const open = this.hub.store.openQuestionByKey(key);
+    if (!open) return;
+    const end = awayMs(away.end);
+    if (end >= windowEnd) this.hub.expireQuestion(open.id, `${OOO_EXPIRY}: ${away.title || "calendar"}`);
+    else if (!(open.notBefore && Date.parse(open.notBefore) >= end)) this.hub.park(open, new Date(end).toISOString());
+  }
+
+  /**
    * One prep card a day, in the morning plan window: tick the 1-1s and small meetings worth a brief, each tick
    * sends a prep agent. It replaced a card 20 min before each meeting: 17 of 19 expired untouched (10-22
    * proposal; 8 of 8 on 10-20). While open, the list follows the calendar: started meetings drop off, new ones
@@ -1080,21 +1099,27 @@ const PUSH_1H = "Push 1 hour";
  * that aren't `<prefix>YYYY-MM-DD` are skipped (pre-10-26 per-meeting `prep:<eventId>` cards). A card expired by an
  * out-of-office block wasn't ignored: that day doesn't count either way. A day counts as answered when one of its
  * cards got a real answer: a bare "Ask me in an hour" whose follow-up then expired is still an ignored day, but a
- * snooze with typed text counts (deliberate: he wrote something, so he's reading the card). One ignored day is forgiven (busy,
- * OOO). Two in a row: wait 2 calendar days after the last card; three or more: 4 (a Thursday miss skips to Monday).
+ * snooze with typed text counts (deliberate: he wrote something, so he's reading the card). One ignored day is forgiven (busy).
+ * An OOO-expired card drops its day even after an earlier bare snooze that day. Two in a row: wait 2 calendar days after the last card; three or more: 4 (a Thursday miss skips to Monday).
  * An answer resets it to daily. 10-26..10-30 every card expired unanswered; with this, that week asks 10-26, 10-27
  * and 10-29 only, and 11-02 (answered) still gets its card. Plan and prep got it 11-12: plan answered 1 of 6 days
  * that week, prep 58 of 68 unanswered since September.
  */
 export function cardDue(prefix: string, closed: Pick<Question, "key" | "status" | "answer" | "options">[], today: string) {
   const days = new Map<string, boolean>();
+  const away = new Set<string>();
   for (const q of closed) {
     const day = q.key.slice(prefix.length);
     if (!q.key.startsWith(prefix) || !/^\d{4}-\d{2}-\d{2}$/.test(day) || day >= today) continue;
-    if (q.status === "expired" && q.answer?.startsWith(OOO_EXPIRY)) continue;
+    // Expired because you were out of office: not an ignored day, even after an earlier bare snooze that day.
+    if (q.status === "expired" && q.answer?.startsWith(OOO_EXPIRY)) {
+      away.add(day);
+      continue;
+    }
     const snoozed = q.options.some((o) => o.effect.type === "snooze" && o.label === q.answer);
     days.set(day, (days.get(day) ?? false) || (q.status === "answered" && !snoozed));
   }
+  for (const day of away) if (!days.get(day)) days.delete(day);
   const past = [...days].sort(([a], [b]) => b.localeCompare(a));
   let ignored = 0;
   while (ignored < past.length && !past[ignored]![1]) ignored++;
