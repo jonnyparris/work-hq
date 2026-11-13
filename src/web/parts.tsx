@@ -3,6 +3,7 @@ import type { CalendarEvent, Coaching, CoachOutcome, Effect, Item, ItemStatus, J
 import { explainKey } from "../shared/detail.ts";
 import { committedView } from "../shared/committed.ts";
 import { BOSS_MIN, waitingOnYou } from "../shared/boss.ts";
+import { REVIEW_HOLD_MIN, reviewable } from "../shared/meetings.ts";
 import { type PlanGroup, planView, score, searchPlan } from "../shared/plan.ts";
 import { CalmScene } from "./calm.tsx";
 import { api } from "./store.ts";
@@ -41,9 +42,10 @@ export function NowPanel({ now, events, workHours }: { now: Date; events: Calend
 }
 
 export function Timeline({ now, events, items, questions = [], onRefresh, sync }: { now: Date; events: CalendarEvent[]; items: Item[]; questions?: Question[]; onRefresh: () => void; sync?: SyncState }) {
-  // An open "X just ended" card gets a dictation box on its meeting row. The card itself is held until the notes-sweep
-  // window closes (prompter REVIEW_HOLD_MIN). Drafts live here, not in the box: the box outlives its card (answered,
-  // or expired by a scan) while it still holds words, so nothing half-typed vanishes.
+  // A meeting that just ended gets a dictation box on its row until the notes-sweep window closes (REVIEW_HOLD_MIN):
+  // after that, a meeting with no notes goes on the end-of-day card (prompter askUnrecorded). An open per-meeting
+  // "X just ended" card (from before that card) keeps its box and takes the words as its note. Drafts live here, not
+  // in the box: the box outlives its window or card while it still holds words, so nothing half-typed vanishes.
   const [drafts, setDrafts] = useState<Record<string, ReviewDraft>>({});
   const reviews = useRef(new Map<string, Question>());
   for (const q of questions) if (q.kind === "review" && q.status === "open" && q.eventId) reviews.current.set(q.eventId, q);
@@ -80,9 +82,12 @@ export function Timeline({ now, events, items, questions = [], onRefresh, sync }
                 <div>
                   <div className="t">{e.url ? <a href={e.url} target="_blank" rel="noreferrer" style={{ color: "inherit" }}>{e.title}</a> : e.title}</div>
                   {people(e.attendees).length ? <div className="a">{people(e.attendees).slice(0, 4).join(", ")}{people(e.attendees).length > 4 ? ` +${people(e.attendees).length - 4}` : ""}</div> : null}
-                  {(openReview.has(e.id) || hasDraft(drafts[e.id])) && reviews.current.get(e.id) && (
-                    <HeldReview q={reviews.current.get(e.id)!} open={openReview.has(e.id)} draft={drafts[e.id]} setDraft={draftFor(e.id)} />
-                  )}
+                  {(() => {
+                    const card = openReview.has(e.id);
+                    const held = past && reviewable(e) && now.getTime() - Date.parse(e.end) < REVIEW_HOLD_MIN * 60_000;
+                    if (!card && !held && !hasDraft(drafts[e.id])) return null;
+                    return <HeldReview q={reviews.current.get(e.id) ?? justEnded(e)} card={card} open={card || held} draft={drafts[e.id]} setDraft={draftFor(e.id)} />;
+                  })()}
                 </div>
               </div>];
           }
@@ -101,11 +106,15 @@ export function Timeline({ now, events, items, questions = [], onRefresh, sync }
 
 type ReviewDraft = { text: string; state: "idle" | "busy" | "sent" | "listening"; err?: string };
 
+/** The prompt a meeting row's box sends its words to triage with, when no card is open for it. */
+const justEnded = (e: CalendarEvent): Question =>
+  ({ id: `held:${e.id}`, kind: "review", eventId: e.id, key: `review:${e.id}`, prompt: `${e.title} just ended. Anything you committed to?`, options: [], priority: 70, status: "open", createdAt: e.end }) satisfies Question;
+
 /**
- * Dictation box on a meeting row with an open "just ended" card: what you committed to goes to triage like the
- * card's note. Once the card has closed (a scan expired it), the words still go to triage, as a review utterance.
+ * Dictation box on a meeting row that just ended (`open`: still in its window, or its card is open): what you committed
+ * to goes to triage as a review utterance, or as the note of its open "just ended" card (`card`).
  */
-function HeldReview({ q, open, draft, setDraft }: { q: Question; open: boolean; draft?: ReviewDraft; setDraft: (d: ReviewDraft | undefined) => void }) {
+function HeldReview({ q, open, card, draft, setDraft }: { q: Question; open: boolean; card?: boolean; draft?: ReviewDraft; setDraft: (d: ReviewDraft | undefined) => void }) {
   const d = draft ?? { text: "", state: "idle" as const };
   const latest = useRef(d);
   latest.current = d;
@@ -154,8 +163,8 @@ function HeldReview({ q, open, draft, setDraft }: { q: Question; open: boolean; 
     if (mine.current) { mine.current = undefined; stopDictation(); }
     put({ state: "busy", err: undefined });
     try {
-      if (open) await api.note(q.id, t);
-      else await api.say(`${q.prompt}\n${t}`, "review"); // same text reviewUtterance gives a per-meeting card
+      if (card) await api.note(q.id, t);
+      else await api.say(`${q.prompt}\n${t}`, "review", q.eventId); // same text reviewUtterance gives a per-meeting card
       setDraft({ text: "", state: "sent" });
     } catch (e) { put({ state: "idle", err: (e as Error).message }); }
   };
@@ -172,7 +181,7 @@ function HeldReview({ q, open, draft, setDraft }: { q: Question; open: boolean; 
   };
   if (d.state === "sent") return <div className="a held-review">Sent to triage.</div>;
   return (
-    <div className="held-review" title="The card waits until the notes are scanned. Anything you committed to can go in now.">
+    <div className="held-review" title="Anything you committed to can go in now. If no notes turn up, the meeting goes on the end-of-day card.">
       <input
         ref={input}
         value={d.text}

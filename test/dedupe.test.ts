@@ -90,44 +90,116 @@ describe("meeting cards vs transcript scans", () => {
     expect(meetingMatches({ title: "Delta Weekly", at: today(15).toISOString() }, ev)).toBe(false);
   });
 
-  test("a scan closes the open 'just ended' card and stops new ones", () => {
-    const start = new Date(Date.now() - 60 * 60_000);
-    const end = new Date(Date.now() - 10 * 60_000);
+  // The end-of-day card (prompter askUnrecorded) is asked from 90 min before the end of the day: pin a weekday evening.
+  const eve = (h: number, m = 0) => new Date(2026, 8, 23, h, m); // Wed
+  const card = () => hub.store.questions("open").find((q) => q.key === "reviews:eod:2026-09-23");
+
+  test("a scan closes the unrecorded-meetings card and keeps the meeting off it", () => {
+    const start = eve(17), end = eve(17, 30);
     hub.setEvents([{ id: "e1", title: "Delta Weekly", start: start.toISOString(), end: end.toISOString(), attendees: ["a@x", "b@x", "c@x"], response: "accepted" }]);
     const p = new Prompter(hub);
-    p.tick();
-    const q = hub.store.questions("open").find((q) => q.kind === "review");
-    expect(q).toBeTruthy();
-    expect(hub.markScanned([{ title: "Delta Weekly", start: start.toISOString() }])).toBe(1);
+    p.tick(eve(17, 40));
+    const q = card();
+    expect(q?.context).toBe("- Delta Weekly");
+    expect(hub.markScanned([{ title: "Delta Weekly", start: start.toISOString() }], eve(17, 45))).toBe(1);
     expect(hub.store.question(q!.id)!.status).toBe("expired");
-    p.tick();
+    p.tick(eve(17, 50));
     expect(hub.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(0);
+    // A later meeting with no notes asks again: the scan closed the card, nobody answered it.
+    hub.setEvents([
+      { id: "e1", title: "Delta Weekly", start: start.toISOString(), end: end.toISOString(), attendees: ["a@x", "b@x", "c@x"], response: "accepted" },
+      { id: "e2", title: "Echo sync", start: eve(18).toISOString(), end: eve(18, 20).toISOString(), attendees: ["a@x", "b@x"], response: "accepted" },
+    ]);
+    p.tick(eve(18, 30));
+    expect(card()?.context).toBe("- Echo sync");
   });
 
-  test("the 'just ended' card is held until the notes sweep window closes, so a scan expires it unseen", async () => {
-    const { REVIEW_HOLD_MIN } = await import("../src/server/prompter.ts");
+  test("a meeting joins the card after the notes hold, only when the transcript sweep runs", async () => {
+    const { REVIEW_HOLD_MIN } = await import("../src/shared/meetings.ts");
     const { config } = await import("../src/server/config.ts");
-    const prev = { ...config.sweeps };
+    const prev = { ...config.sweeps, disabled: [...config.sweeps.disabled] };
     try {
-      const start = today(14), end = today(14, 30), now = today(14, 32);
-      hub.setEvents([{ id: "e2", title: "Echo Weekly", start: start.toISOString(), end: end.toISOString(), attendees: ["a@x", "b@x", "c@x"], response: "accepted" }]);
+      hub.setEvents([{ id: "e2", title: "Echo Weekly", start: eve(17).toISOString(), end: eve(17, 30).toISOString(), attendees: ["a@x", "b@x", "c@x"], response: "accepted" }]);
       config.sweeps.enabled = true;
       config.sweeps.disabled = [];
-      new Prompter(hub).tick(now);
-      const q = hub.store.questions("open").find((q) => q.kind === "review" && q.eventId === "e2")!;
-      expect(Date.parse(q.notBefore!)).toBe(end.getTime() + REVIEW_HOLD_MIN * 60_000);
-      expect(hub.markScanned([{ title: "Echo Weekly", start: start.toISOString() }], today(14, 45))).toBe(1);
-      expect(hub.store.question(q.id)!.status).toBe("expired");
+      new Prompter(hub).tick(eve(17, 29 + REVIEW_HOLD_MIN));
+      expect(card()).toBeUndefined();
+      // A scan inside the hold finds its notes: it never goes on the card.
+      hub.markScanned([{ title: "Echo Weekly", start: eve(17).toISOString() }], eve(18, 15));
+      new Prompter(hub).tick(eve(17, 31 + REVIEW_HOLD_MIN));
+      expect(card()).toBeUndefined();
       // No transcript sweep: nothing to wait for, so no hold.
-      hub.setEvents([{ id: "e3", title: "Foxtrot sync", start: today(15).toISOString(), end: today(15, 30).toISOString(), attendees: ["a@x", "b@x", "c@x"], response: "accepted" }]);
+      hub.setEvents([{ id: "e3", title: "Foxtrot sync", start: eve(18).toISOString(), end: eve(18, 30).toISOString(), attendees: ["a@x", "b@x", "c@x"], response: "accepted" }]);
       config.sweeps.disabled = ["transcripts"];
-      new Prompter(hub).tick(today(15, 32));
-      const e3 = hub.store.questions("open").find((q) => q.eventId === "e3")!;
-      expect(e3.notBefore).toBeUndefined();
-      expect(e3.context).not.toContain("next sweep");
+      new Prompter(hub).tick(eve(18, 31));
+      expect(card()?.context).toBe("- Foxtrot sync");
     } finally {
       Object.assign(config.sweeps, prev);
     }
+  });
+
+  test("a meeting answered on its row, or by its own pre-upgrade card, stays off the card", () => {
+    const evs = ["Row talk", "Old card", "Plain"].map((title, i) => ({ id: `r${i}`, title, start: eve(9 + i).toISOString(), end: eve(9 + i, 30).toISOString(), attendees: ["a@x", "b@x"], response: "accepted" as const }));
+    hub.setEvents(evs);
+    hub.markReviewed("r0", eve(10));
+    hub.store.putQuestion({ id: "q-old", kind: "review", eventId: "r1", key: "review:r1", prompt: "Old card just ended.", options: [], priority: 70, status: "answered", answer: "Nothing new", answeredAt: eve(11).toISOString(), createdAt: eve(10, 40).toISOString() });
+    const p = new Prompter(hub);
+    p.tick(eve(17, 40));
+    expect(card()?.context).toBe("- Plain");
+    // Words sent from the row after it joined the card (a draft outlives the row's hour): it comes off, the card closes.
+    const q = card()!;
+    expect(hub.markReviewed("r2", eve(17, 45))).toBe(1);
+    expect(hub.store.question(q.id)).toMatchObject({ status: "expired", answer: "answered on its row" });
+    p.tick(eve(17, 50));
+    expect(card()).toBeUndefined();
+    p.tick(new Date(2026, 8, 24, 7)); // and it isn't handed to the morning card
+    expect(hub.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(0);
+  });
+
+  test("words from a row take only that meeting off a card", () => {
+    hub.setEvents(["Alpha sync", "Bravo sync"].map((title, i) => ({ id: `w${i}`, title, start: eve(15 + i).toISOString(), end: eve(15 + i, 30).toISOString(), attendees: ["a@x", "b@x"], response: "accepted" as const })));
+    const p = new Prompter(hub);
+    p.tick(eve(17, 40));
+    const q = card()!;
+    expect(hub.markReviewed("w0", eve(17, 45))).toBe(0);
+    expect(hub.store.question(q.id)).toMatchObject({ status: "open", context: "- Bravo sync" });
+    p.tick(eve(17, 50));
+    expect(card()?.context).toBe("- Bravo sync");
+  });
+
+  test("row answers match the event, not a lookalike: same-title neighbours, twins, start-less rows, a vanished event", () => {
+    const e = (id: string, title: string, h: number, m = 0) => ({ id, title, start: eve(h, m).toISOString(), end: eve(h, m + 20).toISOString(), attendees: ["a@x", "b@x"], response: "accepted" as const });
+    // Back-to-back same title, a longer title that contains it, and a twin instance of the first (re-created series).
+    hub.setEvents([e("s1", "Sync", 14), e("s2", "Sync", 14, 30), e("s3", "Sync planning", 15), e("s1b", "Sync", 14)]);
+    // A morning card from yesterday with a start-less row of the same title.
+    hub.store.setKv("reviews:2026-09-23", JSON.stringify([{ title: "Sync", day: "2026-09-22" }, { title: "Other", day: "2026-09-22" }]));
+    hub.store.putQuestion({ id: "morning", kind: "review", key: "reviews:2026-09-23", prompt: "Yesterday's meetings (2)", context: "- Sync\n- Other", options: [], priority: 70, status: "open", createdAt: eve(7).toISOString() });
+    const p = new Prompter(hub);
+    p.tick(eve(17, 40));
+    expect(card()?.context).toBe("- Sync\n- Sync\n- Sync planning"); // s1 and s1b are one meeting
+    hub.markReviewed("s1", eve(17, 45));
+    expect(card()?.context).toBe("- Sync\n- Sync planning");
+    expect(JSON.parse(hub.store.kv("reviews:2026-09-23")!).map((m: any) => m.title)).toEqual(["Sync", "Other"]);
+    p.tick(eve(17, 50)); // the twin isn't re-added
+    expect(card()?.context).toBe("- Sync\n- Sync planning");
+    // Answering a twin takes the row stored under the other id off too.
+    const twin = new Hub(new Store(":memory:"));
+    twin.setEvents([e("t1", "Sync", 14), e("t1b", "Sync", 14)]);
+    const tp = new Prompter(twin);
+    tp.tick(eve(17, 40));
+    expect(JSON.parse(twin.store.kv("unrecordedMeetings")!).meetings.map((m: any) => m.eventId)).toEqual(["t1"]);
+    expect(twin.store.questions("open").filter((q) => q.kind === "review").map((q) => q.context)).toEqual(["- Sync"]);
+    twin.markReviewed("t1b", eve(17, 45));
+    expect(twin.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(0);
+    tp.tick(eve(17, 50));
+    expect(twin.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(0);
+    expect(JSON.parse(twin.store.kv("unrecordedMeetings")!).meetings).toEqual([]);
+    // The event left the calendar before the words were sent: its row still comes off, by id.
+    hub.store.replaceEvents("2026-09-23", "2026-09-23", [e("s3", "Sync planning", 15)]);
+    hub.markReviewed("s2", eve(17, 55));
+    expect(card()?.context).toBe("- Sync planning");
+    p.tick(new Date(2026, 8, 24, 7));
+    expect(hub.store.questions("open").filter((q) => q.kind === "review" && q.key.startsWith("reviews:2026-09-24")).map((q) => q.context)).toEqual(["- Sync planning"]);
   });
 
   test("items' meeting labels count as scanned", () => {

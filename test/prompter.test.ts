@@ -364,9 +364,9 @@ describe("prompter", () => {
       { id: "v1", title: "Vibe check", start: at(9, 15).toISOString(), end: at(9, 45).toISOString(), attendees: ["Sam", "Alex", "Jo"], response: "needsAction" },
       { id: "o1", title: "Jo / Alex", start: at(9, 15).toISOString(), end: at(9, 45).toISOString(), attendees: ["Jo", "Alex"], oneOnOne: true, response: "needsAction" },
     ]);
-    p.tick(at(10));
+    p.tick(at(17, 30));
     const reviews = hub.store.questions("open").filter((q) => q.kind === "review");
-    expect(reviews.map((q) => q.eventId)).toEqual(["o1"]);
+    expect(reviews.map((q) => q.context)).toEqual(["- Jo / Alex"]);
   });
 
   test("wrap-up after a 1-1 whose invite lists only the other person", () => {
@@ -375,9 +375,9 @@ describe("prompter", () => {
       { id: "c1", title: "Sam / Alex", start: at(9, 15).toISOString(), end: at(9, 45).toISOString(), attendees: ["sam@example.com"], oneOnOne: true, response: "accepted" },
       { id: "h1", title: "Hold", start: at(9, 15).toISOString(), end: at(9, 45).toISOString(), attendees: ["kim@example.com"], response: "accepted" },
     ]);
-    p.tick(at(10));
+    p.tick(at(17, 30));
     const reviews = hub.store.questions("open").filter((q) => q.kind === "review");
-    expect(reviews.map((q) => q.eventId)).toEqual(["c1"]);
+    expect(reviews.map((q) => q.context)).toEqual(["- Sam / Alex"]);
   });
 
   test("snooze re-asks later with notBefore", async () => {
@@ -655,12 +655,15 @@ describe("meeting-ended cards from earlier days", () => {
     attendees: ["Sam", "Jo", "Alex"], response: "accepted" as const,
   });
 
+  // A per-meeting card from before the end-of-day card (still open after the upgrade), asked on its meeting's day.
+  const legacy = (eventId: string, title: string, asked: Date) =>
+    hub.store.putQuestion({ id: `q-${eventId}`, kind: "review", eventId, key: `review:${eventId}`, prompt: `${title} just ended. Anything you committed to?`, options: [], priority: 70, status: "open", createdAt: asked.toISOString() });
+
   test("fold into one card the next morning, titles listed, typed input kept", () => {
     hub.setEvents([ev("a", "Design sync", 9), ev("b", "Jo / Alex", 14), ev("c", "Ops review", 16)], "2026-09-24");
-    p.tick(at(9, 40));
-    p.tick(at(14, 40));
-    p.tick(at(16, 40));
-    expect(hub.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(3);
+    p.tick(at(17, 40));
+    const eod = hub.store.questions("open").filter((q) => q.kind === "review");
+    expect(eod.map((q) => q.key)).toEqual(["reviews:eod:2026-09-23"]);
     p.tick(thu(7));
     const open = hub.store.questions("open").filter((q) => q.kind === "review");
     expect(open).toHaveLength(1);
@@ -670,29 +673,84 @@ describe("meeting-ended cards from earlier days", () => {
     expect(d.context).toBe("- Design sync\n- Jo / Alex\n- Ops review");
     expect(d.options.map((o) => o.id)).toEqual(["scan", "none"]);
     expect(Date.parse(d.notBefore!)).toBe(thu(8).getTime()); // waits for the workday
+    expect(hub.store.question(eod[0]!.id)).toMatchObject({ status: "expired", answer: "day moved on" });
     // Later ticks don't duplicate it.
     p.tick(thu(10));
     expect(hub.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(1);
   });
 
-  // Regression: the list followed the open-question order (ORDER BY updated, ties within a ms), so it flaked.
-  test("folded titles are in meeting order, not card order", async () => {
-    hub.setEvents([ev("a", "Design sync", 9), ev("b", "Jo / Alex", 14), ev("c", "Ops review", 16)], "2026-09-24");
-    // Cards created out of meeting order (restart / clock skew), each in its own ms.
-    p.tick(at(16, 40)); // Ops review
-    await Bun.sleep(3);
-    p.tick(at(9, 40)); // Design sync
-    await Bun.sleep(3);
-    p.tick(at(14, 40)); // Jo / Alex, most recently updated
-    expect(hub.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(3);
+  test("meetings are listed in meeting order, whichever tick found them", () => {
+    hub.setEvents([ev("c", "Ops review", 16)], "2026-09-23");
+    p.tick(at(17, 40));
+    hub.setEvents([ev("a", "Design sync", 9), ev("c", "Ops review", 16)], "2026-09-23"); // a late calendar sync
+    p.tick(at(17, 45));
+    expect(hub.store.questions("open").filter((q) => q.kind === "review").map((q) => q.context)).toEqual(["- Design sync\n- Ops review"]);
     p.tick(thu(7));
-    const open = hub.store.questions("open").filter((q) => q.kind === "review");
-    expect(open.map((q) => q.context)).toEqual(["- Design sync\n- Jo / Alex\n- Ops review"]);
+    expect(hub.store.questions("open").filter((q) => q.kind === "review").map((q) => q.context)).toEqual(["- Design sync\n- Ops review"]);
   });
 
-  test("today's meeting-ended card is left alone", () => {
+  // Of 14 review cards 11-09..11-12, 7 answered: 6 "Nothing new", three within 13 s, none typed.
+  test("three unrecorded 1-1s: no per-meeting card, one card with the wrap-up", () => {
+    const one = (id: string, who: string, h: number) => ({ ...ev(id, `${who} / Alex`, h, 24), attendees: [`${who.toLowerCase()}@x`], oneOnOne: true });
+    hub.setEvents([one("m1", "Jo", 9), one("m2", "Sam", 11), one("m3", "Kim", 14)], "2026-09-24");
+    for (const h of [9, 10, 11, 12, 13, 14, 15, 16, 17]) p.tick(thu(h, 40));
+    const reviews = hub.store.questions("open").filter((q) => q.kind === "review");
+    expect(reviews.filter((q) => q.key.startsWith("review:"))).toHaveLength(0);
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]).toMatchObject({ key: "reviews:eod:2026-09-24", prompt: "Today's unrecorded meetings (3): anything you committed to?", context: "- Jo / Alex\n- Sam / Alex\n- Kim / Alex" });
+    // Not before the wrap-up's window (dayEnd 19 - 1.5 h).
+    const h2 = new Hub(new Store(":memory:"));
+    h2.setEvents([one("m1", "Jo", 9)], "2026-09-24");
+    new Prompter(h2).tick(thu(17, 29));
+    expect(h2.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(0);
+  });
+
+  test("the open card picks up a meeting that ends later; one that ends after it's answered goes to the morning card", async () => {
+    const late = { ...ev("b", "Late sync", 17, 24), start: thu(17, 20).toISOString(), end: thu(17, 50).toISOString() };
+    hub.setEvents([ev("a", "Design sync", 9, 24), late, ev("c", "Later sync", 18, 24)], "2026-09-24");
+    p.tick(thu(17, 31)); // Late sync still running
+    const card = () => hub.store.questions("open").find((q) => q.key === "reviews:eod:2026-09-24")!;
+    expect(card().context).toBe("- Design sync");
+    p.tick(thu(17, 55));
+    expect(card().prompt).toBe("Today's unrecorded meetings (2): anything you committed to?");
+    await hub.answer(card().id, "none");
+    p.tick(thu(18, 40)); // Later sync ended after the answer: no second card today
+    expect(hub.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(0);
+    p.tick(new Date(2026, 8, 25, 7));
+    expect(hub.store.questions("open").filter((q) => q.kind === "review").map((q) => q.context)).toEqual(["- Later sync"]);
+  });
+
+  test("a meeting waits out the notes hold, and one whose notes a scan read stays off", () => {
+    const prev = config.sweeps.enabled;
+    config.sweeps.enabled = true;
+    try {
+      hub.setEvents([ev("a", "Design sync", 9, 24), ev("b", "Jo / Alex", 17, 24), ev("c", "Ops review", 16, 24)], "2026-09-24");
+      hub.markScanned([{ title: "Ops review", start: new Date(2026, 8, 24, 16).toISOString() }], thu(17));
+      p.tick(thu(18)); // Jo / Alex ended 17:30: inside the hold
+      const card = () => hub.store.questions("open").find((q) => q.key === "reviews:eod:2026-09-24")!;
+      expect(card().context).toBe("- Design sync");
+      p.tick(thu(18, 30));
+      expect(card().context).toBe("- Design sync\n- Jo / Alex");
+    } finally {
+      config.sweeps.enabled = prev;
+    }
+  });
+
+  test("a scan takes meetings off the end-of-day card and closes it", () => {
+    hub.setEvents([ev("a", "Design sync", 9, 24)], "2026-09-24");
+    p.tick(thu(17, 40));
+    const q = hub.store.questions("open").find((q) => q.key === "reviews:eod:2026-09-24")!;
+    expect(hub.markScanned([{ title: "Design sync", start: new Date(2026, 8, 24, 9).toISOString() }], thu(17, 50))).toBe(1);
+    expect(hub.store.question(q.id)).toMatchObject({ status: "expired", answer: "transcript scanned" });
+    p.tick(thu(18));
+    expect(hub.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(0);
+    p.tick(new Date(2026, 8, 25, 7)); // and it doesn't come back in the morning
+    expect(hub.store.questions("open").filter((q) => q.kind === "review")).toHaveLength(0);
+  });
+
+  test("today's per-meeting card is left alone", () => {
     hub.setEvents([ev("t", "Standup", 9, 24)], "2026-09-24");
-    p.tick(thu(9, 40));
+    legacy("t", "Standup", thu(9, 40));
     p.tick(thu(10));
     const open = hub.store.questions("open").filter((q) => q.kind === "review");
     expect(open.map((q) => q.eventId)).toEqual(["t"]);
@@ -701,9 +759,9 @@ describe("meeting-ended cards from earlier days", () => {
   // 10-19: a 1-1 moved to a new series; the old instance's card stayed open beside the real one.
   test("today's card whose event left the calendar expires as 'event removed', not folded", () => {
     hub.setEvents([ev("old", "Jo / Sam", 9, 24), ev("new", "Jo / Sam", 9, 24)], "2026-09-24");
-    p.tick(thu(9, 40));
-    expect(hub.store.questions("open").filter((q) => q.kind === "review").map((q) => q.eventId).sort()).toEqual(["new", "old"]);
-    const old = hub.store.questions("open").find((q) => q.eventId === "old")!;
+    legacy("old", "Jo / Sam", thu(9, 40));
+    legacy("new", "Jo / Sam", thu(9, 40));
+    const old = hub.store.question("q-old")!;
     hub.store.replaceEvents("2026-09-24", "2026-09-24", [ev("new", "Jo / Sam", 9, 24)]); // next sync drops it
     p.tick(thu(10));
     expect(hub.store.questions("open").filter((q) => q.kind === "review").map((q) => q.eventId)).toEqual(["new"]);
@@ -716,9 +774,8 @@ describe("meeting-ended cards from earlier days", () => {
 
   test("an earlier day's card whose event is gone still folds", () => {
     hub.setEvents([ev("a", "Design sync", 9)], "2026-09-23");
-    p.tick(at(9, 40));
-    const q = hub.store.questions("open").find((q) => q.kind === "review")!;
-    hub.store.putQuestion({ ...q, createdAt: at(9, 40).toISOString() }); // asked yesterday, in test time
+    legacy("a", "Design sync", at(9, 40));
+    const q = hub.store.question("q-a")!;
     hub.store.replaceEvents("2026-09-23", "2026-09-23", []);
     p.tick(thu(7));
     expect(hub.store.question(q.id)).toMatchObject({ status: "expired", answer: "day moved on" });

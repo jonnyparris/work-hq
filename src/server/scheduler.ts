@@ -143,7 +143,7 @@ export class Scheduler {
       this.startSweep("calendar");
     }
     // A meeting with others ended 10–25 or 45–60 min ago (NOTES_WINDOWS_MIN) and nothing has scanned in that window
-    // yet: scan now, so its "anything you committed to?" card closes itself instead of waiting for the next cadence.
+    // yet: scan now, so a meeting with notes stays off the end-of-day "unrecorded meetings" card.
     if (sweepOn("transcripts") && this.meetingNotesDue()) {
       this.last.transcripts = Date.now();
       this.startSweep("transcripts");

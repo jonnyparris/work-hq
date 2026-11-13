@@ -107,7 +107,7 @@ export const api = {
   dispatch: (id: string, action: ActionKind, note?: string) => call("POST", `/api/items/${id}/dispatch`, { action, note }),
   schedule: (id: string, at: string, label?: string) => call("POST", `/api/items/${id}/schedule`, { at, label }),
   add: (title: string, status: ItemStatus = "today") => call("POST", "/api/items", { title, status }),
-  say: (text: string, mode: "chat" | "review" = "chat") => call<{ reply?: string }>("POST", "/api/say", { text, mode }),
+  say: (text: string, mode: "chat" | "review" = "chat", eventId?: string) => call<{ reply?: string }>("POST", "/api/say", { text, mode, ...(eventId ? { eventId } : {}) }),
   bulk: (req: BulkRequest) => call<{ count: number; skipped: number }>("POST", "/api/questions/bulk", req),
   sync: (name: string) => call("POST", `/api/sync/${name}`),
   recheck: () => call("POST", "/api/recheck"),

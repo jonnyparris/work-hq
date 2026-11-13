@@ -5,6 +5,7 @@
 import type { ActionKind, AwayBlock, CalendarEvent, Coaching, Item, Job, Question, QuestionOption, QuestionPick } from "../shared/types.ts";
 import { config, sweepOn } from "./config.ts";
 import { isAgentCard } from "../shared/boss.ts";
+import { REVIEW_HOLD_MIN, reviewable } from "../shared/meetings.ts";
 import { isOpen } from "./dedupe.ts";
 import { awayMs, type Hub } from "./hub.ts";
 import { localDate } from "./memory-sync.ts";
@@ -15,14 +16,12 @@ import { plain } from "./parse.ts";
 import { type PrRef, PrStates, prRefs } from "./pr-state.ts";
 import { openUrl } from "./prompts.ts";
 import { cardItemIds, isFoldCard, pruneFold } from "./stopped-fold.ts";
-import { readMeetings, redrawReviews, REVIEWS_PREFIX, reviewDigest, type StaleMeeting } from "./review-fold.ts";
+import { readMeetings, redrawReviews, REVIEWS_PREFIX, reviewDigest, type StaleMeeting, UNRECORDED_KEY } from "./review-fold.ts";
 import { isStaleProposedCard, sweepStaleProposals } from "./stale-proposals.ts";
 
 const MIN = 60_000;
 const DAY = 86_400_000;
-/** "X just ended" waits this long after the meeting: the end of the scheduler's last notes-sweep window
- * (NOTES_WINDOWS_MIN). 10-23: of 10 cards a scan closed in October, 3 closed by 25 min and 9 by 60. */
-export const REVIEW_HOLD_MIN = 60;
+export { REVIEW_HOLD_MIN };
 /** Why an out-of-office block expired a plan / prep / wrap card (holdForAway). cardDue skips those days: not ignored, just away. */
 export const OOO_EXPIRY = "out of office";
 /** Minutes after a meeting ends when the scheduler scans for its notes, once per window, if it's still unscanned. */
@@ -257,6 +256,8 @@ export class Prompter {
     // the budget sat at 0, and no proposal was asked for a week.
     const old = staleBefore(now);
     let budget = CAP.total - open.filter((q) => !deferred(q, now) && !isProposalCard(q) && !isStale(q, old)).length;
+    // Before the fold: a day rollover hands yesterday's unanswered meetings to the morning card.
+    const pending = this.unrecordedMeetings(now, stale);
     this.foldReviews(stale, now);
     if (this.foldStale(open, old, now)) budget--;
     // Proposed items nobody touched in two weeks: one card to retire or keep them (stale-proposals.ts). 11-06: 122 on
@@ -304,37 +305,8 @@ export class Prompter {
       );
     }
 
-    // 2. Meetings: prep is one morning card (askPrep, below); capture after.
-    for (const ev of this.hub.todayEvents(now)) {
-      if (ev.response === "declined") continue;
-      // Only you on the invite (e.g. a personal block mirrored from a personal address): not a meeting.
-      if (ev.attendees?.length && ev.attendees.every((a) => isOwner(a))) continue;
-      const end = Date.parse(ev.end);
-      // Never RSVP'd = probably didn't go. 1-1s are the exception: plenty of real ones never get accepted.
-      const attended = ev.response !== "needsAction" || ev.oneOnOne;
-      // The calendar sweep usually leaves you off the attendee list, so a real 1-1 has one attendee.
-      const meeting = ev.oneOnOne || (ev.attendees?.length ?? 0) > 1;
-      // Notes already scanned by the transcript sweep: it found whatever there was. Don't ask.
-      if (attended && meeting && end < now.getTime() && now.getTime() - end < 45 * MIN && !this.hub.wasScanned(ev)) {
-        this.ask({
-          kind: "review",
-          eventId: ev.id,
-          key: `review:${ev.id}`,
-          once: true,
-          priority: 70,
-          prompt: `${ev.title} just ended. Anything you committed to?`,
-          // Hold it until the last notes-sweep window (NOTES_WINDOWS_MIN: 10–25 and 45–60 min after the end) has closed,
-          // so a scan that finds the notes expires it unseen. Gemini notes often land after 25 min. 22 of 32 cards got "Nothing new" (10-22). The meeting row
-          // takes dictation meanwhile. No transcript sweep, nothing to wait for.
-          ...(sweepOn("transcripts") ? { notBefore: new Date(end + REVIEW_HOLD_MIN * MIN).toISOString() } : {}),
-          context: `Type or say it below — it goes straight to triage.${sweepOn("transcripts") ? " Meeting notes get scanned on the next sweep either way." : ""}`,
-          options: [
-            opt("scan", "Scan the transcript now", { type: "sweep", name: "transcripts" }, "primary"),
-            opt("none", "Nothing new", { type: "noop" }, "quiet"),
-          ],
-        });
-      }
-    }
+    // 2. Meetings: prep is one morning card (askPrep, below); capture is one end-of-day card (unrecordedMeetings above,
+    // asked with the wrap-up below). The meeting row takes dictation for REVIEW_HOLD_MIN after it ends (web Timeline).
 
     // 3. Morning plan, once per workday. Not while an out-of-office block covers now: a day off never gets it, and a
     // morning off gets it once you're back (still before noon). Prep (3b) and wrap-up (4) do the same, each over its
@@ -389,6 +361,11 @@ export class Prompter {
         ],
       });
     }
+    // 4a. Today's meetings with no notes found: one card beside the wrap-up, not one "X just ended" card each.
+    // 11-09..11-12: 6 of 7 answered per-meeting cards were "Nothing new", three tapped within 13 s, none typed.
+    // Not backed off with the wrap-up: what it lists rolls into tomorrow's morning card if it isn't asked or answered.
+    // Not asked while away, like the wrap-up; an open card still picks up meetings.
+    this.askUnrecorded(pending, today, workday && hour >= dayEnd - 1.5 && now.getTime() < wrapEnd && !away, now);
 
     // 4b. The coaching card's "one thing to try": at its time, ask whether it happened, once per reflection.
     // 10-17..10-19 the reflection kept finding the move hadn't happened, and only guessed why. The answer goes
@@ -874,6 +851,70 @@ export class Prompter {
   }
 
   /**
+   * Today's meetings that ended with nothing scanned (attended, with someone else, past the notes hold when the
+   * transcript sweep runs), kept in kv UNRECORDED_KEY so one that ends after the day's card was answered isn't lost. When
+   * the day rolls over, the meetings yesterday's card never got an answer for (still open, or never shown) go to
+   * `stale`, for the morning card (foldReviews); an open card expires. Returns today's list.
+   */
+  private unrecordedMeetings(now: Date, stale: StaleMeeting[]): StaleMeeting[] {
+    const store = this.hub.store;
+    const today = localDate(now);
+    let prev = readUnrecorded(this.hub);
+    if (prev && prev.day !== today) {
+      const card = store.openQuestionByKey(eodKey(prev.day));
+      // Still open: all of the day's list goes on (its card's list is a subset). Answered or closed: what wasn't on it.
+      const shown = card ? [] : (readMeetings(this.hub, eodKey(prev.day)) ?? []);
+      if (card) this.hub.expireQuestion(card.id, "day moved on");
+      stale.push(...prev.meetings.filter((m) => !shown.some((s) => sameMeeting(s, m))));
+      prev = undefined;
+    }
+    const seen = prev?.meetings ?? [];
+    const add: StaleMeeting[] = [];
+    const hold = sweepOn("transcripts") ? REVIEW_HOLD_MIN * MIN : 0;
+    for (const ev of this.hub.todayEvents(now)) {
+      if (ev.response === "declined") continue;
+      // Only you on the invite (e.g. a personal block mirrored from a personal address): not a meeting.
+      if (ev.attendees?.length && ev.attendees.every((a) => isOwner(a))) continue;
+      if (!reviewable(ev)) continue;
+      const end = Date.parse(ev.end);
+      // Wait out the last notes-sweep window (NOTES_WINDOWS_MIN): a scan that finds the notes keeps it off the card.
+      if (!(end + hold <= now.getTime()) || localDate(new Date(ev.start)) !== today) continue;
+      const m: StaleMeeting = { title: ev.title, day: today, start: ev.start, end: ev.end, eventId: ev.id };
+      if (seen.some((s) => sameMeeting(s, m)) || add.some((s) => sameMeeting(s, m)) || this.hub.wasScanned(ev)) continue;
+      // Its own "X just ended" card (asked before this card replaced it) has it, open or answered.
+      if (store.openQuestionByKey(`review:${ev.id}`) || store.lastAnswered(`review:${ev.id}`)) continue;
+      // You said what came out of it on its row (web Timeline): answered already.
+      if (this.hub.wasReviewed(ev)) continue;
+      add.push(m);
+    }
+    const meetings = [...seen, ...add].sort((a, b) => (a.start ?? a.day).localeCompare(b.start ?? b.day));
+    if (add.length || !prev) store.setKv(UNRECORDED_KEY, JSON.stringify({ day: today, meetings }));
+    return meetings;
+  }
+
+  /**
+   * The end-of-day card for `pending` (unrecordedMeetings), key reviews:eod:<day>. Asked while `due` (the wrap-up's
+   * window) until answered once that day; an open card picks up meetings that end later. Transcript scans take meetings off it
+   * (pruneReviews), like the morning card.
+   */
+  private askUnrecorded(pending: StaleMeeting[], today: string, due: boolean, now: Date) {
+    const key = eodKey(today);
+    const unread = pending.filter((m) => !m.start || !this.hub.wasScanned({ title: m.title, start: m.start }));
+    const card = this.hub.store.openQuestionByKey(key);
+    if (card) {
+      const on = readMeetings(this.hub, key);
+      if (!on) return; // unreadable list: leave the card as it is
+      const more = unread.filter((m) => !on.some((s) => sameMeeting(s, m)));
+      if (more.length) redrawReviews(this.hub, card, [...on, ...more].sort((a, b) => (a.start ?? a.day).localeCompare(b.start ?? b.day)), now);
+      return;
+    }
+    // Answered: once a day. Closed by a scan (every meeting on it read): a later meeting asks again.
+    if (!due || !unread.length || this.hub.store.lastAnswered(key)?.status === "answered") return;
+    const q = this.ask({ ...reviewDigest(unread, now, this.hub.sweepWindows()), key });
+    if (q) this.hub.store.setKv(key, JSON.stringify(unread));
+  }
+
+  /**
    * Fold "X just ended" cards from earlier days into one card. Nine in ten of these got "Nothing new"
    * in a bulk clear the next morning (10-15), but a few caught real commitments — so keep one question
    * with the titles and the typed-input path, instead of one tap per meeting.
@@ -1149,6 +1190,20 @@ export function prepCard(picks: QuestionPick[]) {
       opt("no", "None today", { type: "noop" }, "quiet"),
     ],
   };
+}
+
+/** The end-of-day card's key (and its meeting list's kv key). REVIEWS_PREFIX, so scans prune it and notes carry the list. */
+export const eodKey = (day: string) => `${REVIEWS_PREFIX}eod:${day}`;
+const sameMeeting = (a: StaleMeeting, b: StaleMeeting) => a.title === b.title && a.day === b.day && (a.start ?? "") === (b.start ?? "");
+
+function readUnrecorded(hub: Hub): { day: string; meetings: StaleMeeting[] } | undefined {
+  try {
+    const v = JSON.parse(hub.store.kv(UNRECORDED_KEY) || "null");
+    if (!v || typeof v.day !== "string" || !Array.isArray(v.meetings)) return undefined;
+    return { day: v.day, meetings: v.meetings.filter((m: StaleMeeting) => m && typeof m.title === "string" && typeof m.day === "string") };
+  } catch {
+    return undefined;
+  }
 }
 
 /** What a review card's typed note goes to triage with: the question, plus the meeting list for a folded card. */

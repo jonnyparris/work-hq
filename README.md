@@ -116,7 +116,7 @@ and cheap to run every 30 seconds. The model decides what things *mean*. The rul
 | **Meeting soon** | a small meeting or 1-1 starts in ≤ 20 min | offers a brief |
 | **🍍 Captured** | you said pineapple in a meeting transcript | confirm, dispatch, or "not mine" |
 | **Kill date** | ≤ 2 days to a decision deadline; an item scheduled for later waits for its slot | |
-| **Meeting ended** | ≤ 45 min after a meeting with others | "anything come out of it?" |
+| **Today's unrecorded meetings** | with the wrap-up, if meetings with others ended and no notes turned up | "anything come out of them?" — one card, not one per meeting |
 | **State unknown** | your notes admit they don't know | max 3 open |
 | **Still on it?** | an item on *doing* with no agent running and no open card, quiet for 4 work hours | Done / Waiting / Today / Drop; at most daily per item, max 3 open |
 | **Still waiting** | waiting on someone for > 3 days | |
@@ -155,9 +155,10 @@ The card you're writing on stays put. While the note field has focus or text, or
 question that arrives queues behind it and shows as **+N new**. The note is only cleared when you answer, send, skip
 or go back. If the card closes somewhere else, your note stays in the box, flagged, so the words aren't lost.
 
-It also tries not to ask twice. A *meeting ended* card closes itself once the transcript sweep has read that
-meeting's notes. The sweep runs 10–25 min after the meeting, and again at 45–60 min if the notes were still missing. The
-card waits until then, so most cards close before you see them. The same
+It also tries not to ask twice. A meeting goes on the *unrecorded meetings* card only if the transcript sweep hasn't
+read its notes. The sweep runs 10–25 min after the meeting, and again at 45–60 min if the notes were still missing. With
+the sweep on, the card waits that hour and the meeting's row takes dictation instead. Whatever the card didn't get an answer for moves to the next
+morning's card. The same
 work arriving from two places (memory rewords a todo, a transcript finds what an agent already filed) becomes
 one item. Something you dropped isn't brought back under a new title. Details: [architecture](docs/ARCHITECTURE.md#duplicates-across-sources-srcserverdedupets).
 

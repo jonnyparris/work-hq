@@ -166,11 +166,14 @@ const server = Bun.serve({
     "/api/say": {
       POST: (req) =>
         handle(async () => {
-          const b = await body<{ text: string; mode?: "chat" | "review"; voice?: boolean }>(req);
+          const b = await body<{ text: string; mode?: "chat" | "review"; voice?: boolean; eventId?: string }>(req);
           if (!b.text?.trim()) throw new Error("say something");
           const mode = b.mode === "review" ? "review" : "chat";
           hub.journal(b.text.trim(), { who: "you" });
-          return agents.triage(b.text.trim(), mode);
+          const r = await agents.triage(b.text.trim(), mode);
+          // A meeting row's words, triaged: that meeting is answered, keep it off the unrecorded-meetings card.
+          if (mode === "review" && typeof b.eventId === "string" && b.eventId) hub.markReviewed(b.eventId);
+          return r;
         }),
     },
 

@@ -16,7 +16,7 @@ import { findTwin, isOpen } from "./dedupe.ts";
 import { LoadLog, loadNow } from "./load.ts";
 import { stoppedJobNote } from "./prompts.ts";
 import { parseNextStep } from "./next-step.ts";
-import { pruneReviews } from "./review-fold.ts";
+import { dropMeeting, isMeeting, pruneReviews } from "./review-fold.ts";
 import { foldRest } from "./stopped-fold.ts";
 
 type Listener = (e: ServerEvent) => void;
@@ -1213,6 +1213,34 @@ export class Hub {
   scannedMeetings(): Array<{ title: string; start?: string; at: string }> {
     try {
       return JSON.parse(this.store.kv("scannedMeetings") ?? "[]");
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Words for this meeting went to triage from its row (/api/say with an eventId): keep it off the unrecorded card,
+   * and take it off an open one (a draft can outlive the row's hour). Kept 3 days. Returns the cards it closed.
+   */
+  markReviewed(eventId: string, now = new Date()) {
+    const keep = now.getTime() - 3 * 86400_000;
+    // Title and start too, while the event is still on the calendar: a twin instance (another id, a series re-created) counts as answered.
+    const ev = this.store.events().find((e) => e.id === eventId);
+    const row = { id: eventId, ...(ev ? { title: ev.title, start: ev.start } : {}), at: now.toISOString() };
+    const list = [...this.reviewedEvents().filter((r) => r.id !== eventId), row].filter((r) => Date.parse(r.at) > keep).slice(-200);
+    this.store.setKv("reviewedEvents", JSON.stringify(list));
+    // By id, so it works after the event left the calendar; rows without one by exact title and start.
+    return dropMeeting(this, isMeeting({ id: eventId, title: ev?.title, start: ev?.start }), now);
+  }
+
+  wasReviewed(ev: Pick<CalendarEvent, "id" | "title" | "start">) {
+    return this.reviewedEvents().some((r) => r.id === ev.id || (r.title === ev.title && r.start === ev.start));
+  }
+
+  private reviewedEvents(): Array<{ id: string; title?: string; start?: string; at: string }> {
+    try {
+      const v = JSON.parse(this.store.kv("reviewedEvents") ?? "[]");
+      return Array.isArray(v) ? v.filter((r) => r && typeof r.id === "string" && typeof r.at === "string") : [];
     } catch {
       return [];
     }

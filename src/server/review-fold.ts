@@ -1,6 +1,7 @@
 /**
- * The folded "Yesterday's meetings" card (`reviews:<date>`): meeting-ended cards from earlier days on one card, its
- * meeting list in kv under the same key. After every transcript sweep (hub.markScanned → pruneReviews), meetings the
+ * The folded "Yesterday's meetings" card (`reviews:<date>`): unanswered meetings from earlier days on one card, its
+ * meeting list in kv under the same key. Today's end-of-day card (`reviews:eod:<date>`, prompter askUnrecorded) is the
+ * same shape. After every transcript sweep (hub.markScanned → pruneReviews), meetings the
  * sweep read come off the card, the card closes once none are left, and it's redrawn against the sweeps' coverage.
  */
 import { localDay } from "../shared/batch.ts";
@@ -14,8 +15,8 @@ export const BACKFILL_DAYS = 7;
 /** A sweep this long after a meeting ended has had time to see its Gemini notes (they land ~10 min after). */
 export const NOTES_GRACE_MS = 30 * 60_000;
 
-/** A meeting-ended card folded into the morning digest. `start`/`end` (ISO) are absent on older kv rows. */
-export type StaleMeeting = { title: string; day: string; start?: string; end?: string };
+/** A meeting on a folded card. `start`/`end` (ISO) are absent on older kv rows; `eventId` on rows from the day's unrecorded list (prompter unrecordedMeetings), including ones folded onto the next morning's card; rows folded from the old per-meeting cards have none. Two events with the same title and start count as one meeting (isMeeting). */
+export type StaleMeeting = { title: string; day: string; start?: string; end?: string; eventId?: string };
 
 const opt = (id: string, label: string, effect: QuestionOption["effect"], tone?: QuestionOption["tone"]): QuestionOption => ({ id, label, effect, tone });
 
@@ -58,7 +59,7 @@ export function reviewsSince(meetings: Pick<StaleMeeting, "day">[], now = new Da
 }
 
 /**
- * The folded "earlier meetings" card. Titles live in the context so a typed note triages with them. `windows`: what
+ * The folded "earlier meetings" card, or the end-of-day one for today's (prompter askUnrecorded). Titles live in the context so a typed note triages with them. `windows`: what
  * recent transcript sweeps read; when they covered every meeting and found no notes, "Nothing new" is the main
  * button (the scan stays, second).
  */
@@ -66,7 +67,7 @@ export function reviewDigest(meetings: StaleMeeting[], now = new Date(), windows
   const days = [...new Set(meetings.map((m) => m.day))].sort();
   const yesterday = localDay(new Date(now.getTime() - DAY));
   const when =
-    days.length > 1 ? "Earlier meetings" : days[0] === yesterday ? "Yesterday's meetings" : `${new Date(`${days[0]}T12:00:00`).toLocaleDateString("en-GB", { weekday: "long" })}'s meetings`;
+    days.length > 1 ? "Earlier meetings" : days[0] === localDay(now) ? "Today's unrecorded meetings" : days[0] === yesterday ? "Yesterday's meetings" : `${new Date(`${days[0]}T12:00:00`).toLocaleDateString("en-GB", { weekday: "long" })}'s meetings`;
   const since = reviewsSince(meetings, now);
   const bare = meetings.length > 0 && meetings.every((m) => noNotes(m, windows));
   const scan = opt("scan", "Scan the transcripts now", { type: "sweep", name: "transcripts", ...(since ? { since } : {}) }, bare ? "quiet" : "primary");
@@ -87,7 +88,7 @@ const optIso = (v: unknown) => v === undefined || (typeof v === "string" && Numb
 const validMeeting = (m: unknown): m is StaleMeeting => {
   if (!m || typeof m !== "object") return false;
   const r = m as Record<string, unknown>;
-  return typeof r.title === "string" && validDay(r.day) && optIso(r.start) && optIso(r.end);
+  return typeof r.title === "string" && validDay(r.day) && optIso(r.start) && optIso(r.end) && (r.eventId === undefined || typeof r.eventId === "string");
 };
 
 /**
@@ -150,6 +151,44 @@ export function pruneReviews(hub: Hub, scanned: (ev: Pick<CalendarEvent, "title"
     // Closed only because what was left is out of reach: say so, not "transcript scanned".
     redrawReviews(hub, q, left, now, !left.length && unread.length === meetings.length && unread.length ? `older than ${BACKFILL_DAYS} days` : "transcript scanned");
     if (!left.length) closed++;
+  }
+  return closed;
+}
+
+/** kv: today's unrecorded meetings (`{ day, meetings }`), kept by Prompter.unrecordedMeetings for the end-of-day card. */
+export const UNRECORDED_KEY = "unrecordedMeetings";
+
+/**
+ * The rows that are this meeting: its eventId, or the exact title and start (older rows without an id, and a twin
+ * instance of it under another id; hub.wasReviewed counts the same). A row with neither can't be placed: never matched.
+ */
+export const isMeeting = (ev: { id: string; title?: string; start?: string }) => (m: StaleMeeting) =>
+  m.eventId === ev.id || Boolean(m.start && ev.start && ev.title !== undefined && m.title === ev.title && m.start === ev.start);
+
+/**
+ * One meeting was answered elsewhere (words from its row, hub.markReviewed): take the rows `match` picks (isMeeting)
+ * off every open folded card (closing one left empty, with `reason`) and off the day's unrecorded list, so the next
+ * tick doesn't put it back. Only matched rows go: nothing else on a card changes. Returns the cards it closed.
+ */
+export function dropMeeting(hub: Hub, match: (m: StaleMeeting) => boolean, now = new Date(), reason = "answered on its row") {
+  let closed = 0;
+  for (const q of hub.store.questions("open")) {
+    if (q.kind !== "review" || !q.key.startsWith(REVIEWS_PREFIX)) continue;
+    const meetings = readMeetings(hub, q.key);
+    if (!meetings) continue;
+    const left = meetings.filter((m) => !match(m));
+    if (left.length === meetings.length) continue;
+    redrawReviews(hub, q, left, now, reason);
+    if (!left.length) closed++;
+  }
+  try {
+    const v = JSON.parse(hub.store.kv(UNRECORDED_KEY) || "null");
+    if (v && Array.isArray(v.meetings)) {
+      const left = v.meetings.filter((m: StaleMeeting) => !(m && typeof m.title === "string" && match(m)));
+      if (left.length !== v.meetings.length) hub.store.setKv(UNRECORDED_KEY, JSON.stringify({ ...v, meetings: left }));
+    }
+  } catch {
+    // unreadable list: the prompter rewrites it on its next tick
   }
   return closed;
 }

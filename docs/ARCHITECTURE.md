@@ -218,7 +218,7 @@ server? Work HQ still runs; you just lose import and the flush.
 | Today's prep | work-hours morning (with the plan), weekday, today has 1-1s / 2–4 person meetings still to start; one card per day (`prep:<date>`), not while an out-of-office block covers now (an open card is held until a block ends, expired by one that runs to the end of the workday), tick-boxes per meeting, each tick dispatches `prep`; the list follows the calendar and the card expires once they've all started; backs off like Wrap up (an open card still follows the calendar). Replaced the per-meeting card 20 min before (17 of 19 expired, 10-22) | 75 |
 | Kill date | ≤ 2 days to a reflection kill date; skipped while the item is scheduled for later | 72–78 |
 | Agent asks | a dispatched agent needs a decision | 72 |
-| Meeting ended | ≤ 45 min after a meeting with others | 70 |
+| Today's unrecorded meetings | with Wrap up (weekday, from 90 min before the end of the day): today's attended meetings with others that ended (60 min ago when the transcript sweep runs) and that no scan read; one card per day (`reviews:eod:<date>`, its list in kv under the same key; the day's running list in kv `unrecordedMeetings`); words dictated on the meeting's row keep it off (kv `reviewedEvents`); a scan that closes it lets it come back for a later meeting, an answer doesn't; an open card picks up later meetings, a scan takes them off. At rollover, meetings it never got an answer for (still open, or ended after it was answered) go to the next morning's Yesterday's meetings card (`reviews:<date>`). Replaced one "X just ended" card per meeting (11-09..11-12: 6 of 7 answered were "Nothing new", none typed) | 70 |
 | Capture triage | new transcript item | 65 |
 | Still on it? | `doing`, no live job, no open card for the item, 4 work hours (weekdays, `sweeps.workHours`) since its last update / job finish / answered card; 24 h cooldown; expires when it leaves `doing` or a job starts | 62 (max 3 open) |
 | State unknown | memory admits it doesn't know | 60 (max 3 open) |
@@ -228,12 +228,12 @@ server? Work HQ still runs; you just lose import and the flush.
 | Reflection proposal | unconverted proposal (kept across nights until answered) | 45 (max 2 open) |
 | Draft to review / post idea | `post` item, proposed | 42 / 38 (max 2 open) |
 
-**Meeting ended** is skipped once a transcript sweep has read that meeting's notes. The sweep reports every
+**Unrecorded meetings** skip a meeting once a transcript sweep has read its notes. The sweep reports every
 meeting it read (`meetings` in its JSON) plus the meeting named on each item it made. Those are matched to the
-calendar by title and start time, and an open card closes with "transcript scanned". So the sweep runs 10–25 min
+calendar by title and start time, and come off an open card, which closes with "transcript scanned" when none are left. So the sweep runs 10–25 min
 after a meeting with others ends, and again at 45–60 min if that meeting is still unscanned (`NOTES_WINDOWS_MIN`),
 not only on its 30-min cadence. Gemini notes often land after 25 min: of 10 cards a scan closed in October, 3 closed
-by 25 min and 9 by 60. The card is held until 60 min (`REVIEW_HOLD_MIN`); the meeting row takes dictation meanwhile.
+by 25 min and 9 by 60. With the transcript sweep on, a meeting joins the card only after 60 min (`REVIEW_HOLD_MIN`); the meeting row takes dictation until then.
 
 **Typed notes are answers.** ⌘↵ in a question's note field posts to `/api/questions/:id/note`. "drop", "done"
 and "do it" map straight to an option. Anything else goes to a tool-less pi call (`notePrompt`). It returns one
