@@ -110,7 +110,7 @@ and cheap to run every 30 seconds. The model decides what things *mean*. The rul
 
 | Badge | When | |
 |---|---|---|
-| **Morning plan** | first look before noon | pick today's commitments |
+| **Morning plan** | first look before noon; ignored two workdays running → backs off like Wrap up | pick today's commitments |
 | **It's time** | a scheduled item is due | notifies |
 | **M5 move** | the coaching card's "one thing to try" time (the last HH:MM in its *when*, else 09:30) | once per reflection: Done / Hand to an agent / Not today, journaled for tonight's reflection |
 | **Meeting soon** | a small meeting or 1-1 starts in ≤ 20 min | offers a brief |
@@ -122,7 +122,7 @@ and cheap to run every 30 seconds. The model decides what things *mean*. The rul
 | **Still waiting** | waiting on someone for > 3 days | |
 | **Stale proposals** | proposed items nobody touched in 14 days (no status call, owner note, job or earlier keep; a later slot or a kill date keeps one off) | one card, at most once per 20 h: tick the ones to retire (dropped), the rest stay proposed and off the card for 14 days. Nothing is dropped without a tap |
 | **PR / MR merged · Ticket done** | waiting items whose GitLab MRs all merged and JIRA tickets are all done (status category Done) | one card for all, at most daily: mark all done, one by one, or keep waiting. A JIRA lookup that fails (stale Access token) keeps the item off |
-| **Wrap up** | 90 min before end of day | what actually happened |
+| **Wrap up** | 90 min before end of day. Ignored two days running → next one 2 days after the last, 4 after three or more; an answer resets it, a bare snooze doesn't (plan and prep too) | what actually happened |
 | **Post idea / Draft to review** | the weekly writing scout found something | never nags |
 
 At most 14 questions are open at once, so it asks rather than nags. End of the day and too many left?

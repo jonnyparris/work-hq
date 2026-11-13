@@ -56,6 +56,22 @@ describe("morning plan on out-of-office days", () => {
     expect(plans()).toHaveLength(1);
   });
 
+  // Back-off (cardDue): a card the OOO block expired isn't an ignored day. Ignored on the 21st, OOO-expired on the
+  // 22nd: the 23rd still gets its card (counted as ignored, the 22nd would make two in a row and skip it).
+  test("a plan card expired by an OOO block doesn't count towards the back-off", () => {
+    sweep([]);
+    p.tick(at(10, 0, 21));
+    p.tick(at(14, 0, 21)); // ignored: "day moved on"
+    p.tick(at(9, 0, 22));
+    expect(plans()).toHaveLength(1);
+    sweep([{ title: "Out of office", start: at(10, 0, 22).toISOString(), end: at(17, 0, 22).toISOString() }]);
+    p.tick(at(10, 30, 22));
+    expect(hub.store.questions().find((q) => q.key === "plan:2026-09-22")!.answer).toBe("out of office: Out of office");
+    sweep([]);
+    p.tick(at(10, 0, 23));
+    expect(plans().map((q) => q.key)).toEqual(["plan:2026-09-23"]);
+  });
+
   test("a sweep without `away`, or with only junk, keeps the last list; one with [] clears it", () => {
     sweep([{ title: "Out of office", start: at(0).toISOString(), end: at(0, 0, 24).toISOString() }]);
     hub.ingestReport({ summary: "other report", events: [] }, "calendar");

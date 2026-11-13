@@ -527,26 +527,87 @@ test("a snooze whose follow-up expires is still an ignored day", async () => {
   expect(open(28)).toBeUndefined();
 });
 
-test("wrapDue: one ignored day is forgiven, then 2- and 4-day gaps", async () => {
-  const { wrapDue } = await import("../src/server/prompter.ts");
+test("cardDue: one ignored day is forgiven, then 2- and 4-day gaps", async () => {
+  const { cardDue } = await import("../src/server/prompter.ts");
   const opts = [
     { id: "flush", label: "That's the truth — save it", effect: { type: "flushJournal" as const } },
     { id: "later", label: "Ask me in an hour", effect: { type: "snooze" as const, minutes: 60 } },
   ];
   const q = (day: string, status: "answered" | "expired", answer = status === "answered" ? opts[0]!.label : "day moved on") => ({ key: `wrap:${day}`, status, answer, options: opts });
   const x = (...days: string[]) => days.map((d) => q(d, "expired"));
-  expect(wrapDue([], "2026-10-28")).toBe(true);
-  expect(wrapDue(x("2026-10-27"), "2026-10-28")).toBe(true);
-  expect(wrapDue(x("2026-10-27", "2026-10-26"), "2026-10-28")).toBe(false);
-  expect(wrapDue(x("2026-10-27", "2026-10-26"), "2026-10-29")).toBe(true);
-  expect(wrapDue(x("2026-10-29", "2026-10-27", "2026-10-26"), "2026-11-01")).toBe(false);
-  expect(wrapDue(x("2026-10-29", "2026-10-27", "2026-10-26"), "2026-11-02")).toBe(true);
+  expect(cardDue("wrap:", [], "2026-10-28")).toBe(true);
+  expect(cardDue("wrap:", x("2026-10-27"), "2026-10-28")).toBe(true);
+  expect(cardDue("wrap:", x("2026-10-27", "2026-10-26"), "2026-10-28")).toBe(false);
+  expect(cardDue("wrap:", x("2026-10-27", "2026-10-26"), "2026-10-29")).toBe(true);
+  expect(cardDue("wrap:", x("2026-10-29", "2026-10-27", "2026-10-26"), "2026-11-01")).toBe(false);
+  expect(cardDue("wrap:", x("2026-10-29", "2026-10-27", "2026-10-26"), "2026-11-02")).toBe(true);
   // Answered (a typed note on the snooze counts too) breaks the streak; a bare snooze doesn't.
-  expect(wrapDue([...x("2026-10-27"), q("2026-10-27", "answered"), ...x("2026-10-26")], "2026-10-28")).toBe(true);
-  expect(wrapDue([...x("2026-10-27"), q("2026-10-27", "answered", "Ask me in an hour — busy"), ...x("2026-10-26")], "2026-10-28")).toBe(true);
-  expect(wrapDue([...x("2026-10-27"), q("2026-10-27", "answered", "Ask me in an hour"), ...x("2026-10-26")], "2026-10-28")).toBe(false);
+  expect(cardDue("wrap:", [...x("2026-10-27"), q("2026-10-27", "answered"), ...x("2026-10-26")], "2026-10-28")).toBe(true);
+  expect(cardDue("wrap:", [...x("2026-10-27"), q("2026-10-27", "answered", "Ask me in an hour — busy"), ...x("2026-10-26")], "2026-10-28")).toBe(true);
+  expect(cardDue("wrap:", [...x("2026-10-27"), q("2026-10-27", "answered", "Ask me in an hour"), ...x("2026-10-26")], "2026-10-28")).toBe(false);
   // Today's own card never counts against today.
-  expect(wrapDue(x("2026-10-28", "2026-10-27"), "2026-10-28")).toBe(true);
+  expect(cardDue("wrap:", x("2026-10-28", "2026-10-27"), "2026-10-28")).toBe(true);
+});
+
+test("cardDue: only <prefix><date> keys count; an out-of-office expiry isn't an ignored day", async () => {
+  const { cardDue } = await import("../src/server/prompter.ts");
+  const q = (key: string, answer = "day moved on") => ({ key, status: "expired" as const, answer, options: [] });
+  // Pre-10-26 per-meeting prep cards (prep:<eventId>) aren't days.
+  expect(cardDue("prep:", [q("prep:01df4g86_20261020T153000Z", "meeting started"), q("prep:3lk108upp31f", "meeting started"), q("prep:2026-10-27")], "2026-10-28")).toBe(true);
+  expect(cardDue("prep:", [q("prep:2026-10-27", "meetings started"), q("prep:2026-10-26", "meetings started")], "2026-10-28")).toBe(false);
+  // Other prefixes don't leak in.
+  expect(cardDue("plan:", [q("wrap:2026-10-27"), q("wrap:2026-10-26")], "2026-10-28")).toBe(true);
+  // Out of office: the day is skipped, so the streak runs across it.
+  expect(cardDue("plan:", [q("plan:2026-10-27", "out of office: Leave"), q("plan:2026-10-26")], "2026-10-28")).toBe(true);
+  expect(cardDue("plan:", [q("plan:2026-10-27"), q("plan:2026-10-26", "out of office: Leave"), q("plan:2026-10-23")], "2026-10-28")).toBe(false);
+});
+
+// 11-09..11-12: four plan cards expired "day moved on". Two ignored → no card day 3; any answer resets.
+test("morning plan backs off after two ignored days, and an answer resets it", async () => {
+  const planOn = (m: number, d: number) => {
+    p.tick(new Date(2026, m, d, 10));
+    const q = hub.store.openQuestionByKey(`plan:2026-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`);
+    p.tick(new Date(2026, m, d, 14)); // expires it: "day moved on"
+    return q;
+  };
+  expect([26, 27, 28, 29, 30].map((d) => !!planOn(9, d))).toEqual([true, true, false, true, false]);
+  p.tick(new Date(2026, 10, 2, 10));
+  const mon = hub.store.openQuestionByKey("plan:2026-11-02")!;
+  expect(mon).toBeTruthy(); // four days after 10-29
+  await hub.answer(mon.id, "plan");
+  expect(!!planOn(10, 3)).toBe(true); // answered → daily again
+  expect(!!planOn(10, 4)).toBe(true); // one ignored day is forgiven
+});
+
+test("a backed-off morning reads the history once per prefix per day, not every tick", () => {
+  for (const d of [26, 27]) (p.tick(new Date(2026, 9, d, 10)), p.tick(new Date(2026, 9, d, 14)));
+  const reads: string[] = [];
+  const orig = hub.store.closedByPrefix.bind(hub.store);
+  hub.store.closedByPrefix = (prefix: string, limit?: number) => (reads.push(prefix), orig(prefix, limit));
+  for (let m = 0; m < 120; m += 5) p.tick(new Date(2026, 9, 28, 10, m));
+  expect(hub.store.openQuestionByKey("plan:2026-10-28")).toBeUndefined();
+  expect(reads.filter((x) => x === "plan:")).toHaveLength(1);
+  p.tick(new Date(2026, 9, 29, 10));
+  expect(reads.filter((x) => x === "plan:")).toHaveLength(2); // a new day works it out again
+  expect(hub.store.openQuestionByKey("plan:2026-10-29")).toBeTruthy();
+});
+
+test("morning prep backs off after two ignored days; an open card still follows the calendar", () => {
+  const oneOnOne = (m: number, d: number, h = 15, id = `e${m}-${d}`) => ({ id, title: "1-1 Kevin", start: new Date(2026, m, d, h).toISOString(), end: new Date(2026, m, d, h, 30).toISOString(), attendees: ["Kevin"], oneOnOne: true });
+  const prepOn = (d: number) => {
+    hub.setEvents([oneOnOne(9, d)], `2026-10-${d}`);
+    p.tick(new Date(2026, 9, d, 10));
+    const q = hub.store.openQuestionByKey(`prep:2026-10-${d}`);
+    p.tick(new Date(2026, 9, d, 15, 5)); // the meeting started: "meetings started"
+    return q;
+  };
+  expect([26, 27, 28, 29].map((d) => !!prepOn(d))).toEqual([true, true, false, true]);
+  expect(hub.store.questions().find((q) => q.key === "prep:2026-10-29")!.status).toBe("expired");
+  // Due again on 11-02 (four days after 10-29). Asked in the morning and still open after noon: it keeps following the calendar.
+  hub.setEvents([oneOnOne(10, 2), oneOnOne(10, 2, 17, "late")], "2026-11-02");
+  p.tick(new Date(2026, 10, 2, 10));
+  p.tick(new Date(2026, 10, 2, 15, 5));
+  expect(hub.store.openQuestionByKey("prep:2026-11-02")!.picks!.map((x) => x.id)).toEqual(["late"]);
 });
 
 test("morning plan not re-asked after it's answered", async () => {

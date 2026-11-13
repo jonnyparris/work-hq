@@ -79,6 +79,14 @@ export const ERROR_GRACE_MS = 180_000;
 /** A cmux job with no workspace that has written no beacon this long after it started is failed (see pollCmux). */
 export const NO_BEACON_MS = 30 * 60_000;
 export const NO_BEACON_ERROR = "no session beacon: never started or lost in a restart";
+/**
+ * A cmux job's workspace counts as closed only when the job started (or was adopted) at least WORKSPACE_GONE_MIN_MS
+ * ago and `cmux tree` snapshots have missed it in a row for WORKSPACE_GONE_SPAN_MS: about five snapshots at pollCmux's
+ * 3 s, never fewer than two. The first tree after a launch can miss the new workspace (11-09: job_mw9g8jfbhh74g got
+ * "workspace closed" 0.18 s after launch, then reported done; 14 such false cards by 11-11).
+ */
+export const WORKSPACE_GONE_MIN_MS = 60_000;
+export const WORKSPACE_GONE_SPAN_MS = 10_000;
 /** A cmux session only gets the shared gateway token if it has at least this long left (see GatewayToken.env). */
 export const CMUX_TOKEN_TTL_MS = 24 * 3600_000;
 const RESUME_NUDGE = "Your last request failed on a provider rate limit. Carry on from where you stopped.";
@@ -117,6 +125,9 @@ interface Running {
   errored?: { at: number; seq: number };
   /** cmux: last settled turn (beacon seq) already passed to noteGateway. */
   gatewaySeq?: number;
+  /** cmux: `cmux tree` snapshots in a row that didn't list the job's workspace, and when the first of them was taken (see WORKSPACE_GONE_MIN_MS). */
+  missing?: number;
+  missingAt?: number;
 }
 
 export interface TriageResult {
@@ -178,6 +189,8 @@ export interface CmuxDeps {
   closeWorkspace?: (id: string) => unknown;
   /** Type a line into a workspace (the retry nudges). Defaults to cmux.sendLine; tests stub it. */
   send?: typeof cmux.sendLine;
+  /** Ids and refs of every open workspace, undefined if cmux couldn't list. Defaults to cmux.liveWorkspaces. */
+  liveWorkspaces?: typeof cmux.liveWorkspaces;
   /** Boot only: is cmux configured at all? No binary means no point waiting for it. Defaults to true. */
   installed?(): boolean;
   /** Boot only: a ping that doesn't block the event loop. Defaults to available(). */
@@ -718,7 +731,7 @@ export class Agents implements Dispatcher {
   pollCmux() {
     this.cap.pump(); // catches status changes that bypassed patch() (direct putJob, restarts)
     if (![...this.running.values()].some((r) => r.statusPath)) return;
-    const live = cmux.liveWorkspaces();
+    const live = (this.cmuxDeps.liveWorkspaces ?? cmux.liveWorkspaces)();
     // Workspace lookup for jobs past the no-beacon limit: one `cmux tree` per tick, only when one needs it.
     // false = cmux couldn't list workspaces.
     let tree: { jobId: string; id: string }[] | null | undefined;
@@ -737,7 +750,20 @@ export class Agents implements Dispatcher {
         continue;
       }
       const b = cmux.readBeacon(r.statusPath);
-      if (live && job.workspace && !live.has(job.workspace)) {
+      // Gone only when missing from snapshots in a row for WORKSPACE_GONE_SPAN_MS (two at least), a minute or more after
+      // start. A tick where cmux can't list neither counts nor resets.
+      if (live && job.workspace && live.has(job.workspace)) r.missing = r.missingAt = undefined;
+      else if (live && job.workspace) {
+        r.missing = (r.missing ?? 0) + 1;
+        r.missingAt ??= Date.now();
+      }
+      // Every writer stores ISO times; an unparseable one counts the minute from adoption, else from the first miss.
+      const parsed = Date.parse(job.startedAt ?? job.createdAt);
+      const started = Number.isFinite(parsed) ? Math.max(parsed, r.adoptedAt ?? 0) : (r.adoptedAt ?? r.missingAt ?? Infinity);
+      if (
+        live && job.workspace && (r.missing ?? 0) >= 2 && r.missingAt !== undefined &&
+        Date.now() - r.missingAt >= WORKSPACE_GONE_SPAN_MS && Date.now() - started >= WORKSPACE_GONE_MIN_MS
+      ) {
         this.running.delete(id);
         this.finishAction(id, { ok: job.reported ?? false, text: "", error: job.reported ? undefined : "workspace closed" });
         continue;

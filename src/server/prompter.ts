@@ -22,6 +22,8 @@ const DAY = 86_400_000;
 /** "X just ended" waits this long after the meeting: the end of the scheduler's last notes-sweep window
  * (NOTES_WINDOWS_MIN). 10-23: of 10 cards a scan closed in October, 3 closed by 25 min and 9 by 60. */
 export const REVIEW_HOLD_MIN = 60;
+/** Why an out-of-office block expired the plan card. cardDue skips those days: not ignored, just away. */
+export const OOO_EXPIRY = "out of office";
 /** Minutes after a meeting ends when the scheduler scans for its notes, once per window, if it's still unscanned. */
 export const NOTES_WINDOWS_MIN: ReadonlyArray<readonly [number, number]> = [[10, 25], [45, REVIEW_HOLD_MIN]];
 
@@ -130,6 +132,12 @@ export class Prompter {
     /** GitHub PR state for items that link a PR. Tests pass a stubbed fetch. */
     readonly prs = new PrStates(),
   ) {}
+
+  /**
+   * cardDue's answer per `<prefix><today>` (dueToday), one entry per prefix. Safe for the day because expireMoot, at the
+   * top of tick(), closes earlier days' plan/prep/wrap cards before step 3 reads their history.
+   */
+  private dueCache = new Map<string, boolean>();
 
   /**
    * Has everything the item links to landed? Every MR and GitHub PR merged and every JIRA ticket done → Landed.
@@ -328,9 +336,10 @@ export class Prompter {
     const away = this.hub.awayAt(now);
     const noon = atLocal(12, 0, 0, now).getTime();
     const openPlan = away && awayMs(away.start) < noon ? this.hub.store.openQuestionByKey(`plan:${today}`) : undefined;
-    if (openPlan && away && awayMs(away.end) >= noon) this.hub.expireQuestion(openPlan.id, `out of office: ${away.title || "calendar"}`);
+    if (openPlan && away && awayMs(away.end) >= noon) this.hub.expireQuestion(openPlan.id, `${OOO_EXPIRY}: ${away.title || "calendar"}`);
     else if (openPlan && away && !(openPlan.notBefore && Date.parse(openPlan.notBefore) >= awayMs(away.end))) this.hub.park(openPlan, new Date(awayMs(away.end)).toISOString());
-    if (workday && hour >= dayStart && hour < 12 && !away) {
+    // Ignored two days running → back off, like the wrap-up (cardDue). 11-09..11-12: four plan cards expired unanswered.
+    if (workday && hour >= dayStart && hour < 12 && !away && this.dueToday("plan:", today)) {
       this.ask({
         kind: "plan",
         key: `plan:${today}`,
@@ -347,14 +356,14 @@ export class Prompter {
 
     // 3b. Prep: one card for the day's 1-1s and small meetings, after the plan.
     // Asked before noon only, but an open card keeps following the calendar all day (drops started meetings, expires).
-    if (workday && hour >= dayStart && (hour < 12 || this.hub.store.openQuestionByKey(`prep:${today}`))) this.askPrep(now, today);
+    // Ignored two days running → back off (cardDue); an open card still follows the calendar.
+    if (workday && hour >= dayStart && (this.hub.store.openQuestionByKey(`prep:${today}`) || (hour < 12 && this.dueToday("prep:", today)))) this.askPrep(now, today);
 
-    // 4. Wrap-up, once per workday, 90 min before the end of the day. Ignored two days running → back off (wrapDue).
+    // 4. Wrap-up, once per workday, 90 min before the end of the day. Ignored two days running → back off (cardDue).
     // The journal still flushes on the scheduler's cadence on a skipped day; only the "is this the truth" check is lost.
     // Today's card already exists: ask() won't re-ask it (once), so skip the history query on every later tick.
     const wrapKey = `wrap:${today}`;
-    const wrapAsked = () => !!(this.hub.store.openQuestionByKey(wrapKey) || this.hub.store.lastAnswered(wrapKey));
-    if (workday && hour >= dayEnd - 1.5 && hour < dayEnd + 3 && (wrapAsked() || wrapDue(this.hub.store.closedByPrefix("wrap:", 100), today))) {
+    if (workday && hour >= dayEnd - 1.5 && hour < dayEnd + 3 && this.dueToday("wrap:", today)) {
       this.ask({
         kind: "wrap",
         key: wrapKey,
@@ -755,6 +764,22 @@ export class Prompter {
     if (picks.length) this.ask({ ...prepCard(picks), key, once: true });
   }
 
+  /**
+   * May today's daily `<prefix><today>` card be asked? Already asked today (open or closed): yes, ask() dedupes it.
+   * Else the back-off over earlier days (cardDue), worked out once per day: a backed-off morning ticks every 30 s.
+   */
+  private dueToday(prefix: string, today: string) {
+    const key = `${prefix}${today}`;
+    if (this.hub.store.openQuestionByKey(key) || this.hub.store.lastAnswered(key)) return true;
+    let due = this.dueCache.get(key);
+    if (due === undefined) {
+      due = cardDue(prefix, this.hub.store.closedByPrefix(prefix, 100), today);
+      for (const k of this.dueCache.keys()) if (k.startsWith(prefix)) this.dueCache.delete(k);
+      this.dueCache.set(key, due);
+    }
+    return due;
+  }
+
   private ask(q: Omit<Question, "id" | "status" | "createdAt"> & { cooldownMin?: number; once?: boolean }, notify = false) {
     const created = this.hub.ask(q);
     if (created) this.open.push(created);
@@ -1050,19 +1075,23 @@ export function reviewUtterance(q: Pick<Question, "prompt" | "key" | "context">,
 const PUSH_1H = "Push 1 hour";
 
 /**
- * Should today's wrap-up be asked? `closed`: closed `wrap:<date>` questions, any order (the caller passes the 100
- * most recently closed; only the trailing run of ignored days matters). A day counts as answered when one of its
+ * Should today's daily card (`wrap:`, `plan:`, `prep:` + date) be asked? `closed`: closed `<prefix><date>` questions,
+ * any order (the caller passes the 100 most recently closed; only the trailing run of ignored days matters). Keys
+ * that aren't `<prefix>YYYY-MM-DD` are skipped (pre-10-26 per-meeting `prep:<eventId>` cards). A card expired by an
+ * out-of-office block wasn't ignored: that day doesn't count either way. A day counts as answered when one of its
  * cards got a real answer: a bare "Ask me in an hour" whose follow-up then expired is still an ignored day, but a
  * snooze with typed text counts (deliberate: he wrote something, so he's reading the card). One ignored day is forgiven (busy,
  * OOO). Two in a row: wait 2 calendar days after the last card; three or more: 4 (a Thursday miss skips to Monday).
  * An answer resets it to daily. 10-26..10-30 every card expired unanswered; with this, that week asks 10-26, 10-27
- * and 10-29 only, and 11-02 (answered) still gets its card.
+ * and 10-29 only, and 11-02 (answered) still gets its card. Plan and prep got it 11-12: plan answered 1 of 6 days
+ * that week, prep 58 of 68 unanswered since September.
  */
-export function wrapDue(closed: Pick<Question, "key" | "status" | "answer" | "options">[], today: string) {
+export function cardDue(prefix: string, closed: Pick<Question, "key" | "status" | "answer" | "options">[], today: string) {
   const days = new Map<string, boolean>();
   for (const q of closed) {
-    const day = q.key.slice("wrap:".length);
-    if (!q.key.startsWith("wrap:") || day >= today) continue;
+    const day = q.key.slice(prefix.length);
+    if (!q.key.startsWith(prefix) || !/^\d{4}-\d{2}-\d{2}$/.test(day) || day >= today) continue;
+    if (q.status === "expired" && q.answer?.startsWith(OOO_EXPIRY)) continue;
     const snoozed = q.options.some((o) => o.effect.type === "snooze" && o.label === q.answer);
     days.set(day, (days.get(day) ?? false) || (q.status === "answered" && !snoozed));
   }
