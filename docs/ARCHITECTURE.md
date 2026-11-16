@@ -192,7 +192,10 @@ Each source has its own stable key (`memory:active-todos:<slug>`, `transcript:<d
 so re-imports update in place. The same work can still arrive under two keys: memory rewords a todo, a
 transcript sweep finds what an agent already filed, a proposal comes back as a todo. Before creating an
 item, `findTwin` compares title tokens with the open items and with anything you closed in the last 14 days.
-The thresholds are strict on purpose: titles that name different tickets never match.
+The thresholds are strict on purpose: titles that name different tickets never match. Dates, times and
+1-2 digit counters ("10-27 09:58", "day 8") don't count as words, since memory rewrites them when it rewords
+a todo; titles whose small numbers differ need 4 shared words, not 3. Titles that both have 3+ digit numbers
+(ids, amounts, years) and share none are different work, like different tickets. Accents are folded ("Apéro" = "Apero").
 
 - Twin is open → the new one is merged into it (links and people added, title and status kept).
 - Twin is one you closed → it isn't re-added. The journal says so (`Not re-adding …`).

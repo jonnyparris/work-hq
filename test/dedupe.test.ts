@@ -18,12 +18,30 @@ describe("sameWork", () => {
     ["Send Mo a wish list of product-support asks (Delta, Pre-render, others)", "Send Mo the product-support wish list"],
     ["Check that new reviewer notes follow the template (spot-check about 5)", "Spot-check ~5 new reviewer notes against the e14a7fa1 template"],
     ["Write up Acme product bets on the wiki (from recent meeting transcripts)", "Acme product bets → wiki"],
+    // Memory rewords the date/time suffix; bare numbers must not split one item into two.
+    ['Blog "Give your agents their own chat room": re-committed by you 10-27 09:58', 'Blog "Give your agents their own chat room": final kill 2026-11-11'],
+    ["Apéro sign-up for the Acme team", "Apero sign-up for the Acme team 11-20"],
+    ["PAY-1899 (fed entitlements): Action Needed on you, day 8", "PAY-1899 (fed entitlements): Action Needed on you since 10-28 (day 11), 10th file"],
   ];
   const different: Array<[string, string]> = [
     ["Sam mentioned you on PAY-1741: answer, hand to the owner, or ignore", "Kai mentioned you on SEC-130437: answer, hand to the owner, or ignore"],
     ["Prep: Sofia / Alex 1-1", "Prep: Beatriz / Alex 1-1"],
     ["CDFZG 09-24 (notes-only, lower confidence)", "Apéro 09-18 items (notes-only, lower confidence)"],
     ["Escalate GTG engineering resourcing to Dane", "GTG escalations still route to you as Eng Owner"],
+    // Shared date and time only: not the same meeting.
+    ["Mon 11-09 09:30", "Robin (Acme): scheduled by you Mon 11-16 09:30"],
+    // 3+ digit numbers (ids, amounts, years, rooms) still tell work apart; so do MR numbers (refs()).
+    ["Check room 101 Acme", "Check room 102 Acme"],
+    ["Pay invoice 1042 for Acme", "Pay invoice 2231 for Acme"],
+    ["Renew Acme license 2025", "Renew Acme license 2026"],
+    ["Pay invoice 1042 for Acme dashboard hosting", "Pay invoice 2231 for Acme dashboard hosting"],
+    ["Port 8080 for Acme service restart", "Port 8081 for Acme service restart"],
+    // Small numbers don't count as words, but on short titles they still tell work apart.
+    ["Check room 4 Acme", "Check room 12 Acme"],
+    ["Deploy Acme on port 80", "Deploy Acme on port 81"],
+    ["Review !1234: Acme dashboard empty state", "Review !1235: Acme dashboard empty state"],
+    // Ticket keys still separate otherwise-identical titles.
+    ["PAY-1899 (fed entitlements): Action Needed on you, day 8", "PAY-1900 (fed entitlements): Action Needed on you, day 8"],
   ];
   for (const [a, b] of same) test(`same: ${a}`, () => expect(sameWork(a, b)).toBe(true));
   for (const [a, b] of different) test(`different: ${a}`, () => expect(sameWork(a, b)).toBe(false));
