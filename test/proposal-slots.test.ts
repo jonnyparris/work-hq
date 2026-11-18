@@ -77,6 +77,55 @@ describe("stale cards", () => {
     expect(workdaysAgo(1, new Date(2026, 8, 21, 9, 0)).toString()).toBe(new Date(2026, 8, 18, 9, 0).toString()); // Mon → Fri
   });
 
+  // 11-14/15: the cutoff kept the time of day on Sat/Sun, jumped back a day at midnight, and the stale card emptied at
+  // 00:00 and reopened three times.
+  test("workdaysAgo stands still over the weekend and never moves back", () => {
+    const sat = workdaysAgo(3, new Date(2026, 8, 19, 9, 30)).getTime(); // Sat 09-19
+    expect(workdaysAgo(3, new Date(2026, 8, 20, 20, 0)).getTime()).toBe(sat); // Sun 20:00
+    expect(sat).toBe(new Date(2026, 8, 16).getTime()); // from Fri midnight: Wed 00:00
+    let prev = -Infinity;
+    for (let t = new Date(2026, 8, 18, 9, 0).getTime(); t <= new Date(2026, 8, 21, 12, 0).getTime(); t += 15 * 60_000) {
+      const cut = workdaysAgo(3, new Date(t)).getTime();
+      expect(cut).toBeGreaterThanOrEqual(prev);
+      prev = cut;
+    }
+  });
+
+  test("a new stale card waits for work time: not at the weekend or outside work hours", () => {
+    card(old);
+    p.tick(new Date(2026, 8, 26, 9, 30)); // Sat
+    p.tick(new Date(2026, 8, 27, 20, 0)); // Sun
+    p.tick(new Date(2026, 8, 28, 7, 59)); // Mon, before dayStart (8)
+    expect(staleCard()).toBeUndefined();
+    p.tick(new Date(2026, 8, 28, 8, 0));
+    expect(staleCard()).toBeDefined();
+  });
+
+  test("a new stale card waits after dayEnd and through an out-of-office block", () => {
+    card(old);
+    p.tick(new Date(2026, 8, 22, 20, 4)); // Tue, after dayEnd (19)
+    expect(staleCard()).toBeUndefined();
+    hub.ingestReport({ summary: "1 event", events: [], away: [{ title: "OOO", start: "2026-09-23", end: "2026-09-24" }] } as any, "calendar");
+    p.tick(now); // Wed 15:00, away all day
+    expect(staleCard()).toBeUndefined();
+    p.tick(new Date(2026, 8, 24, 10, 0)); // Thu, back
+    expect(staleCard()).toBeDefined();
+  });
+
+  test("an open stale card keeps its rows over the weekend midnights", () => {
+    card(new Date(2026, 8, 15, 12, 0).toISOString()); // Tue 09-15 12:00
+    p.tick(new Date(2026, 8, 18, 15, 0)); // Fri: cutoff Tue 15:00
+    const s = staleCard()!;
+    const rows = s.picks!.map((x) => x.id);
+    // Wed 12:00: the old cutoff (Wed, weekend time of day) took it in at Sat 20:00 and dropped it at Sun 00:00.
+    card(new Date(2026, 8, 16, 12, 0).toISOString());
+    for (const [d, h, m] of [[19, 0, 0], [19, 20, 0], [20, 0, 0], [20, 20, 0], [21, 0, 0], [21, 9, 30]] as const) {
+      p.tick(new Date(2026, 8, d, h, m));
+      expect(staleCard()?.id).toBe(s.id);
+      expect(staleCard()!.picks!.map((x) => x.id)).toEqual(rows);
+    }
+  });
+
   test("cards older than 3 workdays don't count against the cap; they fold into one card", () => {
     const stale = Array.from({ length: 14 }, () => card(old));
     card(new Date(2026, 8, 18, 16, 0).toISOString()); // Fri 16:00: under 3 workdays, counts

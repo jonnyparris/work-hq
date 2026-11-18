@@ -261,7 +261,11 @@ describe("answers", () => {
     const q = card()!;
     hub.store.putQuestion({ ...q, createdAt: daysAgo(10) });
     hub.store.putQuestion({ id: "q_old_agent", kind: "open", key: "agent:old", prompt: "old agent question", options: [], priority: 80, status: "open", createdAt: daysAgo(10) });
-    new Prompter(hub).tick(now);
+    // A new stale card waits for work time: tick at the next weekday noon, not the wall clock.
+    const noon = new Date(now);
+    noon.setHours(12, 0, 0, 0);
+    while (noon.getDay() === 0 || noon.getDay() === 6) noon.setDate(noon.getDate() + 1);
+    new Prompter(hub).tick(noon);
     const picks = hub.store.openQuestionByKey("stale")!.picks!.map((p) => p.id);
     expect(picks).toContain("q_old_agent");
     expect(picks).not.toContain(q.id);

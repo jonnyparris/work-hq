@@ -255,19 +255,19 @@ export class Prompter {
     // stale card (foldStale) instead: neither counts. 10-24..11-01: 8 of 15 open cards were over 3 workdays old,
     // the budget sat at 0, and no proposal was asked for a week.
     const old = staleBefore(now);
-    let budget = CAP.total - open.filter((q) => !deferred(q, now) && !isProposalCard(q) && !isStale(q, old)).length;
-    // Before the fold: a day rollover hands yesterday's unanswered meetings to the morning card.
-    const pending = this.unrecordedMeetings(now, stale);
-    this.foldReviews(stale, now);
-    if (this.foldStale(open, old, now)) budget--;
-    // Proposed items nobody touched in two weeks: one card to retire or keep them (stale-proposals.ts). 11-06: 122 on
-    // Proposed, 87 over two weeks old, and no rule ever aged one out. Its own slot, like the stale card.
-    if (sweepStaleProposals(this.hub, items, this.open, now)) budget--;
-
     const hour = now.getHours() + now.getMinutes() / 60;
     const [dayStart, dayEnd] = config.sweeps.workHours;
     const workday = isWorkday(now);
     const today = localDate(now);
+    const away = this.hub.awayAt(now);
+    let budget = CAP.total - open.filter((q) => !deferred(q, now) && !isProposalCard(q) && !isStale(q, old)).length;
+    // Before the fold: a day rollover hands yesterday's unanswered meetings to the morning card.
+    const pending = this.unrecordedMeetings(now, stale);
+    this.foldReviews(stale, now);
+    if (this.foldStale(open, old, now, workday && hour >= dayStart && hour < dayEnd && !away)) budget--;
+    // Proposed items nobody touched in two weeks: one card to retire or keep them (stale-proposals.ts). 11-06: 122 on
+    // Proposed, 87 over two weeks old, and no rule ever aged one out. Its own slot, like the stale card.
+    if (sweepStaleProposals(this.hub, items, this.open, now)) budget--;
 
     // Items an agent is already working on (verify leaves them in inbox): don't re-ask and re-dispatch.
     const busy = new Set(store.liveJobs().map((j) => j.itemId).filter(Boolean));
@@ -312,7 +312,6 @@ export class Prompter {
     // morning off gets it once you're back (still before noon). Prep (3b) and wrap-up (4) do the same, each over its
     // own window (the workday; the wrap-up window).
     // A card asked before the sweep reported the block: holdForAway.
-    const away = this.hub.awayAt(now);
     const noon = atLocal(12, 0, 0, now).getTime();
     this.holdForAway(`plan:${today}`, away, noon);
     // Ignored two days running → back off, like the wrap-up (cardDue). 11-09..11-12: four plan cards expired unanswered.
@@ -945,9 +944,10 @@ export class Prompter {
    * cards themselves stay open (an agent's question or a due slot keeps its buttons), they just stop counting
    * against the total (the budget in `tick`). "Keep them" remembers those cards, so the next stale card lists only new ones.
    * An open stale card follows the board: cards closed elsewhere drop off, newly stale ones join, it goes when
-   * none are left. Returns whether it asked a new card.
+   * none are left, at any hour. A new one waits for `workTime` (a workday, inside work hours, no out-of-office block):
+   * 11-04 22:19, 11-10 23:45 and three weekend cards (11-14/15) went unanswered. Returns whether it asked a new card.
    */
-  private foldStale(open: Question[], old: number, now: Date): boolean {
+  private foldStale(open: Question[], old: number, now: Date, workTime: boolean): boolean {
     const store = this.hub.store;
     const kept = this.staleKept(open);
     const cards = open
@@ -965,7 +965,7 @@ export class Prompter {
       }
       return false;
     }
-    if (!cards.length) return false;
+    if (!cards.length || !workTime) return false;
     return Boolean(this.ask({ ...staleCard(cards), key: STALE_KEY, cooldownMin: STALE_COOLDOWN_MIN }));
   }
 
@@ -1363,9 +1363,17 @@ const STALE_KEEP_LABEL = "Keep them";
 /** At most one new stale card a day: closing some and leaving the rest shouldn't redraw it on the next tick. */
 const STALE_COOLDOWN_MIN = 20 * 60;
 
-/** The moment `n` workdays (Mon–Fri) before `now`, same time of day. */
+/**
+ * The moment `n` workdays (Mon–Fri) before `now`. On a workday, same time of day. On a weekend, counted from Saturday
+ * 00:00 (the end of Friday), so the cutoff stands still until Monday. Keeping the time of day made it jump back a day
+ * at each weekend midnight: 11-14/15 the stale card opened, emptied at 00:00 and reopened three times.
+ */
 export function workdaysAgo(n: number, now = new Date()) {
   const d = new Date(now);
+  if (!isWorkday(d)) {
+    d.setHours(0, 0, 0, 0);
+    while (!isWorkday(new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1))) d.setDate(d.getDate() - 1);
+  }
   for (let left = n; left > 0; ) {
     d.setDate(d.getDate() - 1);
     if (isWorkday(d)) left--;
