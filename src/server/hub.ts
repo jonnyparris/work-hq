@@ -30,6 +30,12 @@ export const LAUNCHD_LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 export const ownLabel = (label: string) => /(^|\.)work-hq(\.|$)/i.test(label);
 /** True for a label "Log in now" may kickstart: launchd-shaped, and not Work HQ's own job. */
 export const rerunLabel = (label: string) => LAUNCHD_LABEL.test(label) && !ownLabel(label);
+/** Most launchd labels one access-login card's login kickstarts; later ones are dropped. */
+export const ACCESS_RERUN_MAX = 8;
+/** The launchd labels on an `accessLogin` effect: one (a string, as older cards stored it) or several (a card two jobs posted to). */
+export const accessReruns = (rerun: string | string[] | undefined) => (Array.isArray(rerun) ? rerun : rerun ? [rerun] : []);
+/** The access-login card's last sentence, by how many jobs its login reruns. */
+const accessTail = (n: number) => (n > 1 ? "Log in and the jobs rerun." : n ? "Log in and the job reruns." : "Log in and the job's next run gets through.");
 const ACCESS_LATER = "Later";
 /** An item's own state cards (prompter; when-retry: from Agents.scheduleFromWords): closed once an agent is sent on it (closeStateCards). */
 const STATE_CARD = /^(wait|state|inbox|kill|due|when-retry|doing|proposal):/;
@@ -41,7 +47,7 @@ export interface Dispatcher {
   /** Read a typed note against the question it was typed on. Throws if the read failed; undefined = question gone. */
   readNote?(questionId: string, text: string): Promise<NoteDecision | undefined>;
   gatewayLogin?(app: string): Promise<void>;
-  accessLogin?(app: string, rerun?: string): Promise<void>;
+  accessLogin?(app: string, rerun?: string | string[]): Promise<void>;
   triage?(text: string, mode: "chat" | "review"): Promise<unknown>;
   sweep?(name: "transcripts" | "calendar", opts?: { since?: string }): Promise<unknown>;
   /** Focus a job's cmux workspace. */
@@ -399,7 +405,10 @@ export class Hub {
    * (10-22..10-29: six of them for a ClickHouse app). Asking again while the card is open, or after "Later" that
    * day, does nothing; after a login (that failed, or lapsed again) or `resolved`, a lapse asks again. Yesterday's
    * card closes. `resolved`: the job got through, so close any open card for the app instead. `rerun`: the job's
-   * launchd label; the card's login kickstarts it once the login works.
+   * launchd label; the card's login kickstarts it once the login works. A `rerun` that reaches the day's open card
+   * joins its login (11-16: weekly.sh posted first without one and daily.sh's later label was dropped, so the login
+   * re-ran nothing). After "Later" no card is open that day, so a later label has nowhere to go: its job waits for
+   * its next slot, like every other job on that card.
    */
   accessLoginCard(b: { app: string; reason?: unknown; resolved?: unknown; rerun?: unknown }, now = new Date()) {
     if (typeof b.app !== "string" || !ACCESS_APP.test(b.app)) throw new Error("app must be https://<host>");
@@ -417,19 +426,43 @@ export class Hub {
     const closed = this.closeAccessLoginCards(host, "day moved on", key);
     if (this.store.lastAnswered(key)?.answer?.startsWith(ACCESS_LATER)) return { asked: false, closed, key };
     const reason = typeof b.reason === "string" ? b.reason.trim().slice(0, 400) : "";
+    const card = this.store.openQuestionByKey(key);
+    if (card) {
+      if (rerun) this.addAccessRerun(card, rerun);
+      return { asked: false, closed, key };
+    }
     const q = this.ask({
       kind: "open",
       key,
       badge: "Login expired",
       priority: 80,
       prompt: `Your Cloudflare Access login for ${host} lapsed`,
-      context: `${reason || "A local job needs it and can't open the browser itself."} ${rerun ? "Log in and the job reruns." : "Log in and the job's next run gets through."}`,
+      context: `${reason || "A local job needs it and can't open the browser itself."} ${accessTail(rerun ? 1 : 0)}`,
       options: [
         { id: "login", label: "Log in now (opens one tab)", tone: "primary", effect: { type: "accessLogin", app: `https://${host}`, ...(rerun ? { rerun } : {}) } },
         { id: "later", label: ACCESS_LATER, tone: "quiet", effect: { type: "noop" } },
       ],
     });
     return { asked: !!q, closed, key };
+  }
+
+  /** Add launchd `label` to an open access-login card's login (once), and say in its context that the job(s) rerun. */
+  private addAccessRerun(q: Question, label: string) {
+    const login = q.options.find((o) => o.id === "login");
+    if (login?.effect.type !== "accessLogin") return;
+    const had = accessReruns(login.effect.rerun);
+    if (had.includes(label)) return;
+    if (had.length >= ACCESS_RERUN_MAX) {
+      this.journal(`Access login card for ${q.key} already reruns ${ACCESS_RERUN_MAX} jobs; ${label} waits for its next run`, { questionId: q.id, who: "hq" });
+      return;
+    }
+    const next = [...had, label];
+    login.effect = { ...login.effect, rerun: next.length === 1 ? next[0] : next };
+    const old = accessTail(had.length);
+    const ctx = q.context ?? "";
+    q.context = ctx.endsWith(old) ? `${ctx.slice(0, -old.length)}${accessTail(next.length)}` : `${ctx} ${accessTail(next.length)}`.trim();
+    this.store.putQuestion(q);
+    this.emit({ type: "question", data: q });
   }
 
   /**
@@ -447,6 +480,15 @@ export class Hub {
       ids.push(it.id);
     }
     return ids;
+  }
+
+  /** The launchd labels on `host`'s open access-login cards, in card order, deduped. */
+  openAccessReruns(host: string) {
+    const labels = this.store.questions("open").filter((q) => q.key.startsWith(`access-login:${host}:`)).flatMap((q) => {
+      const e = q.options.find((o) => o.id === "login")?.effect;
+      return e?.type === "accessLogin" ? accessReruns(e.rerun) : [];
+    });
+    return [...new Set(labels)];
   }
 
   /** Close the open `access-login:<host>:*` cards (all, or all but `keep`). Returns how many. */
@@ -1530,7 +1572,7 @@ export function effectText(e: Effect): string {
     case "when": return "ask when (needs a note)";
     case "noop": return "noop (does nothing)";
     case "gatewayLogin": return "gateway login";
-    case "accessLogin": return `cloudflared access login ${e.app}${e.rerun ? `, then launchctl kickstart ${e.rerun}` : ""}`;
+    case "accessLogin": return `cloudflared access login ${e.app}${e.rerun?.length ? `, then launchctl kickstart ${accessReruns(e.rerun).join(", ")}` : ""}`;
     case "commitPlan": return "commit the picked items to today";
     case "prepMeetings": return "dispatch prep for each ticked meeting";
     case "donePicks": return e.all ? "mark every listed item done" : "mark each ticked item done";

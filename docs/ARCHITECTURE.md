@@ -49,7 +49,10 @@
   login (`Hub.settleAccessLoginTodos`, `accessLoginTodo`: an open task whose title has a re-login phrase and
   names the host or its first label; titles naming two things, "X and Y", "X/Y", "X, then Y", stay open).
   `--rerun <launchd-label>` puts the job's label on the card: a login that works then runs `launchctl kickstart`
-  on it (journalled), so the job doesn't wait for its next slot. Work HQ's own label is refused: its restarts
+  on it (journalled), so the job doesn't wait for its next slot. A label that reaches the day's open card joins its
+  login, up to 8 a card (the rest journalled), so each job that passed `--rerun` reruns (11-16: weekly.sh posted
+  first without one and daily.sh's label was dropped); a card posted while that login is in flight closes with it
+  and its labels run too. After "Later" no card is open that day: a later job waits for its next slot. Work HQ's own label is refused: its restarts
   go through `POST /api/restart`. A login back in under 2 s opened no browser:
   the session was already live, and the journal says so instead of "renewed" (11-11: two such "renewals" hid a
   job check that failed with a valid token).

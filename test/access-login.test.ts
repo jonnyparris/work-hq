@@ -240,7 +240,7 @@ test("a login back in under 2 s journals 'already live', a slower one 'renewed'"
 
 test("--rerun puts the launchd label on the card's login and hands it to the dispatcher; a bad label is refused", async () => {
   const hub = new Hub(new Store(":memory:"));
-  const calls: [string, string | undefined][] = [];
+  const calls: [string, string | string[] | undefined][] = [];
   hub.dispatcher = { dispatch: async () => undefined, scheduleFromWords: async () => {}, accessLogin: async (app, rerun) => void calls.push([app, rerun]) };
   hub.accessLoginCard({ app: APP, rerun: "com.example.nightly" }, day("2026-11-04"));
   const card = open(hub)[0]!;
@@ -287,6 +287,106 @@ test("Agents.accessLogin with a label kickstarts that launchd job and journals i
       for (const own of ["com.example.work-hq", "work-hq.dashboard"]) await c.agents.accessLogin(APP, own);
       expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(1);
       expect(journal(c.hub).some((t) => t.includes("rerun") || t.startsWith("Reran"))).toBe(false);
+    });
+  } finally {
+    if (prev === undefined) delete process.env.WORK_HQ_LAUNCHCTL_BIN;
+    else process.env.WORK_HQ_LAUNCHCTL_BIN = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// 11-16: weekly.sh posted the day's card first (no --rerun); daily.sh's later `--rerun` hit the open card and was
+// dropped, so the login re-ran nothing. A later label joins the open card's login; an earlier one stays.
+test("a later --rerun on the day's open card joins its login; the login kickstarts every label", async () => {
+  const hub = new Hub(new Store(":memory:"));
+  const calls: [string, unknown][] = [];
+  hub.dispatcher = { dispatch: async () => undefined, scheduleFromWords: async () => {}, accessLogin: async (app, rerun) => void calls.push([app, rerun]) };
+  hub.accessLoginCard({ app: APP, reason: "weekly skipped" }, day("2026-11-16", 8));
+  expect(hub.accessLoginCard({ app: APP, rerun: "com.example.job" }, day("2026-11-16", 9)).asked).toBe(false);
+  let card = open(hub)[0]!;
+  expect(open(hub)).toHaveLength(1);
+  expect(card.options.find((o) => o.id === "login")?.effect).toEqual({ type: "accessLogin", app: APP, rerun: "com.example.job" });
+  expect(card.context).toContain("weekly skipped");
+  expect(card.context).toContain("Log in and the job reruns.");
+  // A second label adds to it, a repeat doesn't, and a later run without --rerun keeps both.
+  hub.accessLoginCard({ app: APP, rerun: "com.example.other" }, day("2026-11-16", 10));
+  hub.accessLoginCard({ app: APP, rerun: "com.example.job" }, day("2026-11-16", 11));
+  hub.accessLoginCard({ app: APP }, day("2026-11-16", 12));
+  card = open(hub)[0]!;
+  expect(card.options.find((o) => o.id === "login")?.effect).toEqual({ type: "accessLogin", app: APP, rerun: ["com.example.job", "com.example.other"] });
+  expect(card.context).toContain("Log in and the jobs rerun.");
+  expect(card.context).not.toContain("next run gets through");
+  await hub.answer(card.id, "login");
+  expect(calls).toEqual([[APP, ["com.example.job", "com.example.other"]]]);
+  // A bad label is still refused.
+  expect(() => hub.accessLoginCard({ app: APP, rerun: "x; rm -rf ~" }, day("2026-11-17", 8))).toThrow();
+});
+
+test("Agents.accessLogin kickstarts each label on the card, in order", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "lctl-"));
+  const bin = join(dir, "launchctl");
+  const log = join(dir, "args");
+  writeFileSync(bin, `#!/bin/sh\necho "$@" >> ${log}\n`);
+  chmodSync(bin, 0o755);
+  const prev = process.env.WORK_HQ_LAUNCHCTL_BIN;
+  try {
+    await withBin("/usr/bin/true", async () => {
+      process.env.WORK_HQ_LAUNCHCTL_BIN = bin;
+      const { hub, agents } = setup();
+      const toasts: string[] = [];
+      hub.subscribe((e) => { if (e.type === "toast") toasts.push((e.data as { text: string }).text); });
+      await agents.accessLogin(APP, ["com.example.job", "work-hq.dashboard", "com.example.other"]);
+      const uid = process.getuid!();
+      expect(readFileSync(log, "utf8").trim().split("\n")).toEqual([`kickstart gui/${uid}/com.example.job`, `kickstart gui/${uid}/com.example.other`]);
+      expect(toasts.at(-1)).toContain("Reran com.example.job, com.example.other.");
+    });
+  } finally {
+    if (prev === undefined) delete process.env.WORK_HQ_LAUNCHCTL_BIN;
+    else process.env.WORK_HQ_LAUNCHCTL_BIN = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("labels on the open card: a bad one while it's open leaves it as is; at most 8", () => {
+  const hub = new Hub(new Store(":memory:"));
+  hub.accessLoginCard({ app: APP, rerun: "com.example.a" }, day("2026-11-16", 8));
+  expect(() => hub.accessLoginCard({ app: APP, rerun: "x; rm -rf ~" }, day("2026-11-16", 9))).toThrow();
+  expect(open(hub)[0]!.options.find((o) => o.id === "login")?.effect).toEqual({ type: "accessLogin", app: APP, rerun: "com.example.a" });
+  for (let i = 0; i < 10; i++) hub.accessLoginCard({ app: APP, rerun: `com.example.j${i}` }, day("2026-11-16", 10));
+  const e = open(hub)[0]!.options.find((o) => o.id === "login")?.effect as { rerun: string[] };
+  expect(e.rerun).toHaveLength(8);
+  expect(e.rerun[0]).toBe("com.example.a");
+  expect(journal(hub).some((t) => t.includes("already reruns 8 jobs; com.example.j7 waits"))).toBe(true);
+});
+
+test("a login kickstarts labels from a card posted while it was in flight; a failed kickstart beside a good one warns", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "lctl-"));
+  const bin = join(dir, "launchctl");
+  const log = join(dir, "args");
+  // Fails for com.example.bad, works for the rest.
+  writeFileSync(bin, `#!/bin/sh\necho "$@" >> ${log}\ncase "$2" in *com.example.bad) exit 3 ;; esac\n`);
+  chmodSync(bin, 0o755);
+  const prev = process.env.WORK_HQ_LAUNCHCTL_BIN;
+  try {
+    // A login that takes 300 ms, so the second card lands while it's in flight.
+    const cfd = join(dir, "cloudflared");
+    writeFileSync(cfd, "#!/bin/sh\nsleep 0.3\n");
+    chmodSync(cfd, 0o755);
+    await withBin(cfd, async () => {
+      process.env.WORK_HQ_LAUNCHCTL_BIN = bin;
+      const { hub, agents } = setup();
+      const toasts: { text: string; tone: string }[] = [];
+      hub.subscribe((e) => { if (e.type === "toast") toasts.push(e.data as { text: string; tone: string }); });
+      // The tapped card (answered, so closed) named com.example.job; com.example.bad posts a new card mid-login.
+      const login = agents.accessLogin(APP, "com.example.job");
+      hub.accessLoginCard({ app: APP, rerun: "com.example.bad" });
+      expect(open(hub)).toHaveLength(1);
+      await login;
+      const uid = process.getuid!();
+      expect(readFileSync(log, "utf8").trim().split("\n")).toEqual([`kickstart gui/${uid}/com.example.job`, `kickstart gui/${uid}/com.example.bad`]);
+      expect(open(hub)).toHaveLength(0);
+      expect(toasts.at(-1)).toMatchObject({ tone: "warn" });
+      expect(toasts.at(-1)!.text).toContain("Reran com.example.job. Couldn't rerun com.example.bad; the next run gets through.");
     });
   } finally {
     if (prev === undefined) delete process.env.WORK_HQ_LAUNCHCTL_BIN;
