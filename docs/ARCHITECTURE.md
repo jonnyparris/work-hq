@@ -284,6 +284,13 @@ The command bar does the same in words: "skip all blog posts till Thursday", "cl
 "check all the unknowns for me", "push the rest to tomorrow". Triage sees the open groups and returns
 `bulk: [{ op, group | kind | ids, until }]`. All of these go through `POST /api/questions/bulk`.
 
+### Morning slots skip weekends
+
+"Tomorrow 09:30" means the next workday ([`src/shared/workday.ts`](../src/shared/workday.ts)): Wrap up's Carry,
+the When options, the drawer's morning button and the It's time push. From Friday or Saturday it reads "Mon 09:30";
+the separate "Next week · Mon" choice is dropped when it is the same slot. 11-06: Friday's wrap carried three items
+to Saturday 09:30. The bulk defer targets (`deferTargets`, `src/shared/batch.ts`) skip weekends in their own loop, not through `workday.ts`.
+
 ### "Scheduled for…"
 
 Most item questions carry a **Scheduled for…** option (`{ type: "when" }`). Picking it opens a "When?" box and
@@ -431,6 +438,7 @@ stopped-run fold cards `after:fold:*` excepted) are different questions from dif
 
 ```
 src/shared/types.ts       shared model + AgentReport contract
+src/shared/workday.ts     workdays, next work morning slots (server + web)
 src/server/index.ts       Bun.serve: routes, websocket
 src/server/hub.ts         state transitions, journal, agent-report ingest, typed notes, scanned meetings
 src/server/dedupe.ts      cross-source duplicate check (title tokens)

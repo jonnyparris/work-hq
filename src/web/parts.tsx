@@ -5,6 +5,7 @@ import { committedView } from "../shared/committed.ts";
 import { BOSS_MIN, waitingOnYou } from "../shared/boss.ts";
 import { REVIEW_HOLD_MIN, reviewable } from "../shared/meetings.ts";
 import { type PlanGroup, planView, score, searchPlan } from "../shared/plan.ts";
+import { carrySlot, morningButtons } from "../shared/workday.ts";
 import { CalmScene } from "./calm.tsx";
 import { api } from "./store.ts";
 import { ACTIONS, Icon, KIND_LABEL, Md, Q_BADGE, ago, dictateInto, finishDictation, hhmm, people, shortUrl, stopDictation, ticketKeys, ticketUrl, useStoredFlag, whenLabel } from "./ui.tsx";
@@ -523,7 +524,7 @@ function Planner({ items, picked, setPicked }: { items: Item[]; picked: string[]
   );
 }
 
-function Wrap({ items }: { items: Item[] }) {
+export function Wrap({ items }: { items: Item[] }) {
   const todayStr = new Date().toDateString();
   const rows = items.filter(
     (i) => ["today", "doing"].includes(i.status) || (i.confirmedAt && new Date(i.confirmedAt).toDateString() === todayStr && i.status !== "dropped"),
@@ -531,10 +532,8 @@ function Wrap({ items }: { items: Item[] }) {
   if (!rows.length) return <div className="empty" style={{ marginTop: 12 }}>Nothing was committed today. Honest answer — save it anyway.</div>;
   const set = (i: Item, s: "done" | "carry" | "waiting" | "dropped") => {
     if (s === "carry") {
-      const t = new Date();
-      t.setDate(t.getDate() + 1);
-      t.setHours(9, 30, 0, 0);
-      return api.schedule(i.id, t.toISOString(), "tomorrow 09:30 (carried)");
+      const { at, label } = carrySlot();
+      return api.schedule(i.id, at.toISOString(), label);
     }
     return api.setStatus(i.id, s as ItemStatus);
   };
@@ -999,7 +998,7 @@ export function Drawer({ it, journal, jobs, onClose }: { it: Item; journal: Jour
     setNote("");
   };
   const quick = (label: string, d: Date) => (
-    <button className="st" onClick={() => api.schedule(it.id, d.toISOString(), label)}>{label}</button>
+    <button key={label} className="st" onClick={() => api.schedule(it.id, d.toISOString(), label)}>{label}</button>
   );
   const t = (h: number, m: number, plus = 0) => { const d = new Date(); d.setDate(d.getDate() + plus); d.setHours(h, m, 0, 0); return d; };
   return (
@@ -1083,8 +1082,7 @@ export function Drawer({ it, journal, jobs, onClose }: { it: Item; journal: Jour
             <div className="sched-row">
               {quick("in 1 hour", new Date(Date.now() + 3600_000))}
               {quick("14:00", t(14, 0))}
-              {quick("tomorrow 09:30", t(9, 30, 1))}
-              {quick("Monday 09:30", t(9, 30, ((8 - new Date().getDay()) % 7) || 7))}
+              {morningButtons().map((b) => quick(b.label, b.at))}
               <input type="datetime-local" value={at} onChange={(e) => setAt(e.target.value)} />
               {at && <button className="st on" onClick={() => api.schedule(it.id, new Date(at).toISOString())}>Set</button>}
             </div>

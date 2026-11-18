@@ -5,6 +5,7 @@
 import type { ActionKind, AwayBlock, CalendarEvent, Coaching, Item, Job, Question, QuestionOption, QuestionPick } from "../shared/types.ts";
 import { config, sweepOn } from "./config.ts";
 import { isAgentCard } from "../shared/boss.ts";
+import { isWorkday, nextMonday, nextWorkMorningSlot } from "../shared/workday.ts";
 import { REVIEW_HOLD_MIN, reviewable } from "../shared/meetings.ts";
 import { isOpen } from "./dedupe.ts";
 import { awayMs, type Hub } from "./hub.ts";
@@ -41,8 +42,6 @@ export function isOwner(attendee: string, aliases: string[] = config.owner.alias
   });
 }
 
-/** Mon–Fri. */
-export const isWorkday = (d: Date) => d.getDay() !== 0 && d.getDay() !== 6;
 
 /**
  * Milliseconds of work time between `from` and `to`: weekdays, inside `hours` ([start, end) local, may be fractional).
@@ -78,9 +77,11 @@ export function whenOptions(now = new Date()): QuestionOption[] {
   inHour.setMinutes(inHour.getMinutes() < 30 ? 30 : 60, 0, 0);
   opts.push([`${fmt(inHour)} today`, inHour]);
   if (now.getHours() < 14) opts.push(["This afternoon · 14:00", atLocal(14, 0, 0, now)]);
-  opts.push(["Tomorrow · 09:30", atLocal(9, 30, 1, now)]);
-  const mon = atLocal(9, 30, ((8 - now.getDay()) % 7) || 7, now);
-  opts.push(["Next week · Mon 09:30", mon]);
+  // Next work morning: "Tomorrow" Sun–Thu, "Mon" on Friday and Saturday. From Friday to Sunday it is next Monday too.
+  const { at: morning, label } = nextWorkMorningSlot(now);
+  opts.push([label.replace(" ", " · "), morning]);
+  const mon = nextMonday(now);
+  if (mon.getTime() !== morning.getTime()) opts.push(["Next week · Mon 09:30", mon]);
   return opts.map(([label, at], i) => ({
     id: `w${i}`,
     label,
@@ -1249,11 +1250,7 @@ export function cardDue(prefix: string, closed: Pick<Question, "key" | "status" 
 }
 
 /** Next workday at 09:30: tomorrow, or Monday from Friday/the weekend. */
-export function nextWorkMorning(now: Date) {
-  const d = atLocal(9, 30, 1, now);
-  while (!isWorkday(d)) d.setDate(d.getDate() + 1);
-  return d;
-}
+export const nextWorkMorning = (now: Date) => nextWorkMorningSlot(now).at;
 
 /**
  * Options for an "It's time" prompt. After two "Push 1 hour" taps today the hour clearly isn't working:
@@ -1261,9 +1258,7 @@ export function nextWorkMorning(now: Date) {
  */
 export function dueOptions(act: { action: ActionKind; label: string } | undefined, pushes: number, now: Date): QuestionOption[] {
   const tired = pushes >= 2;
-  const morning = nextWorkMorning(now);
-  const tomorrow = localDate(morning) === localDate(atLocal(12, 0, 1, now));
-  const label = `${tomorrow ? "Tomorrow" : morning.toLocaleDateString("en-GB", { weekday: "short" })} 09:30`;
+  const { at: morning, label } = nextWorkMorningSlot(now);
   return [
     ...(tired ? [opt("am", label, { type: "schedule", at: morning.toISOString(), label: label.toLowerCase() }, "primary")] : []),
     ...(act ? [opt("go", act.label, { type: "dispatch", action: act.action }, tired ? "quiet" : "primary")] : []),
