@@ -380,7 +380,10 @@ export class Prompter {
       // file order. memory sync writes rows top to bottom, so `updated` creeps up in file order, and store.items() is
       // ORDER BY updated DESC: without a tiebreak a day's proposals came out last-first (10-18: #9 and #8 asked, #1 never).
       .sort((a, b) => propDate(b).localeCompare(propDate(a)) || propRank(a) - propRank(b) || a.createdAt.localeCompare(b.createdAt));
-    // Own slots: only open proposal cards count, never the total budget. Full (the usual case): no lookups at all.
+    // A card nobody answers doesn't keep its slot: 11-12..11-18 two cards held both slots for six days and no
+    // newer reflection's proposal was asked. It yields after PROPOSAL_YIELD_WORKDAYS, or sooner to a newer one.
+    if (this.yieldProposals(proposals, now)) open = this.open = store.questions("open");
+    // Own slots: only open proposal cards count, never the total budget. Full (the usual case): no lookups here.
     let slots = CAP.proposal - openCount("dispatch", isProposalCard);
     for (const it of proposals) {
       if (slots <= 0) break;
@@ -397,7 +400,7 @@ export class Prompter {
           WHEN_OPT,
           opt("no", "Reject", { type: "status", status: "dropped", note: "rejected proposal" }, "danger"),
         ],
-        cooldownMin: 5 * 24 * 60,
+        cooldownMin: PROPOSAL_COOLDOWN_MIN,
       });
       if (asked) slots--;
     }
@@ -1047,6 +1050,66 @@ export class Prompter {
     this.hub.emit({ type: "question", data: q });
   }
 
+  /**
+   * Open proposal cards give their slot up ('yielded'; the item stays proposed and is asked again after the card's
+   * cooldown, like an answer):
+   * - Age: shown PROPOSAL_YIELD_WORKDAYS ago with no answer. Shown = the latest of createdAt, a past notBefore (a
+   *   snooze, a note read or a batch defer parks the card and restarts the clock) and the end of an away block that
+   *   has ended (you weren't there to see it). Not while you're away.
+   * - Newer: the slots should hold the CAP.proposal best proposals that can be asked, in fill order (newest reflection,
+   *   then High before Medium/Low). A card ranked out by an askable proposal strictly ahead of it yields; on an exact
+   *   tie the card stays, so nothing churns. A free slot is used first: a card only yields when the others don't fit.
+   * Left alone: a card parked now (notBefore ahead), one whose typed note is being read, and, for the newer rule, one
+   * whose item is no longer a proposal (it has no date to rank by). They still hold their slots. Returns how many closed.
+   */
+  private yieldProposals(proposals: Item[], now: Date) {
+    const cards = this.open.filter((q) => q.kind === "dispatch" && isProposalCard(q));
+    if (!cards.length) return 0;
+    const movable = (q: Question) => !deferred(q, now) && !this.hub.isReading(q.id);
+    const byId = new Map(proposals.map((i) => [i.id, i]));
+    const before = workdaysAgo(PROPOSAL_YIELD_WORKDAYS, now).getTime();
+    const back = Math.max(0, ...this.hub.away().map((b) => awayMs(b.end)).filter((t) => t <= now.getTime()));
+    const shownAt = (q: Question) => Math.max(Date.parse(q.createdAt), q.notBefore ? Date.parse(q.notBefore) : 0, back);
+    const away = Boolean(this.hub.awayAt(now));
+    let closed = 0;
+    const left: Question[] = [];
+    for (const q of cards) {
+      if (!away && movable(q) && shownAt(q) < before) {
+        this.hub.expireQuestion(q.id, "yielded");
+        closed++;
+      } else left.push(q);
+    }
+    // Cards the newer rule can rank; the rest keep their slots whatever happens.
+    const ranked = left
+      .filter((q) => movable(q) && q.itemId && byId.has(q.itemId))
+      .map((q) => ({ q: q as Question | undefined, it: byId.get(q.itemId!)! }));
+    if (!ranked.length) return closed;
+    const room = CAP.proposal - (left.length - ranked.length);
+    // Fill order's first two keys (the third, file order, only orders same-section proposals: never worth a yield).
+    const ahead = (a: Item, b: Item) => propDate(b).localeCompare(propDate(a)) || propRank(a) - propRank(b);
+    const worst = ranked.reduce((m, r) => (ahead(m, r.it) < 0 ? r.it : m), ranked[0]!.it);
+    // Only proposals strictly ahead of the worst card can rank one out, and at most `room` of them fit: the usual
+    // board (cards from the newest reflection) stops at the first comparison, with no cooldown lookups.
+    const carded = new Set(cards.map((q) => q.itemId));
+    const better: Item[] = [];
+    for (const it of proposals) {
+      if (better.length >= room) break;
+      if (ahead(it, worst) >= 0) break; // fill order: nothing after this is ahead of it either
+      if (carded.has(it.id) || this.hub.onCooldown(`proposal:${it.id}`, PROPOSAL_COOLDOWN_MIN)) continue;
+      better.push(it);
+    }
+    if (!better.length) return closed;
+    // Top `room` in fill order, a card before a candidate on an exact tie; cards below the cut yield.
+    const all = [...ranked, ...better.map((it) => ({ q: undefined, it }))];
+    all.sort((a, b) => ahead(a.it, b.it) || Number(!a.q) - Number(!b.q));
+    for (const { q } of all.slice(room)) {
+      if (!q) continue;
+      this.hub.expireQuestion(q.id, "yielded");
+      closed++;
+    }
+    return closed;
+  }
+
   /** Close questions whose item moved on without them. Returns the meeting-ended cards it closed as stale. */
   private expireMoot(open: Question[], items: Item[], now: Date) {
     const byId = new Map(items.map((i) => [i.id, i]));
@@ -1380,6 +1443,10 @@ export function workdaysAgo(n: number, now = new Date()) {
 export const staleBefore = (now: Date) => workdaysAgo(STALE_WORKDAYS, now).getTime();
 const deferred = (q: Pick<Question, "notBefore">, now: Date) => Boolean(q.notBefore) && Date.parse(q.notBefore!) > now.getTime();
 const isProposalCard = (q: Pick<Question, "key">) => q.key.startsWith("proposal:");
+/** An unanswered proposal card gives up its slot after this many workdays (yieldProposals). */
+const PROPOSAL_YIELD_WORKDAYS = 2;
+/** A proposal card answered or yielded isn't asked again for this long. */
+const PROPOSAL_COOLDOWN_MIN = 5 * 24 * 60;
 /** Older than STALE_WORKDAYS, and not a card with its own slots, the stale card itself or the stale-proposals card. */
 const isStale = (q: Pick<Question, "key" | "createdAt">, before: number) => q.key !== STALE_KEY && !isStaleProposedCard(q) && !isProposalCard(q) && Date.parse(q.createdAt) < before;
 

@@ -71,6 +71,178 @@ describe("reflection proposals have their own slots", () => {
   });
 });
 
+describe("proposal cards yield their slot", () => {
+  // 11-12..11-18: two proposal cards held both slots for six days; no newer reflection's proposal was asked.
+  const prop = (title: string, day: string, section = "High Priority") =>
+    hub.createItem({ title, kind: "idea", status: "proposed", source: { type: "memory", label: `Proposals ${day} · ${section}` } });
+  const propCard = (itemId: string, createdAt: string, extra: Partial<Question> = {}) => {
+    const q: Question = { id: `q_p_${itemId}`, kind: "dispatch", itemId, key: `proposal:${itemId}`, prompt: itemId, options: [], priority: 45, status: "open", createdAt, ...extra };
+    hub.store.putQuestion(q);
+    return q;
+  };
+  const status = (q: Question) => hub.store.question(q.id)!;
+  const openItems = () => openKeys("proposal:").map((q) => q.itemId).sort();
+
+  test("two cards open 3 workdays, a new proposals file imported: both yield, two cards from the new file open", () => {
+    const [a, b] = [prop("a", "2026-09-16"), prop("b", "2026-09-16")];
+    const [qa, qb] = [propCard(a.id, old), propCard(b.id, old)];
+    const [c, d] = [prop("c", "2026-09-22"), prop("d", "2026-09-22", "Medium Priority")];
+    p.tick(now);
+    for (const q of [qa, qb]) {
+      expect(status(q).status).toBe("expired");
+      expect(status(q).answer).toBe("yielded");
+    }
+    expect(hub.store.item(a.id)!.status).toBe("proposed");
+    expect(hub.store.item(b.id)!.status).toBe("proposed");
+    expect(openItems()).toEqual([c.id, d.id].sort());
+  });
+
+  test("unanswered 2 workdays yields even with nothing newer; the item isn't re-asked straight away", () => {
+    const [a, b] = [prop("a", "2026-09-16"), prop("b", "2026-09-16")];
+    const qa = propCard(a.id, new Date(2026, 8, 21, 14, 0).toISOString()); // Mon 14:00: just over 2 workdays
+    const qb = propCard(b.id, new Date(2026, 8, 21, 16, 0).toISOString()); // Mon 16:00: under
+    p.tick(now);
+    expect(status(qa).answer).toBe("yielded");
+    expect(status(qb).status).toBe("open");
+    expect(openItems()).toEqual([b.id]);
+  });
+
+  test("a fresh card yields to a newer reflection's proposal, oldest first, one per newer proposal; then it's stable", () => {
+    const a = prop("a", "2026-09-15");
+    const b = prop("b", "2026-09-16");
+    const [qa, qb] = [propCard(a.id, fresh), propCard(b.id, fresh)];
+    const c = prop("c", "2026-09-22");
+    p.tick(now);
+    expect(status(qa).answer).toBe("yielded");
+    expect(status(qb).status).toBe("open");
+    expect(openItems()).toEqual([b.id, c.id].sort());
+    p.tick(now);
+    expect(openItems()).toEqual([b.id, c.id].sort());
+    expect(hub.store.questions("expired").filter((q) => q.key.startsWith("proposal:"))).toHaveLength(1);
+  });
+
+  test("cards from the newest reflection keep their slots over older proposals", () => {
+    const [a, b] = [prop("a", "2026-09-22"), prop("b", "2026-09-22")];
+    propCard(a.id, fresh);
+    propCard(b.id, fresh);
+    prop("older", "2026-09-16");
+    p.tick(now);
+    expect(openItems()).toEqual([a.id, b.id].sort());
+  });
+
+  test("a newer proposal on cooldown (answered or yielded lately) isn't one to yield to", () => {
+    const a = prop("a", "2026-09-16");
+    const qa = propCard(a.id, fresh);
+    const c = prop("c", "2026-09-22");
+    hub.store.putQuestion({ id: "q_prev_c", kind: "dispatch", itemId: c.id, key: `proposal:${c.id}`, prompt: "c", options: [], priority: 45, status: "expired", answer: "yielded", createdAt: old, answeredAt: new Date().toISOString() });
+    p.tick(now);
+    expect(status(qa).status).toBe("open");
+  });
+
+  test("a free slot goes to the newer proposal first: the old card keeps its slot", () => {
+    const a = prop("a", "2026-09-16");
+    const qa = propCard(a.id, fresh);
+    const c = prop("c", "2026-09-22");
+    p.tick(now);
+    expect(status(qa).status).toBe("open");
+    expect(openItems()).toEqual([a.id, c.id].sort());
+  });
+
+  test("two fresh cards on different dates, two newer proposals: both cards yield, both newer ones are asked", () => {
+    const [a, b] = [prop("a", "2026-09-15"), prop("b", "2026-09-19")];
+    const [qa, qb] = [propCard(a.id, fresh), propCard(b.id, fresh)];
+    const [c, d] = [prop("c", "2026-09-20"), prop("d", "2026-09-22")];
+    p.tick(now);
+    expect(status(qa).answer).toBe("yielded");
+    expect(status(qb).answer).toBe("yielded");
+    expect(openItems()).toEqual([c.id, d.id].sort());
+  });
+
+  test("2 workdays, not 2 days: a Friday card is still open on Monday, yields on Wednesday", () => {
+    const a = prop("a", "2026-09-16");
+    const qa = propCard(a.id, new Date(2026, 8, 18, 9, 0).toISOString()); // Fri 09:00
+    p.tick(new Date(2026, 8, 21, 15, 0)); // Mon 15:00
+    expect(status(qa).status).toBe("open");
+    p.tick(now); // Wed 15:00
+    expect(status(qa).answer).toBe("yielded");
+  });
+
+  test("a card whose item stopped being a proposal doesn't yield to an older one", () => {
+    const a = prop("a", "2026-09-22");
+    const qa = propCard(a.id, fresh);
+    hub.updateItem(a.id, { status: "today" }, { quiet: true });
+    propCard(prop("b", "2026-09-22").id, fresh);
+    prop("older", "2026-09-16");
+    p.tick(now);
+    expect(status(qa).status).toBe("open");
+  });
+
+  test("not aged out while you're away", () => {
+    const a = prop("a", "2026-09-16");
+    const qa = propCard(a.id, old);
+    hub.store.setKv("calendarAway", JSON.stringify([{ title: "OOO", start: new Date(2026, 8, 23, 0, 0).toISOString(), end: new Date(2026, 8, 24, 0, 0).toISOString() }]));
+    p.tick(now);
+    expect(status(qa).status).toBe("open");
+  });
+
+  test("same reflection: a High proposal ranks out a Low card; a same-section one doesn't", () => {
+    const low = prop("low", "2026-09-22", "Low Priority");
+    const med = prop("med", "2026-09-22", "Medium Priority");
+    const [ql, qm] = [propCard(low.id, fresh), propCard(med.id, fresh)];
+    const high = prop("high", "2026-09-22");
+    prop("med2", "2026-09-22", "Medium Priority");
+    p.tick(now);
+    expect(status(ql).answer).toBe("yielded");
+    expect(status(qm).status).toBe("open");
+    expect(openItems()).toEqual([high.id, med.id].sort());
+  });
+
+  test("an away block that ended restarts the clock: you weren't there to see the card", () => {
+    const a = prop("a", "2026-09-16");
+    const qa = propCard(a.id, old); // Thu 09-17
+    hub.store.setKv("calendarAway", JSON.stringify([{ title: "OOO", start: new Date(2026, 8, 18, 0, 0).toISOString(), end: new Date(2026, 8, 22, 0, 0).toISOString() }]));
+    p.tick(now); // Wed 15:00: back since Tue 00:00, under 2 workdays
+    expect(status(qa).status).toBe("open");
+    p.tick(new Date(2026, 8, 24, 9, 0)); // Thu 09:00: 2 workdays after Tue 00:00
+    expect(status(qa).answer).toBe("yielded");
+  });
+
+  test("a card whose typed note is being read keeps its slot", () => {
+    const a = prop("a", "2026-09-16");
+    const qa = propCard(a.id, old);
+    (hub as any).reading.set(qa.id, { n: 1 });
+    p.tick(now);
+    expect(status(qa).status).toBe("open");
+    (hub as any).reading.delete(qa.id);
+    p.tick(now);
+    expect(status(qa).answer).toBe("yielded");
+  });
+
+  test("a yielded item is asked again once the 5-day cooldown is over", () => {
+    const a = prop("a", "2026-09-16");
+    const qa = propCard(a.id, old);
+    p.tick(now);
+    expect(status(qa).answer).toBe("yielded");
+    expect(openItems()).toEqual([]);
+    hub.store.putQuestion({ ...status(qa), answeredAt: new Date(Date.now() - (4 * 24 + 23) * 3600_000).toISOString() });
+    p.tick(now);
+    expect(openItems()).toEqual([]);
+    hub.store.putQuestion({ ...status(qa), answeredAt: new Date(Date.now() - (5 * 24 + 1) * 3600_000).toISOString() });
+    p.tick(now);
+    expect(openItems()).toEqual([a.id]);
+  });
+
+  test("a snoozed card keeps its slot; its age counts from when it came back", () => {
+    const [a, b] = [prop("a", "2026-09-16"), prop("b", "2026-09-16")];
+    const qa = propCard(a.id, old, { notBefore: new Date(2026, 8, 24, 9, 30).toISOString() }); // snoozed to tomorrow
+    const qb = propCard(b.id, old, { notBefore: new Date(2026, 8, 23, 9, 30).toISOString() }); // came back this morning
+    prop("c", "2026-09-16");
+    p.tick(now);
+    expect(status(qa).status).toBe("open");
+    expect(status(qb).status).toBe("open");
+  });
+});
+
 describe("stale cards", () => {
   test("workdaysAgo skips weekends", () => {
     expect(workdaysAgo(3, now).toString()).toBe(new Date(2026, 8, 18, 15, 0).toString());

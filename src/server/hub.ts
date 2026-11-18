@@ -295,10 +295,7 @@ export class Hub {
   ask(q: Omit<Question, "id" | "status" | "createdAt"> & { cooldownMin?: number; once?: boolean }): Question | undefined {
     if (this.store.openQuestionByKey(q.key)) return undefined;
     if (q.once && this.store.lastAnswered(q.key)) return undefined;
-    if (q.cooldownMin) {
-      const last = this.store.lastAnswered(q.key);
-      if (last?.answeredAt && Date.now() - Date.parse(last.answeredAt) < q.cooldownMin * 60_000) return undefined;
-    }
+    if (q.cooldownMin && this.onCooldown(q.key, q.cooldownMin)) return undefined;
     const { cooldownMin: _c, once: _o, ...rest } = q;
     const question: Question = { ...rest, id: newId("q"), status: "open", createdAt: nowIso() };
     this.store.putQuestion(question);
@@ -319,6 +316,17 @@ export class Hub {
     console.warn(`[work-hq] dead button on ${q.key}: ${labels} has a noop effect`);
     this.journal(`Dead button: ${labels} on “${q.prompt.slice(0, 120)}” does nothing when tapped (${q.key})`, { itemId: q.itemId, questionId: q.id, who: "hq" });
     this.toast(`Dead button: ${labels} on the new card does nothing when tapped. Answer it another way.`, "warn");
+  }
+
+  /** The card on `key` was answered or closed less than `cooldownMin` ago, so ask() won't ask it now. */
+  onCooldown(key: string, cooldownMin: number) {
+    const last = this.store.lastAnswered(key);
+    return Boolean(last?.answeredAt && Date.now() - Date.parse(last.answeredAt) < cooldownMin * 60_000);
+  }
+
+  /** The note reader is reading a typed note on this card now: closing it would drop what the note asks for. */
+  isReading(id: string) {
+    return this.reading.has(id);
   }
 
   closeQuestionsFor(itemId: string, reason: string) {
