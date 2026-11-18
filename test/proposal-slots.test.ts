@@ -197,13 +197,42 @@ describe("proposal cards yield their slot", () => {
     expect(openItems()).toEqual([high.id, med.id].sort());
   });
 
-  test("an away block that ended restarts the clock: you weren't there to see the card", () => {
+  test("overlapping or duplicate away blocks count once; a card made mid-block counts only the rest of it", () => {
     const a = prop("a", "2026-09-16");
-    const qa = propCard(a.id, old); // Thu 09-17
+    const qa = propCard(a.id, new Date(2026, 8, 21, 12, 0).toISOString()); // Mon 12:00, inside the 10:00-14:00 block
+    const pickup = { title: "Out of office - creche pickup", start: new Date(2026, 8, 22, 16, 30).toISOString(), end: new Date(2026, 8, 22, 17, 15).toISOString() };
+    hub.store.setKv("calendarAway", JSON.stringify([
+      { title: "OOO", start: new Date(2026, 8, 21, 10, 0).toISOString(), end: new Date(2026, 8, 21, 14, 0).toISOString() },
+      { title: "OOO school run", start: new Date(2026, 8, 21, 11, 0).toISOString(), end: new Date(2026, 8, 21, 12, 30).toISOString() },
+      pickup,
+      pickup,
+      { title: "bad", start: "soon", end: "later" },
+    ]));
+    // Clock starts Mon 12:00 + 2h (rest of the block) + 45 min (pickup once) = Mon 14:45: yields at Wed 15:00.
+    // Double-counting the school run or the pickup would push it past Mon 15:00 and keep it open.
+    p.tick(now);
+    expect(status(qa).answer).toBe("yielded");
+  });
+
+  test("time away is left out of the age: a 4-day block pushes the clock on 4 days", () => {
+    const a = prop("a", "2026-09-16");
+    const qa = propCard(a.id, old); // Thu 09-17 10:00
     hub.store.setKv("calendarAway", JSON.stringify([{ title: "OOO", start: new Date(2026, 8, 18, 0, 0).toISOString(), end: new Date(2026, 8, 22, 0, 0).toISOString() }]));
-    p.tick(now); // Wed 15:00: back since Tue 00:00, under 2 workdays
+    p.tick(new Date(2026, 8, 22, 15, 0)); // Tue 15:00: counts as shown Mon 10:00, under 2 workdays
     expect(status(qa).status).toBe("open");
-    p.tick(new Date(2026, 8, 24, 9, 0)); // Thu 09:00: 2 workdays after Tue 00:00
+    p.tick(now); // Wed 15:00: past Mon 15:00
+    expect(status(qa).answer).toBe("yielded");
+  });
+
+  test("a short daily block (creche pickup) only adds its own 45 min; one still ahead adds nothing", () => {
+    // Live 11-18: restarting the clock at each block's end kept cards from ever ageing out.
+    const a = prop("a", "2026-09-16");
+    const qa = propCard(a.id, new Date(2026, 8, 21, 14, 0).toISOString()); // Mon 14:00
+    hub.store.setKv("calendarAway", JSON.stringify([
+      { title: "Out of office - creche pickup", start: new Date(2026, 8, 22, 16, 30).toISOString(), end: new Date(2026, 8, 22, 17, 15).toISOString() },
+      { title: "Out of office - creche pickup", start: new Date(2026, 8, 23, 16, 30).toISOString(), end: new Date(2026, 8, 23, 17, 15).toISOString() },
+    ]));
+    p.tick(now); // Wed 15:00: shown Mon 14:45 < Mon 15:00
     expect(status(qa).answer).toBe("yielded");
   });
 

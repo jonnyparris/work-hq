@@ -1054,8 +1054,8 @@ export class Prompter {
    * Open proposal cards give their slot up ('yielded'; the item stays proposed and is asked again after the card's
    * cooldown, like an answer):
    * - Age: shown PROPOSAL_YIELD_WORKDAYS ago with no answer. Shown = the latest of createdAt, a past notBefore (a
-   *   snooze, a note read or a batch defer parks the card and restarts the clock) and the end of an away block that
-   *   has ended (you weren't there to see it). Not while you're away.
+   *   snooze, a note read or a batch defer parks the card and restarts the clock), plus the time spent away since
+   *   then. Not while you're away.
    * - Newer: the slots should hold the CAP.proposal best proposals that can be asked, in fill order (newest reflection,
    *   then High before Medium/Low). A card ranked out by an askable proposal strictly ahead of it yields; on an exact
    *   tie the card stays, so nothing churns. A free slot is used first: a card only yields when the others don't fit.
@@ -1068,13 +1068,31 @@ export class Prompter {
     const movable = (q: Question) => !deferred(q, now) && !this.hub.isReading(q.id);
     const byId = new Map(proposals.map((i) => [i.id, i]));
     const before = workdaysAgo(PROPOSAL_YIELD_WORKDAYS, now).getTime();
-    const back = Math.max(0, ...this.hub.away().map((b) => awayMs(b.end)).filter((t) => t <= now.getTime()));
-    const shownAt = (q: Question) => Math.max(Date.parse(q.createdAt), q.notBefore ? Date.parse(q.notBefore) : 0, back);
+    // Time away since the card was shown doesn't count: a week off adds a week, a 45-min creche pickup adds 45 min
+    // (restarting the clock at each block's end meant a daily pickup kept every card from ever ageing out).
+    // Overlapping blocks (a school run inside a day off, one event on two calendars) count once. Only the blocks the
+    // calendar sweep still lists (today on) are known: a multi-day OOO that ended before today no longer adds anything.
+    const blocks = this.hub
+      .away()
+      .map((b) => [awayMs(b.start), Math.min(awayMs(b.end), now.getTime())] as const)
+      .filter(([s, e]) => Number.isFinite(s) && Number.isFinite(e) && s < e)
+      .sort((a, b) => a[0] - b[0]);
+    // The age clock's start: when it was shown, pushed forward by the time away since then.
+    const ageFrom = (q: Question) => {
+      const from = Math.max(Date.parse(q.createdAt), q.notBefore ? Date.parse(q.notBefore) : 0);
+      let gone = 0;
+      let upTo = from;
+      for (const [s, e] of blocks) {
+        const start = Math.max(s, upTo);
+        if (e > start) (gone += e - start), (upTo = e);
+      }
+      return from + gone;
+    };
     const away = Boolean(this.hub.awayAt(now));
     let closed = 0;
     const left: Question[] = [];
     for (const q of cards) {
-      if (!away && movable(q) && shownAt(q) < before) {
+      if (!away && movable(q) && ageFrom(q) < before) {
         this.hub.expireQuestion(q.id, "yielded");
         closed++;
       } else left.push(q);
