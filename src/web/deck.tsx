@@ -1,6 +1,7 @@
 // "Clear the deck": every open question at once, grouped by how much of you it
 // needs. One-tap stuff first, hand-offs next, head-work last (and deferrable in bulk).
 
+import { explainOption } from "../shared/explain-option.ts";
 import { useMemo, useState } from "react";
 import {
   type BulkOp, type BulkRequest, type DeckGroup, type DeferTarget, EFFORT_LABEL, GROUP_ORDER, GROUPS, type SlotLoad, deckGroup, deferTargets, slotLine, slotLoad,
@@ -162,7 +163,7 @@ function DeckRow({ q, item, targets, loads, onFocus }: { q: Question; item?: Ite
       <span className="deck-opts">
         {special && <button className="mini-opt primary" onClick={onFocus}>Open</button>}
         {opts.map((o) => (
-          <button key={o.id} className={`mini-opt ${o.tone ?? ""}`} disabled={busy} onClick={() => go(() => api.answer(q.id, o.id))}>{o.label}</button>
+          <button key={o.id} className={`mini-opt ${o.tone ?? ""}`} disabled={busy} title={explainOption(o, q)} onClick={() => go(() => api.answer(q.id, o.id))}>{o.label}</button>
         ))}
         {!special && (
           <select className="mini-sel" value="" disabled={busy} onChange={(e) => {

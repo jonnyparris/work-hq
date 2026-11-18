@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CalendarEvent, Coaching, CoachOutcome, Effect, Item, ItemStatus, Job, JournalEntry, LoadNow, Question, SyncState } from "../shared/types.ts";
 import { explainKey } from "../shared/detail.ts";
+import { AGENT_NOW_LABEL, agentNowAction, explainAgentNow, explainOption, showAgentNow } from "../shared/explain-option.ts";
 import { committedView } from "../shared/committed.ts";
 import { BOSS_MIN, waitingOnYou } from "../shared/boss.ts";
 import { REVIEW_HOLD_MIN, reviewable } from "../shared/meetings.ts";
@@ -42,7 +43,7 @@ export function NowPanel({ now, events, workHours }: { now: Date; events: Calend
   );
 }
 
-export function Timeline({ now, events, items, questions = [], onRefresh, sync }: { now: Date; events: CalendarEvent[]; items: Item[]; questions?: Question[]; onRefresh: () => void; sync?: SyncState }) {
+export function Timeline({ now, events, items, questions = [], jobs = [], onRefresh, onOpenItem, sync }: { now: Date; events: CalendarEvent[]; items: Item[]; questions?: Question[]; jobs?: Job[]; onRefresh: () => void; onOpenItem?: (id: string) => void; sync?: SyncState }) {
   // A meeting that just ended gets a dictation box on its row until the notes-sweep window closes (REVIEW_HOLD_MIN):
   // after that, a meeting with no notes goes on the end-of-day card (prompter askUnrecorded). An open per-meeting
   // "X just ended" card (from before that card) keeps its box and takes the words as its note. Drafts live here, not
@@ -82,6 +83,7 @@ export function Timeline({ now, events, items, questions = [], onRefresh, sync }
                 <time>{hhmm(e.start)}</time>
                 <div>
                   <div className="t">{e.url ? <a href={e.url} target="_blank" rel="noreferrer" style={{ color: "inherit" }}>{e.title}</a> : e.title}</div>
+                  {!past && e.response !== "declined" && people(e.attendees).length > 0 && <BriefMe e={e} items={items} jobs={jobs} onOpenItem={onOpenItem} />}
                   {people(e.attendees).length ? <div className="a">{people(e.attendees).slice(0, 4).join(", ")}{people(e.attendees).length > 4 ? ` +${people(e.attendees).length - 4}` : ""}</div> : null}
                   {(() => {
                     const card = openReview.has(e.id);
@@ -102,6 +104,48 @@ export function Timeline({ now, events, items, questions = [], onRefresh, sync }
         {!nowPlaced && rows.length > 0 && <div className="nowline" />}
       </div>
     </div>
+  );
+}
+
+/**
+ * "Brief me" on a meeting row that hasn't ended: a prep agent for that meeting, whatever kind it is (Hub.briefEvent).
+ * Shows on hover; stays visible while the brief is being written, and once it's done it opens the brief's item.
+ */
+export function BriefMe({ e, items, jobs, onOpenItem }: { e: CalendarEvent; items: Item[]; jobs: Job[]; onOpenItem?: (id: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | undefined>();
+  const prep = items.find((i) => i.source.key === `cal:prep:${e.id}`);
+  const preps = prep ? jobs.filter((j) => j.itemId === prep.id && j.kind === "action" && j.name === "prep").sort((a, b) => b.createdAt.localeCompare(a.createdAt)) : [];
+  const live = preps.find((j) => ["queued", "running", "blocked"].includes(j.status));
+  // Written: the item closed, or its latest prep run finished (an agent can leave the item on doing).
+  const ready = prep && (prep.status === "done" || preps[0]?.status === "done");
+  const send = async () => {
+    if (busy) return;
+    setBusy(true);
+    setErr(undefined);
+    try { await api.brief(e.id); }
+    catch (x) { setErr((x as Error).message); }
+    finally { setBusy(false); }
+  };
+  if (live) {
+    return (
+      <button className="ev-act on" onClick={() => (live.workspace ? api.focusJob(live.id) : prep && onOpenItem?.(prep.id))} title="An agent is writing the brief. Click to watch it.">
+        <span className="thinking"><i /><i /><i /></span> Briefing…
+      </button>
+    );
+  }
+  if (prep && ready) {
+    return (
+      <span className="ev-acts on">
+        <button className="ev-act on" onClick={() => onOpenItem?.(prep.id)} title="The brief is written. Opens its item: the file is under Source.">Brief ready ↗</button>
+        <button className="ev-act" disabled={busy} onClick={send} title="Send another agent to write a fresh brief for this meeting.">Again</button>
+      </span>
+    );
+  }
+  return (
+    <button className={`ev-act ${err ? "on err" : ""}`} disabled={busy} onClick={send} title={err ? `Couldn't start: ${err}` : "Send an agent now to write a brief for this meeting: the calendar event, the people, what's open with them and what to raise. It opens when done. Nothing is sent to anyone."}>
+      {busy ? "Sending…" : err ? "Retry brief" : "Brief me"}
+    </button>
   );
 }
 
@@ -199,7 +243,7 @@ function HeldReview({ q, open, card, draft, setDraft }: { q: Question; open: boo
 }
 
 // ── Focus: the one question ───────────────────────────────────────────────
-export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onBack, canBack, onOpenItem }: { q?: Question; total: number; fresh?: number; nav?: number; onHold?: (hold: boolean) => void; items: Item[]; onSkip: () => void; onBack?: () => void; canBack?: boolean; onOpenItem: (id: string) => void }) {
+export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, jobs = [], onSkip, onBack, canBack, onOpenItem }: { q?: Question; total: number; fresh?: number; nav?: number; onHold?: (hold: boolean) => void; items: Item[]; jobs?: Job[]; onSkip: () => void; onBack?: () => void; canBack?: boolean; onOpenItem: (id: string) => void }) {
   const [note, setNote] = useState("");
   const [noteFocus, setNoteFocus] = useState(false);
   // Set when you answer or send: the card leaving is expected, so the note goes with it.
@@ -260,6 +304,20 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
     catch { leaving.current = false; setBusy(false); }
   };
 
+  // "Agent: deal with it now": a work agent on the card's item (a brief for a meeting), whatever the card's own buttons.
+  const agentNow = async () => {
+    if (!q || busy) return;
+    if (whenFor) { stopDictation(); setHeard(false); }
+    setBusy(true);
+    setNoteErr(undefined);
+    leaving.current = true;
+    try { await api.agentNow(q.id, note.trim() || undefined); }
+    catch (e) { leaving.current = false; setBusy(false); setNoteErr(`No agent sent: ${(e as Error).message}`); }
+  };
+  // The button under the pointer or keyboard focus: its "what happens" line shows under the buttons.
+  const [hover, setHover] = useState<string | undefined>();
+  useEffect(() => setHover(undefined), [q?.id]);
+
   const startWhen = (optionId: string) => {
     setWhenFor(optionId);
     setNote("");
@@ -308,6 +366,7 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
       else if (e.key === "s" || e.key === "ArrowRight") { e.preventDefault(); onSkip(); }
       else if (e.key === "ArrowLeft" && canBack) { e.preventDefault(); onBack?.(); }
       else if (e.key === "n") { e.preventDefault(); noteRef.current?.focus(); }
+      else if (e.key === "a" && agentAction) { e.preventDefault(); agentNow(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -325,6 +384,12 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
   const [defBadge, tone] = Q_BADGE[q.kind];
   const badge = q.badge ?? defBadge;
   const item = q.itemId ? items.find((i) => i.id === q.itemId) : undefined;
+  // A meeting card's agent works on the meeting's prep item: busy if its brief is being written.
+  const busyOn = q.itemId ?? (q.eventId ? items.find((i) => i.source.key === `cal:prep:${q.eventId}`)?.id : undefined);
+  const agentBusy = Boolean(busyOn && jobs.some((j) => j.kind === "action" && j.itemId === busyOn && ["queued", "running", "blocked"].includes(j.status)));
+  const agentAction = showAgentNow(q, item, agentBusy) ? agentNowAction(q, item) : undefined;
+  const hovered = hover && hover !== "agent-now" ? q.options.find((o) => o.id === hover) : undefined;
+  const hoverText = hover === "agent-now" && agentAction ? explainAgentNow(agentAction, { typed: Boolean(note.trim()) }) : hovered ? explainOption(hovered, q, { typed: Boolean(note.trim()) }) : undefined;
   return (
     <div className="focus" key={q.id}>
       <div className="focus-top">
@@ -383,13 +448,40 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
           </div>
         </div>
       ) : (
-      <div className="options">
+      <>
+      <div className="options" onMouseLeave={() => setHover(undefined)}>
         {q.options.map((o, i) => (
-          <button key={o.id} className={`opt ${o.tone ?? ""}`} disabled={busy || blockedOption(o.effect, ticks.length, note)} onClick={() => answer(o.id)}>
+          <button
+            key={o.id}
+            className={`opt ${o.tone ?? ""}`}
+            disabled={busy || blockedOption(o.effect, ticks.length, note)}
+            onClick={() => answer(o.id)}
+            title={explainOption(o, q, { typed: Boolean(note.trim()) })}
+            onMouseEnter={() => setHover(o.id)}
+            onFocus={() => setHover(o.id)}
+            onBlur={() => setHover(undefined)}
+          >
             <kbd>{i + 1}</kbd>{q.kind === "plan" && o.id === "plan" ? (picked.length ? `Commit to ${picked.length}` : "Clear today") : o.effect.type === "prepMeetings" ? (ticks.length ? `Prep ${ticks.length}` : "Tick a meeting to prep") : o.effect.type === "donePicks" && !o.effect.all ? (ticks.length ? `Mark ${ticks.length} done` : "Tick the done ones") : o.effect.type === "closePicks" && !o.effect.all ? (ticks.length ? `Close ${ticks.length}` : "Tick the ones to close") : o.effect.type === "retirePicks" && !o.effect.all && !o.effect.keep ? (ticks.length ? `Retire ${ticks.length}, keep the rest` : "Tick the ones to retire") : o.effect.type === "stoppedPicks" && !o.effect.all ? (ticks.length ? `${o.effect.act === "check" ? "Check" : "Send again"}: ${ticks.length}` : o.effect.act === "check" ? "Tick the ones to check" : "Tick the ones to send again") : o.label}
           </button>
         ))}
+        {agentAction && (
+          <button
+            className="opt agent"
+            disabled={busy}
+            onClick={agentNow}
+            title={explainAgentNow(agentAction, { typed: Boolean(note.trim()) })}
+            onMouseEnter={() => setHover("agent-now")}
+            onFocus={() => setHover("agent-now")}
+            onBlur={() => setHover(undefined)}
+          >
+            <kbd>a</kbd><Icon name="bolt" />{agentAction === "prep" ? "Agent: brief me now" : AGENT_NOW_LABEL}
+          </button>
+        )}
       </div>
+      <div className={`opt-explain ${hoverText ? "on" : ""}`} aria-live="polite" data-testid="opt-explain">
+        {hoverText ?? "Point at a button to see exactly what it does."}
+      </div>
+      </>
       )}
       <div className="focus-foot">
         {canBack && <button className="skip" onClick={onBack} title="Previous card (←)">← Back</button>}
@@ -411,6 +503,53 @@ export function Focus({ q, total, fresh = 0, nav = 0, onHold, items, onSkip, onB
       </div>
       {carried && note.trim() && <div className="ctx" style={{ color: "var(--text-2)" }}>The card you were writing on closed elsewhere. Your note is kept — ⌘↵ sends it to this card, or clear it.</div>}
       {noteErr && <div className="ctx" style={{ color: "var(--coral)" }}>Couldn't send: {noteErr}</div>}
+    </div>
+  );
+}
+
+/**
+ * The cards waiting behind the one in front. Folded: the next few as chips and "+N more". "+N more" (or "Show all")
+ * opens every waiting card as a list, so you can pick the one to answer instead of taking the queue's order; snoozed
+ * cards are listed below with when they come back. Picking one brings it to the front (skip.ts jump).
+ */
+export function Queue({ queue, later = [], items, now, onPick, chips = 7 }: { queue: Question[]; later?: Question[]; items: Item[]; now: Date; onPick: (id: string) => void; chips?: number }) {
+  const [open, setOpen] = useState(false);
+  const rest = queue.slice(1);
+  if (!rest.length && !later.length) return null;
+  const row = (q: Question, when?: string) => {
+    const [defBadge, tone] = Q_BADGE[q.kind];
+    const it = q.itemId ? items.find((i) => i.id === q.itemId) : undefined;
+    return (
+      <button key={q.id} className="qrow" onClick={when ? undefined : () => { onPick(q.id); setOpen(false); }} disabled={Boolean(when)} title={when ? `Snoozed. Comes back ${when}.` : "Answer this one now"}>
+        <span className={`badge ${tone}`}>{q.badge ?? defBadge}</span>
+        <span className="qrow-t"><Md inline className="" text={q.prompt} /></span>
+        <span className="qrow-m">{when ?? [it ? KIND_LABEL[it.kind] : "", it?.project, ago(q.createdAt, now.getTime())].filter(Boolean).join(" · ")}</span>
+      </button>
+    );
+  };
+  if (open) {
+    return (
+      <div className="queue-list" data-testid="queue-list">
+        <div className="queue-list-h">
+          <span>{rest.length} more waiting{later.length ? ` · ${later.length} snoozed` : ""}. Pick any to answer it first.</span>
+          <button className="kbd-btn" onClick={() => setOpen(false)}>Show less ▴</button>
+        </div>
+        {rest.map((q) => row(q))}
+        {later.length > 0 && <div className="queue-list-sub">Snoozed</div>}
+        {[...later].sort((a, b) => (a.notBefore ?? "").localeCompare(b.notBefore ?? "")).map((q) => row(q, whenLabel(q.notBefore!, now)))}
+      </div>
+    );
+  }
+  return (
+    <div className="queue">
+      {rest.slice(0, chips).map((q) => (
+        <button key={q.id} className="qchip" onClick={() => onPick(q.id)} title={q.prompt}>
+          {q.prompt}
+        </button>
+      ))}
+      {rest.length > chips && <button className="qchip more" onClick={() => setOpen(true)} title="Show every waiting card">+{rest.length - chips} more ▾</button>}
+      {rest.length <= chips && rest.length > 2 && <button className="qchip more" onClick={() => setOpen(true)} title="Show every waiting card as a list">Show all ▾</button>}
+      {later.length > 0 && <button className="qchip later" onClick={() => setOpen(true)} title="Show snoozed cards and when they come back">{later.length} snoozed</button>}
     </div>
   );
 }
@@ -599,7 +738,7 @@ const LANES: Array<{ id: string; label: string; test: (i: Item) => boolean }> = 
   { id: "done", label: "Closed", test: (i) => i.status === "done" || i.status === "dropped" },
 ];
 
-export function Board({ items, selected, onOpen }: { items: Item[]; selected?: string; onOpen: (id: string) => void }) {
+export function Board({ items, selected, onOpen, onPile }: { items: Item[]; selected?: string; onOpen: (id: string) => void; onPile?: () => void }) {
   const [lane, setLane] = useState<string>(() => (items.some((i) => i.status === "inbox") ? "inbox" : "proposed"));
   const [q, setQ] = useState("");
   // Folded by default: the tabs (with counts) stay as a one-line header; a tab or the chevron opens it.
@@ -621,6 +760,11 @@ export function Board({ items, selected, onOpen }: { items: Item[]; selected?: s
         ))}
         {open && <input className="filter-in" placeholder="Filter…" value={q} onChange={(e) => setQ(e.target.value)} />}
       </div>
+      {open && lane === "proposed" && onPile && list.length > 10 && (
+        <div className="pile-hint">
+          {list.length} proposed is a lot to scroll. <button className="kbd-btn" onClick={onPile}>Sort the pile →</button> filters by age and source and acts on many at once.
+        </div>
+      )}
       {open && (
         <div className="items">
           {list.map((i) => <ItemRow key={i.id} it={i} selected={selected === i.id} onOpen={() => onOpen(i.id)} />)}
@@ -689,6 +833,9 @@ export function FoldToggle({ open, onToggle, label }: { open: boolean; onToggle:
 export function CoachingPanel({ c, now }: { c?: Coaching; now: Date }) {
   const [open, setOpen] = useState(false);
   const [added, setAdded] = useState(false);
+  // Folded by default to the move's first line: the M5 move card asks about it at its time anyway, so the full
+  // text doesn't need the column all day. Remembered per browser (whq:open:coach).
+  const [full, setFull] = useStoredFlag("whq:open:coach", false);
   if (!c) return null;
   const age = Math.round((now.getTime() - Date.parse(`${c.date}T12:00:00`)) / 86_400_000);
   const stale = age > 2;
@@ -696,12 +843,22 @@ export function CoachingPanel({ c, now }: { c?: Coaching; now: Date }) {
   const lines = c.move.split("\n").filter((l) => l.trim());
   const first = lines.map((l) => l.replace(/^\s*(?:[-*]|\d+\.)\s+/, "").replace(/\*\*|`/g, "").trim()).find(Boolean) ?? "";
   return (
-    <div className="panel coaching">
+    <div className={`panel coaching ${full ? "" : "folded"}`}>
       <div className="panel-h">
-        <h3>One thing to try</h3>
+        <button className="fold-h coach-fold" aria-expanded={full} onClick={() => setFull((x) => !x)} title={full ? "Collapse" : "Show the whole move"}>
+          <Chev open={full} />
+          <h3>One thing to try</h3>
+        </button>
         {c.signal && <span className={`badge ${tone}`} title="This week's M5 signal, from the nightly reflection">{c.signal}</span>}
-        <a className="act" href={c.url} title={c.file}>{stale ? <span style={{ color: "var(--coral)" }}>{c.date.slice(5)} · stale</span> : c.date.slice(5)}</a>
+        <a className="act" href={c.url} title={`Open the reflection it came from (${c.file})`}>{stale ? <span style={{ color: "var(--coral)" }}>{c.date.slice(5)} · stale</span> : c.date.slice(5)}</a>
       </div>
+      {!full && (
+        <button className="coach-peek" onClick={() => setFull(true)} title="Show the whole move">
+          <Md text={first} inline />
+        </button>
+      )}
+      {!full && <CoachTrack history={c.history ?? []} />}
+      {full && <>
       {c.when && <div className="coach-when">{c.when}</div>}
       <div className="coach-move">
         {lines.map((l, i) => {
@@ -722,8 +879,8 @@ export function CoachingPanel({ c, now }: { c?: Coaching; now: Date }) {
           <button className="kbd-btn" onClick={() => setOpen((x) => !x)}>{open ? "Hide" : "Why"} ({c.wins.length} wins · {c.gaps.length} gaps)</button>
         )}
         <span className="spacer" />
-        <button className="kbd-btn" disabled={added || !first} title="Add it to Committed" onClick={() => { api.add(`M5: ${first}`.slice(0, 160)); setAdded(true); }}>
-          {added ? "Committed ✓" : "+ Commit"}
+        <button className="kbd-btn" disabled={added || !first} title="Adds the move's first line as a task on your Committed list for today. No agent is sent." onClick={() => { api.add(`M5: ${first}`.slice(0, 160)); setAdded(true); }}>
+          {added ? "Added to Committed ✓" : "+ Add to Committed"}
         </button>
       </div>
       {open && (
@@ -732,6 +889,7 @@ export function CoachingPanel({ c, now }: { c?: Coaching; now: Date }) {
           {c.gaps.length > 0 && <><div className="coach-h">Below M5</div>{c.gaps.map((w, i) => <div key={i} className="coach-line"><span className="coach-mark" style={{ color: "var(--coral)" }}>−</span><Md text={w} inline /></div>)}</>}
         </div>
       )}
+      </>}
     </div>
   );
 }
@@ -785,9 +943,27 @@ export function blockedOption(e: Effect, ticked: number, note: string) {
   return needsTicks(e) && !ticked && !typed;
 }
 
-export function AgentsPanel({ jobs, cmux, load, questions = [] }: { jobs: Job[]; cmux: boolean; load?: LoadNow; questions?: Question[] }) {
-  const live = jobs.filter((j) => ["running", "blocked", "queued"].includes(j.status));
-  const recent = jobs.filter((j) => !live.includes(j)).slice(0, 6);
+/** Agents finished in the last this-many hours show in the panel; older ones are in each item's drawer. */
+export const RECENT_AGENT_HOURS = 12;
+/** Finished agents listed before "N more". */
+export const RECENT_AGENT_ROWS = 3;
+
+/**
+ * Your agents: the ones sent on items (live first, full card; finished in the last RECENT_AGENT_HOURS as one-line
+ * rows). Sweeps and triage runs are background plumbing whose state the top bar's chips already show: hidden behind
+ * "N background runs" unless one failed. 11-18: the panel was mostly finished "Scan meeting transcripts" cards.
+ */
+export function AgentsPanel({ jobs, cmux, load, questions = [], now = Date.now() }: { jobs: Job[]; cmux: boolean; load?: LoadNow; questions?: Question[]; now?: number }) {
+  const [bg, setBg] = useState(false);
+  const [more, setMore] = useState(false);
+  const isLive = (j: Job) => ["running", "blocked", "queued"].includes(j.status);
+  const mine = jobs.filter((j) => j.kind === "action");
+  const background = jobs.filter((j) => j.kind !== "action");
+  const live = mine.filter(isLive);
+  const recent = mine.filter((j) => !isLive(j) && now - Date.parse(j.finishedAt ?? j.createdAt) < RECENT_AGENT_HOURS * 3_600_000);
+  // A failed sweep is news (its chip goes red too, but it's easy to miss): it shows until a later run of the same sweep.
+  const failedBg = background.filter((j) => j.status === "failed" && !background.some((x) => x.name === j.name && x.createdAt > j.createdAt));
+  const shownRecent = more ? recent : recent.slice(0, RECENT_AGENT_ROWS);
   return (
     <div className="panel">
       <div className="panel-h">
@@ -797,9 +973,35 @@ export function AgentsPanel({ jobs, cmux, load, questions = [] }: { jobs: Job[];
         <span className="act" title="Dispatched actions open as pi sessions in the cmux 'Work HQ' group">{cmux ? "cmux ✓" : "headless"}</span>
       </div>
       <BossButton jobs={jobs} questions={questions} />
-      {!jobs.length && <div className="empty">No agents yet. Dispatch from any item or question.</div>}
-      {[...live, ...recent].map((j) => <JobCard key={j.id} j={j} />)}
+      {!live.length && !recent.length && <div className="empty">No agents running. “Agent: deal with it now” on a card, or “Brief me” on a meeting, sends one.</div>}
+      {live.map((j) => <JobCard key={j.id} j={j} />)}
+      {shownRecent.length > 0 && <div className="jobs-sub">Finished</div>}
+      {shownRecent.map((j) => <JobRow key={j.id} j={j} />)}
+      {recent.length > RECENT_AGENT_ROWS && (
+        <button className="kbd-btn jobs-more" onClick={() => setMore((x) => !x)}>{more ? "Show fewer" : `${recent.length - RECENT_AGENT_ROWS} more finished`}</button>
+      )}
+      {failedBg.map((j) => <JobCard key={j.id} j={j} />)}
+      {background.length > 0 && (
+        <button className="kbd-btn jobs-more" onClick={() => setBg((x) => !x)} title="Calendar and transcript sweeps, triage of what you type. Their status is also on the chips in the top bar.">
+          {bg ? "Hide background runs" : `${background.filter(isLive).length ? `${background.filter(isLive).length} running · ` : ""}${background.length} background runs`}
+        </button>
+      )}
+      {bg && background.filter((j) => !failedBg.includes(j)).slice(0, 8).map((j) => <JobRow key={j.id} j={j} />)}
     </div>
+  );
+}
+
+/** A one-line job: finished agents and background runs. Click the title to read its summary. */
+function JobRow({ j }: { j: Job }) {
+  const [open, setOpen] = useState(false);
+  const dot = { queued: "run", running: "run", blocked: "run", done: "ok", failed: "err" }[j.status];
+  if (open) return <div className="job-wrap"><JobCard j={j} /><button className="kbd-btn" onClick={() => setOpen(false)}>Less</button></div>;
+  return (
+    <button className={`job-row ${j.status}`} onClick={() => setOpen(true)} title={j.summary ?? j.error ?? j.title}>
+      <span className={`dot ${dot}`} />
+      <span className="name">{j.title}</span>
+      <span className="when">{ago(j.finishedAt ?? j.startedAt ?? j.createdAt)}</span>
+    </button>
   );
 }
 
@@ -857,8 +1059,8 @@ function JobCard({ j }: { j: Job }) {
       {j.summary && !["running", "queued"].includes(j.status) && <div className="sum">{j.summary}</div>}
       {j.error && <div className="err">{j.error}</div>}
       <div className="job-acts">
-        {j.workspace && <button className="mini" onClick={() => api.focusJob(j.id)}>Open in cmux ↗</button>}
-        {["running", "queued", "blocked"].includes(j.status) && <button className="mini" onClick={() => api.cancelJob(j.id)}>Stop</button>}
+        {j.workspace && <button className="mini" onClick={() => api.focusJob(j.id)} title="Switch to this agent's terminal in cmux, to watch, nudge or take over.">Open in cmux ↗</button>}
+        {["running", "queued", "blocked"].includes(j.status) && <button className="mini" onClick={() => api.cancelJob(j.id)} title="Stop this agent now and close its terminal. Anything it already did stays done.">Stop</button>}
         <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-3)" }}>{ago(j.finishedAt ?? j.startedAt ?? j.createdAt)}</span>
       </div>
     </div>

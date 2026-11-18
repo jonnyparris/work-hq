@@ -287,6 +287,53 @@ The command bar does the same in words: "skip all blog posts till Thursday", "cl
 "check all the unknowns for me", "push the rest to tomorrow". Triage sees the open groups and returns
 `bulk: [{ op, group | kind | ids, until }]`. All of these go through `POST /api/questions/bulk`.
 
+### What a button does, and "Agent: deal with it now"
+
+Every option on a card says what tapping it does: under the buttons on hover or keyboard focus, and as the button's
+tooltip ([`src/shared/explain-option.ts`](../src/shared/explain-option.ts), web only, from the option's `effect` and
+`hint`). Each line answers three things: what happens to the item, whether an agent goes, and whether this card closes
+or comes back (snooze, noop, `keep`, "Scheduled for…" and the stopped-agents fold say so; the rest end "This card closes.").
+A verify doesn't claim the item moves to doing: `Agents.dispatch` leaves it. 11-18: "Still mine today" read as
+maybe an agent, maybe a dismissal; it's `status: today` (Committed, no agent, the wrap-up asks).
+
+A card about one item or one upcoming meeting also gets **Agent: deal with it now** (key `a`). Not on tick-box, plan,
+wrap or "just ended" cards, closed items, items an agent is already on, or when one of the card's own buttons already
+sends that agent. It's `POST /api/questions/:id/agent` → `Hub.agentNow`: the item's agent (`itemAgentAction`: `prep`
+for a calendar prep item, `draft` for a post idea, else `work`; `prep` for a meeting card), answered like one of the
+card's own options (`answerWith`): the card's answer and the job's decision line read `<prompt> → Agent: deal with it
+now`, the journal gets `Dispatched <action>: <title>` (and the item's notes the answer, on agent cards, as for any
+answer). A typed note goes to the agent. Refused, card left open: an agent already on the item (it would leave that one
+unanswered), a meeting no longer on the calendar, a closed item.
+
+### Brief me (schedule rows)
+
+Every meeting with other people that hasn't ended gets a **Brief me** button on its schedule row (on hover).
+`POST /api/events/:id/brief` → `Hub.briefEvent`: the meeting's prep item (`cal:prep:<event id>`, reused while open)
+and a `prep` dispatch whose note (`briefNote`) says to brief whatever the meeting type, starting from the calendar
+event (description, agenda, docs, organiser) and then memory (attendees, project, earlier meetings of the same title).
+A live job on that item means nothing new starts. The row shows "Briefing…" (click to watch) and "Brief ready ↗" (opens
+the item) after.
+
+### Sort the pile (/pile)
+
+The Proposed lane as its own page ([`src/web/pile.tsx`](../src/web/pile.tsx), [`src/shared/pile.ts`](../src/shared/pile.ts)):
+every proposed item oldest first, filtered by age (from `createdAt`; memory re-imports bump `updatedAt` daily) and
+by where it came from (to-do list, reflection or learn proposals, writing ideas, meetings, you, agents, checks). Tick
+rows, then one bulk bar: Drop, Today, Agent (at most `PILE_AGENT_MAX` = 5 a tap, each the item's own agent:
+`itemAgentAction`), Already done, Keep for now (staleKeptAt: off the stale-proposals card for 14 days).
+`POST /api/items/bulk` → `Hub.bulkItems`; status changes journal per item (`— sorted from the pile`), keep journals once.
+Only items still `proposed` and with no live agent change; a dispatch that throws skips that item. It returns the ids it
+handled, and only those lose their tick.
+11-18: 152 proposed, 53 over a month old; the stale-proposals card's 20 a day couldn't keep up.
+
+### The right column
+
+Committed and One thing to try start folded (`whq:open:committed`, `whq:open:coach`): the coaching panel shows the
+move's first line and the done track; its M5 move card asks at the move's time anyway. The Agents panel lists only
+dispatched agents: live ones in full, ones finished in the last 12 h as one-line rows (3, then "N more"). Sweeps and
+triage runs fold into "N background runs" (the top-bar chips already show them), except a failed sweep, shown until
+that sweep runs again.
+
 ### Morning slots skip weekends
 
 "Tomorrow 09:30" means the next workday ([`src/shared/workday.ts`](../src/shared/workday.ts)): Wrap up's Carry,
@@ -442,6 +489,8 @@ stopped-run fold cards `after:fold:*` excepted) are different questions from dif
 ```
 src/shared/types.ts       shared model + AgentReport contract
 src/shared/workday.ts     workdays, next work morning slots (server + web)
+src/shared/explain-option.ts  "what this button does" lines + the Agent-now rule
+src/shared/pile.ts        Sort the pile: sources, ages, bulk ops
 src/server/index.ts       Bun.serve: routes, websocket
 src/server/hub.ts         state transitions, journal, agent-report ingest, typed notes, scanned meetings
 src/server/dedupe.ts      cross-source duplicate check (title tokens)

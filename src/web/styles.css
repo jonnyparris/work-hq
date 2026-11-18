@@ -633,3 +633,71 @@ a.ticket:hover { text-decoration-color: currentColor; }
 .add-row .tick { color: var(--text-2); }
 .pick-foot { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 11.5px; color: var(--text-3); }
 .planner .pick-row { width: 100%; }
+
+/* what a card's button does (shared/explain-option.ts) */
+.opt.agent { border-color: rgba(124,196,255,0.4); color: var(--sky); background: var(--sky-soft); gap: 8px; }
+.opt.agent svg { width: 14px; height: 14px; }
+.opt.agent:hover { background: rgba(124,196,255,0.22); }
+.opt-explain { margin-top: 10px; min-height: 2.9em; font-size: 12.5px; line-height: 1.45; color: var(--text-3); padding: 7px 10px; border-radius: 9px; border: 1px dashed transparent; }
+.opt-explain.on { color: var(--text-2); background: rgba(0,0,0,0.22); border-color: var(--line-2); }
+
+/* queue: "+N more" opens every waiting card */
+.qchip.more { color: var(--text); border-color: var(--line-2); cursor: pointer; }
+.queue-list { margin-top: 12px; padding: 8px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface); display: flex; flex-direction: column; gap: 2px; max-height: 420px; overflow: auto; }
+.queue-list-h { display: flex; align-items: center; gap: 8px; justify-content: space-between; font-size: 12px; color: var(--text-3); padding: 2px 6px 6px; }
+.queue-list-sub { font: 600 10px/1 var(--font); letter-spacing: .12em; text-transform: uppercase; color: var(--text-3); padding: 10px 6px 4px; }
+.qrow { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; text-align: left; padding: 7px 8px; border-radius: 9px; font-size: 13px; color: var(--text); }
+.qrow:hover:not(:disabled) { background: var(--surface-2); }
+.qrow:disabled { opacity: .55; cursor: default; }
+.qrow .badge { font-size: 9.5px; white-space: nowrap; }
+.qrow-t { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qrow-m { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+
+/* "Brief me" on a schedule row */
+.ev-act, .ev-acts { position: absolute; right: 6px; top: 5px; opacity: 0; transition: opacity .12s; }
+.ev-acts { display: inline-flex; gap: 4px; }
+.ev-acts .ev-act { position: static; opacity: 1; }
+.ev-act { padding: 3px 8px; border-radius: 7px; font-size: 11px; background: var(--bg-2); border: 1px solid var(--line-2); color: var(--text-2); display: inline-flex; align-items: center; gap: 6px; }
+.ev-act:hover:not(:disabled) { color: var(--text); border-color: var(--sky); }
+.ev:hover .ev-act, .ev:hover .ev-acts, .ev-act:focus-visible, .ev-act.on, .ev-acts.on { opacity: 1; }
+.ev-act.on { color: var(--sky); border-color: rgba(124,196,255,0.4); }
+.ev-act.err { color: var(--coral); border-color: rgba(255,122,107,0.4); }
+
+/* right column: folded coaching, quieter agents */
+.coach-fold { display: inline-flex; align-items: center; gap: 6px; width: auto; }
+.coaching.folded .panel-h { margin-bottom: 6px; }
+.coach-peek { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; text-align: left; font-size: 13px; line-height: 1.45; color: var(--text-2); padding: 0; }
+.coach-peek:hover { color: var(--text); }
+.jobs-sub { font: 600 10px/1 var(--font); letter-spacing: .12em; text-transform: uppercase; color: var(--text-3); margin: 12px 0 4px; }
+.job-row { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 6px 8px; border-radius: 8px; font-size: 12.5px; color: var(--text-2); }
+.job-row:hover { background: var(--surface-2); color: var(--text); }
+.job-row .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.job-row .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.job-row .when { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.job-wrap { margin: 4px 0; }
+.job-wrap .kbd-btn { font-size: 11px; color: var(--text-3); margin-top: 4px; }
+.jobs-more { display: block; margin-top: 8px; font-size: 12px; color: var(--text-3); }
+
+/* sort the pile (web/pile.tsx) */
+.nav button .n { margin-left: 6px; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.pile { max-width: 980px; margin: 0 auto; width: 100%; display: flex; flex-direction: column; gap: 10px; }
+.pile-head h2 { margin: 0 0 6px; font: 600 20px/1.2 var(--display); }
+.pile-head p { margin: 0 0 12px; color: var(--text-2); font-size: 13.5px; line-height: 1.5; }
+.pile-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; }
+.pile-label { font: 600 10px/1 var(--font); letter-spacing: .12em; text-transform: uppercase; color: var(--text-3); width: 44px; }
+.pile-bar { position: sticky; top: 8px; z-index: 5; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px; background: var(--bg-2); }
+.pile-bar .filter-in { margin-left: auto; }
+.pile-count { font-size: 12px; color: var(--text-2); min-width: 72px; }
+.pile-tick { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; }
+.pile-tick:hover { background: var(--surface-2); }
+.pile-tick.on .tick, .pile-row.on .pile-tick .tick { background: var(--gold); border-color: var(--gold); color: #1d1606; }
+.pile-msg { font-size: 12.5px; color: var(--text-2); padding: 0 6px; }
+.pile-msg:empty { margin-top: -10px; } /* stays in the DOM for aria-live; cancels the flex gap */
+.pile-list { display: flex; flex-direction: column; gap: 2px; padding: 8px; }
+.pile-row { display: grid; grid-template-columns: 30px 1fr auto; gap: 8px; align-items: center; padding: 4px 6px; border-radius: 10px; }
+.pile-row:hover, .pile-row.sel { background: var(--surface-2); }
+.pile-row.on { background: var(--gold-soft); }
+.pile-row:hover .quick, .pile-row.sel .quick, .pile-row:focus-within .quick { opacity: 1; }
+.pile-title { text-align: left; font-size: 13.5px; line-height: 1.35; color: var(--text); padding: 4px 0; min-width: 0; }
+.pile-hint { font-size: 12px; color: var(--text-3); padding: 8px 4px 4px; }
+.pile-hint .kbd-btn { color: var(--gold); }

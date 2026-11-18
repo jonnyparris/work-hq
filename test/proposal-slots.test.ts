@@ -495,6 +495,7 @@ describe("stale card buttons", () => {
     const q = { ...buildStaleCard([card(old), card(old)]), id: "q_stale", key: "stale", status: "open", createdAt: old } as Question;
     const html = renderToStaticMarkup(createElement(Focus, { q, total: 1, items: [], onSkip: () => {}, onOpenItem: () => {} }));
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*><kbd>1<\/kbd>Tick the ones to close<\/button>/);
-    expect(html).toMatch(/<button class="opt danger"><kbd>2<\/kbd>Close all 2<\/button>/);
+    // Not disabled; the title is the button's "what happens" tooltip (shared/explain-option.ts).
+    expect(html).toMatch(/<button class="opt danger"(?![^>]*disabled)[^>]*><kbd>2<\/kbd>Close all 2<\/button>/);
   });
 });

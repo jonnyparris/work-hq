@@ -4,6 +4,7 @@
 import index from "../web/index.html";
 import talk from "../../docs/talk/index.html";
 import type { BulkRequest } from "../shared/batch.ts";
+import type { PileOp } from "../shared/pile.ts";
 import type { ActionKind, AgentReport, ItemStatus } from "../shared/types.ts";
 import { Agents } from "./agents.ts";
 import { Checks } from "./checks.ts";
@@ -56,6 +57,7 @@ const server = Bun.serve({
   routes: {
     "/": index,
     "/journal": index,
+    "/pile": index,
     "/board": index,
     "/talk": talk,
 
@@ -112,6 +114,25 @@ const server = Bun.serve({
         }),
     },
 
+    // Sort the pile (web PileView): one op on many items. See Hub.bulkItems.
+    "/api/items/bulk": {
+      POST: (req) =>
+        handle(async () => {
+          const b = await body<{ ids: string[]; op: PileOp }>(req);
+          if (!Array.isArray(b.ids) || !b.ids.length) throw new Error("no items");
+          return hub.bulkItems(b.ids, b.op);
+        }),
+    },
+
+    // "Brief me" on a meeting row in today's schedule: a prep agent for that meeting. See Hub.briefEvent.
+    "/api/events/:id/brief": {
+      POST: (req) =>
+        handle(async () => {
+          const b = await body<{ note?: string }>(req);
+          return (await hub.briefEvent(req.params.id, b.note)) ?? null;
+        }),
+    },
+
     "/api/items/:id/schedule": {
       POST: (req) =>
         handle(async () => {
@@ -149,6 +170,15 @@ const server = Bun.serve({
           const answered = await hub.answer(q.id, b.optionId, b.note, { journalOpen: true, itemIds: b.itemIds, picks: b.picks });
           if (q.kind === "review" && b.note) void agents.triage(reviewUtterance(q, b.note), "review");
           return answered;
+        }),
+    },
+
+    // The card's "Agent: deal with it now" button. See Hub.agentNow.
+    "/api/questions/:id/agent": {
+      POST: (req) =>
+        handle(async () => {
+          const b = await body<{ note?: string }>(req);
+          return hub.agentNow(req.params.id, b.note?.trim() || undefined);
         }),
     },
 

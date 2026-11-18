@@ -146,6 +146,19 @@ tickets it names, so it still works after the cmux session was closed. It report
 Agents that stop on the same error within 2 minutes of the first (a gateway blip, a restart) share one **Agents stopped** card:
 check them or send them again, all at once or the ticked ones.
 
+Not sure what a button does? Point at it. The line under the buttons says what happens to the item, whether an
+agent goes, and whether the card closes or comes back ("Still mine today": on your Committed list, no agent, the
+evening wrap-up asks). A card about one item or an upcoming meeting also has **Agent: deal with it now** (key `a`):
+an agent on it, or a brief for a meeting, right away. It's left off when an agent is already on the item, when one of
+the card's own buttons already sends that agent, on closed items, and on tick-box, plan, wrap-up and "just ended" cards. Behind the card, **+N more** opens every waiting card as a list,
+so you can answer the one you want first.
+
+Any meeting with other people on today's schedule has **Brief me** on its row (hover). An agent reads the calendar
+event and memory and writes a short brief, whatever kind of meeting it is.
+
+Proposed piling up? **Sort the pile** (top bar, or `/pile`) lists every proposed item oldest first, filtered by age and
+where it came from. Tick a batch, then drop, commit, hand to agents (5 at a time) or keep them quiet for two weeks.
+
 No button fits? Type it in the note field and press **`⌘↵`**: *"drop it"*, *"chase Sam on Thursday"*, *"it's Joan, not Jon,
 and tighten it first"*. The note is the answer. Work HQ picks the matching option, changes the status, schedules it,
 or sends an agent with your words. If the note is only background, it's kept on the item and the question waits

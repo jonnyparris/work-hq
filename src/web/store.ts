@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import type { BulkRequest } from "../shared/batch.ts";
+import type { PileOp } from "../shared/pile.ts";
 import type { ActionKind, Item, ItemStatus, ServerEvent, Snapshot } from "../shared/types.ts";
 import { setProfile, setTracker } from "./ui.tsx";
 
@@ -108,6 +109,12 @@ export const api = {
   schedule: (id: string, at: string, label?: string) => call("POST", `/api/items/${id}/schedule`, { at, label }),
   add: (title: string, status: ItemStatus = "today") => call("POST", "/api/items", { title, status }),
   say: (text: string, mode: "chat" | "review" = "chat", eventId?: string) => call<{ reply?: string }>("POST", "/api/say", { text, mode, ...(eventId ? { eventId } : {}) }),
+  /** The card's "Agent: deal with it now": a work agent on its item (a brief for a meeting card); the card closes. */
+  agentNow: (id: string, note?: string) => call("POST", `/api/questions/${id}/agent`, { note }),
+  /** "Brief me" on a schedule row: a prep agent for that meeting. */
+  brief: (eventId: string, note?: string) => call("POST", `/api/events/${encodeURIComponent(eventId)}/brief`, { note }),
+  /** Sort the pile: one op on many items. */
+  bulkItems: (ids: string[], op: PileOp) => call<{ count: number; skipped: number; handled: string[] }>("POST", "/api/items/bulk", { ids, op }),
   bulk: (req: BulkRequest) => call<{ count: number; skipped: number }>("POST", "/api/questions/bulk", req),
   sync: (name: string) => call("POST", `/api/sync/${name}`),
   recheck: () => call("POST", "/api/recheck"),

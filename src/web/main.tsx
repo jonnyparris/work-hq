@@ -5,10 +5,13 @@ import { quickFirst } from "../shared/batch.ts";
 import { type Pin, pinQueue, takePin } from "../shared/pin.ts";
 import { back, canBack, emptyNav, focusOn, jump, type Nav, next, orderQueue, readNav } from "../shared/skip.ts";
 import { Deck } from "./deck.tsx";
-import { AgentsPanel, Board, CoachingPanel, Drawer, Focus, JournalPage, NowPanel, Timeline, TodayPanel } from "./parts.tsx";
+import { PileView } from "./pile.tsx";
+import { AgentsPanel, Board, CoachingPanel, Drawer, Focus, JournalPage, NowPanel, Queue, Timeline, TodayPanel } from "./parts.tsx";
 import { api, useHQ, useNow } from "./store.ts";
 import { Icon, ago, useStoredFlag } from "./ui.tsx";
 import { Voice, chime, micSupported, speechSupported } from "./voice.ts";
+
+type View = "today" | "journal" | "pile";
 
 function App() {
   const notify = useCallback((n: { title: string; body: string }) => {
@@ -20,7 +23,7 @@ function App() {
   }, []);
   const s = useHQ(notify);
   const now = useNow(15_000);
-  const [view, setView] = useState<"today" | "journal">(location.pathname === "/journal" ? "journal" : "today");
+  const [view, setView] = useState<View>(location.pathname === "/journal" ? "journal" : location.pathname === "/pile" ? "pile" : "today");
   const [sel, setSel] = useState<string | undefined>();
   // "Next" is navigation only: nothing is sent. Kept per tab so a reload doesn't put a skipped card back on top.
   // Back restores the list from before the last move (src/shared/skip.ts).
@@ -84,7 +87,7 @@ function App() {
     }
   }, []);
 
-  const go = (v: "today" | "journal") => { setView(v); history.replaceState(null, "", v === "today" ? "/" : "/journal"); };
+  const go = (v: View) => { setView(v); history.replaceState(null, "", v === "today" ? "/" : `/${v}`); };
   // The snapshot drops items closed more than 3 days ago; a journal row can still point at one, so fetch it.
   const [fetched, setFetched] = useState<Item | undefined>();
   const openItem = useCallback((id: string) => {
@@ -95,15 +98,17 @@ function App() {
 
   return (
     <div className={`app ${s.config.demo ? "demo-mode" : ""}`}>
-      <TopBar sync={s.sync} connected={s.connected} memoryOn={s.config.memory} view={view} go={go} now={now} demo={s.config.demo} liveUrl={s.config.liveUrl} />
-      <div className="main" style={view === "journal" ? { gridTemplateColumns: "1fr" } : undefined}>
+      <TopBar sync={s.sync} connected={s.connected} memoryOn={s.config.memory} view={view} go={go} now={now} demo={s.config.demo} liveUrl={s.config.liveUrl} pile={s.items.filter((i) => i.status === "proposed").length} />
+      <div className="main" style={view !== "today" ? { gridTemplateColumns: "1fr" } : undefined}>
         {view === "journal" ? (
           <div className="col"><JournalPage journal={s.journal} journalPath={s.config.memory ? s.config.journalPath : undefined} onOpenItem={openItem} /></div>
+        ) : view === "pile" ? (
+          <div className="col"><PileView items={s.items} now={now} onOpen={openItem} selected={sel} /></div>
         ) : (
           <>
             <div className="col left">
               <NowPanel now={now} events={s.events} workHours={s.config.workHours} />
-              <Timeline now={now} events={s.events} items={s.items} questions={s.questions} onRefresh={() => api.sync("calendar")} sync={s.sync.find((x) => x.name === "calendar")} />
+              <Timeline now={now} events={s.events} items={s.items} questions={s.questions} jobs={s.jobs} onOpenItem={openItem} onRefresh={() => api.sync("calendar")} sync={s.sync.find((x) => x.name === "calendar")} />
             </div>
             <div className="col center">
               {deck ? (
@@ -127,35 +132,34 @@ function App() {
                   nav={nav}
                   onHold={setHold}
                   items={s.items}
+                  jobs={s.jobs}
                   onSkip={() => navigate(() => setSkips((x) => next(x, queue)))}
                   canBack={queue.length > 1 && canBack(skips, ready, queue[0]?.id)}
                   onBack={() => navigate(() => setSkips((x) => back(x, ready, queue[0]?.id)))}
                   onOpenItem={setSel}
                 />
                 {queue.length > 1 && (
-                  <div className="queue">
-                    {queue.slice(1, 8).map((q) => (
-                      <button key={q.id} className="qchip" onClick={() => navigate(() => setSkips((x) => jump(x, queue, q.id)))} title={q.prompt}>
-                        {q.prompt}
-                      </button>
-                    ))}
-                    {queue.length > 8 && <span className="qchip">+{queue.length - 8} more</span>}
-                    {later.length > 0 && <span className="qchip later">{later.length} snoozed</span>}
-                  </div>
+                  <Queue
+                    queue={queue}
+                    later={later}
+                    items={s.items}
+                    now={now}
+                    onPick={(id) => navigate(() => setSkips((x) => jump(x, queue, id)))}
+                  />
                 )}
                 <div className="kbd-help">
-                  <kbd>1</kbd>–<kbd>9</kbd> answer · <kbd>→</kbd>/<kbd>s</kbd> next · <kbd>←</kbd> back · <kbd>n</kbd> note · <kbd>⌘↵</kbd> send note (acts on it) · <kbd>⌘K</kbd> talk
+                  <kbd>1</kbd>–<kbd>9</kbd> answer · <kbd>a</kbd> agent · <kbd>→</kbd>/<kbd>s</kbd> next · <kbd>←</kbd> back · <kbd>n</kbd> note · <kbd>⌘↵</kbd> send note (acts on it) · <kbd>⌘K</kbd> talk
                   {queue.length > 1 && <> · <button className="kbd-btn" onClick={() => setDeck(true)}><kbd>b</kbd> clear the deck</button></>}
                   {" · "}<button className={`kbd-btn ${quick ? "on" : ""}`} onClick={() => setQuick((x) => !x)}><kbd>q</kbd> quick wins first{quick ? " ✓" : ""}</button>
                 </div>
               </div>
               )}
-              <Board items={s.items} selected={sel} onOpen={setSel} />
+              <Board items={s.items} selected={sel} onOpen={setSel} onPile={() => go("pile")} />
             </div>
             <div className="col right">
               <TodayPanel items={s.items} jobs={s.jobs} onOpen={setSel} selected={sel} />
               <CoachingPanel c={s.coaching} now={now} />
-              <AgentsPanel jobs={s.jobs} cmux={s.config.cmux} load={s.load} questions={s.questions} />
+              <AgentsPanel jobs={s.jobs} cmux={s.config.cmux} load={s.load} questions={s.questions} now={now.getTime()} />
             </div>
           </>
         )}
@@ -205,7 +209,7 @@ function DemoToggle({ demo, liveUrl }: { demo: boolean; liveUrl?: string }) {
   );
 }
 
-function TopBar({ sync, connected, memoryOn, view, go, now, demo, liveUrl }: { sync: SyncState[]; connected: boolean; memoryOn: boolean; view: string; go: (v: "today" | "journal") => void; now: Date; demo: boolean; liveUrl?: string }) {
+function TopBar({ sync, connected, memoryOn, view, go, now, demo, liveUrl, pile }: { sync: SyncState[]; connected: boolean; memoryOn: boolean; view: string; go: (v: View) => void; now: Date; demo: boolean; liveUrl?: string; pile: number }) {
   const chip = (name: string, label: string, run: () => unknown = () => api.sync(name), title?: string) => {
     const x = sync.find((y) => y.name === name);
     const running = x?.lastRunAt && (!x.lastOkAt || x.lastRunAt > x.lastOkAt) && !x.error && Date.now() - Date.parse(x.lastRunAt) < 25 * 60_000;
@@ -221,6 +225,7 @@ function TopBar({ sync, connected, memoryOn, view, go, now, demo, liveUrl }: { s
       <div className="brand"><span className="brand-mark" />Work HQ</div>
       <div className="nav">
         <button className={view === "today" ? "on" : ""} onClick={() => go("today")}>Today</button>
+        <button className={view === "pile" ? "on" : ""} onClick={() => go("pile")} title="Every proposed item in one list, to drop, commit or hand off in bulk">Sort the pile{pile ? <span className="n">{pile}</span> : null}</button>
         <button className={view === "journal" ? "on" : ""} onClick={() => go("journal")}>Journal</button>
       </div>
       <DemoToggle demo={demo} liveUrl={liveUrl} />
