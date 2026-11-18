@@ -315,6 +315,9 @@ export interface Job {
   ideasFiled?: number;
   /** Action jobs: titles of idea items over the cap, folded into the summary instead of filed. */
   ideasFolded?: string[];
+  /** Action jobs: later dispatches of the same action on the item that joined this job instead of starting another
+   *  (SAME_ACTION_WINDOW_MS). Added to the prompt if it hadn't launched yet, else typed into its session. */
+  folded?: string[];
   /** cmux jobs: in-place "carry on" nudges sent after a turn failed, by cause (the usage digest counts them). */
   nudges?: {
     rateLimit?: number;

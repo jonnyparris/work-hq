@@ -20,11 +20,11 @@ function setup() {
   // Keep the job queued (live) and capture the prompt; never launch.
   (agents as any).launchAction = async (jobId: string, _t: string, prompt: string) => void prompts.set(jobId, prompt);
   const item = hub.createItem({ title: "Commerce.com WebMCP post. Could help Kitesurf", kind: "idea", status: "doing" });
-  const ask = (key: string, prompt: string, label: string) =>
+  const ask = (key: string, prompt: string, label: string, action: "ticket" | "reply" | "draft" = "ticket") =>
     hub.ask({
       kind: "open", itemId: item.id, key, priority: 72, prompt,
       options: [
-        { id: "go", label, effect: { type: "dispatch", action: "ticket" } },
+        { id: "go", label, effect: { type: "dispatch", action } },
         { id: "no", label: "Not now", effect: { type: "noop" } },
       ],
     }) as Question;
@@ -34,8 +34,9 @@ function setup() {
 test("parallel answers on one item: each job is scoped to its own decision and sees the ones before it", async () => {
   const { hub, prompts, item, ask } = setup();
   const q1 = ask("agent:1", "Close PAY-1668 and PAY-1496 as already done?", "Close both");
-  const q2 = ask("agent:2", "File KITE ticket: wrap AbortSignal.timeout in the defer-shim?", "File the ticket");
-  const q3 = ask("agent:3", "Close KITE-97 and file an edge-bridge e2e fixture?", "File the ticket");
+  // Different actions: the same action within SAME_ACTION_WINDOW_MS folds into the live job (tests below).
+  const q2 = ask("agent:2", "Reply on the defer-shim thread: wrap AbortSignal.timeout?", "Reply", "reply");
+  const q3 = ask("agent:3", "Draft the edge-bridge e2e fixture doc?", "Draft it", "draft");
   await hub.answer(q1.id, "go");
   await hub.answer(q2.id, "go");
   await hub.answer(q3.id, "go");
@@ -45,8 +46,8 @@ test("parallel answers on one item: each job is scoped to its own decision and s
   // Same-millisecond createdAt is common here, so find each job by its decision rather than sorting.
   const decisions = [
     "Close PAY-1668 and PAY-1496 as already done? → Close both",
-    "File KITE ticket: wrap AbortSignal.timeout in the defer-shim? → File the ticket",
-    "Close KITE-97 and file an edge-bridge e2e fixture? → File the ticket",
+    "Reply on the defer-shim thread: wrap AbortSignal.timeout? → Reply",
+    "Draft the edge-bridge e2e fixture doc? → Draft it",
   ];
   const jobs = decisions.map((d) => live.find((j) => j.decision === d)!);
   expect(jobs.every(Boolean)).toBe(true);
@@ -54,11 +55,11 @@ test("parallel answers on one item: each job is scoped to its own decision and s
   const [p1, p2, p3] = jobs.map((j) => prompts.get(j.id)!);
   expect(p1).toContain("THIS JOB'S DECISION (do this one, nothing else):\n- Close PAY-1668 and PAY-1496 as already done? → Close both");
   expect(p1).not.toContain("ALSO RUNNING ON THIS ITEM");
-  expect(p2).toContain("- File KITE ticket: wrap AbortSignal.timeout in the defer-shim? → File the ticket\nThe other decisions");
+  expect(p2).toContain("- Reply on the defer-shim thread: wrap AbortSignal.timeout? → Reply\nThe other decisions");
   expect(p2).toContain(`- ${jobs[0]!.id} · TICKET: Close PAY-1668`);
   // The third job knows both earlier ones are running and what each is for.
   expect(p3).toContain(`- ${jobs[0]!.id} · TICKET: Close PAY-1668`);
-  expect(p3).toContain(`- ${jobs[1]!.id} · TICKET: File KITE ticket: wrap AbortSignal.timeout`);
+  expect(p3).toContain(`- ${jobs[1]!.id} · REPLY: Reply on the defer-shim thread`);
   // Notes still carry all three decisions as context.
   expect(p3).toContain("notes on it (newest last)");
   expect(p3.indexOf("THIS JOB'S DECISION")).toBeLessThan(p3.indexOf("notes on it"));
@@ -69,10 +70,13 @@ test("the same action for the same decision while it's running returns the runni
   const a = await agents.dispatch(item.id, "ticket", "file it", "Q? → File the ticket");
   const b = await agents.dispatch(item.id, "ticket", "file it", "Q? → File the ticket");
   expect(b?.id).toBe(a!.id);
-  // A different decision or action is a different job.
+  // Another decision for the same action within SAME_ACTION_WINDOW_MS joins the live job (one-live-agent.test.ts).
   const c = await agents.dispatch(item.id, "ticket", "file it", "Other Q? → File the ticket");
+  expect(c?.id).toBe(a!.id);
+  expect(hub.store.job(a!.id)?.folded).toEqual(["Other Q? → File the ticket — file it"]);
+  // A different action is a different job.
   const d = await agents.dispatch(item.id, "reply", "file it", "Q? → File the ticket");
-  expect(new Set([a!.id, c!.id, d!.id]).size).toBe(3);
+  expect(d?.id).not.toBe(a!.id);
   // Once the first one has finished, the same dispatch runs again.
   hub.putJob({ ...hub.store.job(a!.id)!, status: "done", finishedAt: new Date().toISOString() });
   const e = await agents.dispatch(item.id, "ticket", "file it", "Q? → File the ticket");

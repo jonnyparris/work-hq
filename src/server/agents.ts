@@ -99,6 +99,14 @@ export const TRIAGE_BLIP_RETRY_MS = 10_000;
  * rerun: the ask's request is still open, and a late blip plus a full 4-min rerun could hold it 8+ min.
  */
 export const TRIAGE_BLIP_MAX_FIRST_MS = 60_000;
+/**
+ * A live job for the same action on the same item created this recently takes a new dispatch's note instead of a
+ * second job. 11-16: a "Resume in the worktree" tap and a typed "so do it" on the item's after: card started two
+ * WORK jobs 18 s apart; the second waited 51 minutes, then stood down.
+ */
+export const SAME_ACTION_WINDOW_MS = 10 * 60_000;
+/** One line, safe to put in a prompt bullet or type into a terminal: no line breaks or control characters (C0, DEL, C1). */
+const oneLine = (s?: string) => (s ?? "").replace(/[\s\x00-\x1f\x7f-\x9f]+/g, " ").trim();
 const TRANSIENT_NUDGE = "Your last request failed on a network error (timeout or dropped connection). Carry on from where you stopped.";
 const NUDGE = { rate: RESUME_NUDGE, transient: TRANSIENT_NUDGE } as const;
 
@@ -227,6 +235,8 @@ type TriageMode = "chat" | "review";
 
 export class Agents implements Dispatcher {
   private running = new Map<string, Running>();
+  /** Jobs whose prompt has gone to a launch (finalPrompt): a fold after that can't go into the prompt. */
+  private promptSent = new Set<string>();
   /** Tests shorten these. */
   triageBlipRetryMs = TRIAGE_BLIP_RETRY_MS;
   triageBlipMaxFirstMs = TRIAGE_BLIP_MAX_FIRST_MS;
@@ -419,6 +429,7 @@ export class Agents implements Dispatcher {
   /** Fail a job a restart caught before launch, and hand its item back with a card to send it again. */
   private failUnstarted(job: Job) {
     this.hub.putJob({ ...job, status: "failed", error: "server restarted before launch", finishedAt: nowIso() });
+    this.foldedLost(job.id);
     const item = job.itemId ? this.hub.store.item(job.itemId) : undefined;
     if (!item || job.kind !== "action") return;
     if (item.status === "doing") this.hub.updateItem(item.id, { status: "proposed" });
@@ -469,6 +480,13 @@ export class Agents implements Dispatcher {
       this.hub.toast(`Already running: ${same.title}`, "info");
       return same;
     }
+    // The same action on the item, started a moment ago, for another answer: one agent, not two. Its note goes to the
+    // journal against the live job and, when it has a session, into that session so the agent acts on it.
+    const now = Date.now();
+    const recent = siblings
+      .filter((j) => j.name === action && now - Date.parse(j.createdAt) < SAME_ACTION_WINDOW_MS)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    if (recent) return this.foldInto(recent, note, decision);
     const useCmux = this.cmuxDeps.available();
     const job = this.newJob("action", action, title, useCmux ? "cmux" : "headless", itemId, { decision, note });
     // Verifying doesn't change what the item *is*; everything else means someone's on it.
@@ -494,6 +512,7 @@ export class Agents implements Dispatcher {
       if (error && !this.cancelled(job.id)) this.patch(job.id, { status: "failed", error, finishedAt: nowIso() });
       // worktreeFor may have made the worktree: nothing else would remove it (finishAction never runs).
       void cleanupWorktree(job.id).catch(() => {});
+      this.foldedLost(job.id);
       // Another agent on the item (verify doesn't count: it never moves the item to doing) keeps it in doing.
       const others = this.hub.store.liveJobs().some((j) => j.kind === "action" && j.id !== job.id && j.itemId === itemId && j.name !== "verify");
       if (action !== "verify" && !others && this.hub.store.item(itemId)?.status === "doing") this.hub.updateItem(itemId, { status: item.status });
@@ -521,6 +540,42 @@ export class Agents implements Dispatcher {
     // Launch in the background: the gate may hold it for a while and callers shouldn't wait.
     void this.launchAction(job.id, title, prompt, useCmux);
     return this.hub.store.job(job.id);
+  }
+
+  /**
+   * A dispatch that joins a live job instead of starting another. What it asked for is journalled and kept on the job:
+   * a job that hasn't launched gets it in its prompt (startAction), a live cmux session gets it typed in.
+   */
+  private foldInto(job: Job, note?: string, decision?: string) {
+    const d = oneLine(decision);
+    const n = oneLine(note);
+    const asked = [d, n !== d ? n : ""].filter(Boolean).join(" — ");
+    if (!asked || job.folded?.includes(asked)) {
+      this.hub.toast(`Already running: ${job.title}`, "info");
+      return job;
+    }
+    this.patch(job.id, { folded: [...(job.folded ?? []), asked] });
+    let how: "prompt" | "typed" | "journal";
+    if (job.status === "queued" && !this.promptSent.has(job.id)) how = "prompt";
+    else {
+      // Only into a pi that's up and not in a dialog: launch.sh drops to a shell once pi exits (the job's status lags
+      // the beacon), and a blocked pi has a select/confirm open that Enter would answer.
+      const r = this.running.get(job.id);
+      const b = r?.statusPath ? cmux.readBeacon(r.statusPath) : undefined;
+      const up = b && (b.state === "idle" || b.state === "working");
+      const line = `Work HQ: ${config.owner.name} sent another ${job.name.toUpperCase()} for this item while you're running. Work it into this job: ${asked}`;
+      how = job.surface === "cmux" && job.workspace && up && (this.cmuxDeps.send ?? cmux.sendLine)(job.workspace, oneLine(line)) ? "typed" : "journal";
+    }
+    const where = { prompt: ", for its prompt when it launches", typed: ", typed into its session", journal: ", no session to pass it to" }[how];
+    this.hub.journal(`Folded into ${job.id} (${job.title})${where}: ${asked}`, { itemId: job.itemId, who: "hq" });
+    if (how === "journal") this.hub.toast(`Already running: ${job.title}. Couldn't pass your note to it: it's in the journal`, "warn");
+    else this.hub.toast(`Already running: ${job.title} (note passed on)`, "info");
+    // Someone's on it, as a new job would say: the item back to doing, its state cards answered.
+    if (job.name !== "verify" && job.itemId) {
+      if (this.hub.store.item(job.itemId)?.status !== "doing") this.hub.updateItem(job.itemId, { status: "doing" });
+      this.hub.closeStateCards(job.itemId, "agent sent");
+    }
+    return this.hub.store.job(job.id) ?? job;
   }
 
   /**
@@ -591,6 +646,27 @@ export class Agents implements Dispatcher {
     }
   }
 
+  /** A job that ended (or was adopted) before its prompt went out: the dispatches folded into it never ran. Say so once. */
+  private foldedLost(jobId: string) {
+    const job = this.hub.store.job(jobId);
+    const n = job?.folded?.length;
+    // startedAt: it launched before a restart emptied promptSent.
+    if (!job || !n || this.promptSent.has(jobId) || job.startedAt) return;
+    this.promptSent.add(jobId); // said once
+    this.hub.journal(`${job.id} never got its folded note${n === 1 ? "" : "s"} (it ended or was adopted before launch): ${job.folded!.join(" | ")}`, { itemId: job.itemId, who: "hq" });
+    this.hub.toast(`${job.title}: ${n} note${n === 1 ? "" : "s"} folded into it never reached the agent. Send again`, "warn");
+  }
+
+  /** The prompt as launched: plus any dispatches folded into the job while it waited. Later folds can't change it. */
+  private finalPrompt(jobId: string, prompt: string) {
+    this.promptSent.add(jobId);
+    const folded = (this.hub.store.job(jobId)?.folded ?? []).map(oneLine).filter(Boolean);
+    if (!folded.length) return prompt;
+    // scopeBlock's "do this one, nothing else" must not rule the folded ones out.
+    const scoped = prompt.replace("THIS JOB'S DECISION (do this one, nothing else):", "THIS JOB'S DECISION (do this one and the folded ones at the end, nothing else):");
+    return `${scoped}\n\nALSO THIS JOB'S DECISIONS (sent for the same action on this item while this job waited to launch; Work HQ folded them into this job instead of starting a second agent, so no other job has them). Do these too, along with the decision above:\n${folded.map((f) => `- ${f}`).join("\n")}\n`;
+  }
+
   /** Resolves once the job is running (or has failed to launch); a headless run carries on in the background. */
   private async startAction(jobId: string, title: string, prompt: string, useCmux: boolean) {
     if (useCmux) {
@@ -606,15 +682,17 @@ export class Agents implements Dispatcher {
       const prior = cmux.readClaim(jobId);
       if (prior === "cmux") return void this.adoptCmux(jobId, title, "▸ its cmux session from before the restart claimed it — tracking that");
       if (prior) return this.finishAction(jobId, { ok: false, text: "", error: `already launched (${prior}); not starting a second session` });
+      // The shared gateway token, as headless runs get it: no per-run key mint, and a lapsed login shows up
+      // here as one auth error. Only a token with a day left — the session can stay open for hours.
+      const env = await this.token.env(Date.now(), CMUX_TOKEN_TTL_MS);
       const launched = this.cmuxDeps.launch({
         jobId: jobId,
         title,
-        prompt,
+        // After the last await: a fold from here on types into the session instead (foldInto).
+        prompt: this.finalPrompt(jobId, prompt),
         cwd: config.workspace.dir,
         piArgs: [...modelArgs(), "-n", `work-hq: ${title}`],
-        // The shared gateway token, as headless runs get it: no per-run key mint, and a lapsed login shows up
-        // here as one auth error. Only a token with a day left — the session can stay open for hours.
-        env: await this.token.env(Date.now(), CMUX_TOKEN_TTL_MS),
+        env,
       });
       if (launched) {
         this.running.set(jobId, { statusPath: launched.statusPath, seenWork: false });
@@ -637,7 +715,7 @@ export class Agents implements Dispatcher {
     let settled = false;
     // The stall watchdog (pi.stallMin) catches a hung run; this ceiling only stops a busy one that never ends.
     // 45 min killed two review-heavy jobs mid-review on 10-23 (max event gap ~5 min: busy, not hung).
-    void this.runHeadless(jobId, prompt, { tools: true, thinking: "medium", perms: false, timeoutMin: 120 })
+    void this.runHeadless(jobId, this.finalPrompt(jobId, prompt), { tools: true, thinking: "medium", perms: false, timeoutMin: 120 })
       .then((r) => this.finishAction(jobId, r))
       .catch((e) => this.finishAction(jobId, { ok: false, text: "", error: (e as Error).message }))
       .finally(() => (settled = true));
@@ -650,6 +728,8 @@ export class Agents implements Dispatcher {
    * `look` false (cmux not answering at boot): don't look at all, each lookup would block the server.
    */
   private async adoptCmux(jobId: string, title: string, note: string, known?: string, look = true) {
+    // Its session launched from a prompt written before any folds: they never reach it.
+    this.foldedLost(jobId);
     this.running.set(jobId, { statusPath: resolve(cmux.jobDir(jobId), "status.json"), seenWork: false, adoptedAt: Date.now() });
     const tail = (extra: string) => [...(this.hub.store.job(jobId)?.tail ?? []), extra].slice(-12);
     this.patch(jobId, { status: "running", surface: "cmux", startedAt: this.hub.store.job(jobId)?.startedAt ?? nowIso(), tail: tail(note) });
@@ -922,6 +1002,8 @@ export class Agents implements Dispatcher {
   }
 
   private finishAction(jobId: string, r: { ok: boolean; text: string; error?: string }) {
+    this.foldedLost(jobId);
+    this.promptSent.delete(jobId);
     const job = this.hub.store.job(jobId);
     if (!job || ["done", "failed"].includes(job.status)) return;
     // Headless fallback: the final message may itself be the report.
@@ -1858,6 +1940,7 @@ export class Agents implements Dispatcher {
     if (workspace) (this.cmuxDeps.closeWorkspace ?? cmux.closeWorkspace)(workspace);
     this.running.delete(jobId);
     if (job && !["done", "failed"].includes(job.status)) this.patch(jobId, { status: "failed", error: "cancelled", finishedAt: nowIso() });
+    this.foldedLost(jobId);
   }
 
   focus(jobId: string) {
