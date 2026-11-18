@@ -65,6 +65,8 @@ export interface Item {
   signals?: {
     stateUnknown?: boolean;
     killDate?: string;
+    /** The kill date a keep answer moved it to (Hub.keepKill). A memory re-import keeps it over an earlier killDate. */
+    killKept?: string;
     dueDate?: string;
     dueFrom?: "clairic";
     lowConfidence?: boolean;

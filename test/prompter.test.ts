@@ -66,12 +66,11 @@ describe("prompter", () => {
       expect(killCards().map((q) => q.itemId)).toEqual([keep.id]);
       tick(new Date(2026, 8, 30, 9, 29)); // a minute before the slot (Wed 09-30 09:30)
       expect(card(ext.id)).toBeUndefined();
-      // The week is up: "It's time", and keep-or-kill again.
+      // The week is up: "It's time", with keep-or-kill on the same card (the kill date moved to the slot).
       tick(new Date(2026, 8, 30, 10));
-      expect(hub.store.questions("open").filter((q) => q.itemId === ext.id).map((q) => q.key).sort()).toEqual(
-        [`due:${ext.id}:${hub.store.item(ext.id)!.scheduledFor}`, "kill:" + ext.id + ":2026-09-22"].sort(),
-      );
-      await hub.answer(card(ext.id)!.id, "kill");
+      const due = hub.store.questions("open").filter((q) => q.itemId === ext.id);
+      expect(due.map((q) => q.key)).toEqual([`due:${ext.id}:${hub.store.item(ext.id)!.scheduledFor}`]);
+      await hub.answer(due[0]!.id, "kill");
       expect(hub.store.item(ext.id)!.status).toBe("dropped");
       expect(hub.store.questions("open").filter((q) => q.itemId === ext.id)).toHaveLength(0);
     });
@@ -82,24 +81,36 @@ describe("prompter", () => {
       expect(killCards().some((q) => q.itemId === it.id)).toBe(false);
     });
 
-    test("scheduled with no slot, or a slot that's passed, still gets the kill card", () => {
+    test("scheduled with no slot gets the kill card; a slot that's passed asks it on the due card", () => {
       const none = hub.createItem({ title: "someday", status: "scheduled", signals: { killDate: "2026-09-22" } });
       const past = hub.createItem({ title: "overdue", status: "scheduled", scheduledFor: at(9, 30).toISOString(), signals: { killDate: "2026-09-22" } });
       tick(at(10));
-      expect(killCards().map((q) => q.itemId).sort()).toEqual([none.id, past.id].sort());
+      expect(killCards().map((q) => q.itemId)).toEqual([none.id]);
+      const due = hub.store.questions("open").filter((q) => q.itemId === past.id);
+      expect(due.map((q) => q.key.split(":")[0])).toEqual(["due"]);
+      expect(due[0]!.options.find((o) => o.id === "kill")?.effect).toMatchObject({ type: "status", status: "dropped" });
     });
 
-    // The due card was held back (an agent on it), the kill card opened meanwhile: it mustn't block "It's time".
-    test("an open kill card doesn't hold back the due card", () => {
+    // An agent on it holds both cards back; once it's done, "It's time" asks, keep-or-kill on it.
+    test("an agent on it holds back the kill card too; then one due card", () => {
       const it = hub.createItem({ title: "overdue", status: "scheduled", scheduledFor: at(9, 30).toISOString(), signals: { killDate: "2026-09-22" } });
       const job = { id: "j_kill", kind: "action", name: "work", title: "x", surface: "headless", status: "running", itemId: it.id, tail: [], createdAt: at(9).toISOString() } as any;
       hub.putJob(job);
       tick(at(10));
       const keys = () => hub.store.questions("open").filter((q) => q.itemId === it.id).map((q) => q.key.split(":")[0]).sort();
-      expect(keys()).toEqual(["kill"]);
+      expect(keys()).toEqual([]);
       hub.putJob({ ...job, status: "done", finishedAt: at(10, 2).toISOString() });
       tick(at(10, 5));
-      expect(keys()).toEqual(["due", "kill"]);
+      expect(keys()).toEqual(["due"]);
+    });
+
+    // A kill card already open (asked before this change, or before the slot was set) mustn't block "It's time".
+    test("an open kill card doesn't hold back the due card", () => {
+      const it = hub.createItem({ title: "overdue", status: "scheduled", scheduledFor: at(9, 30).toISOString(), signals: { killDate: "2026-09-22" } });
+      hub.ask({ kind: "state", itemId: it.id, key: `kill:${it.id}:2026-09-22`, priority: 72, prompt: it.title, options: [] });
+      tick(at(10));
+      const keys = hub.store.questions("open").filter((q) => q.itemId === it.id).map((q) => q.key.split(":")[0]).sort();
+      expect(keys).toEqual(["due", "kill"]);
     });
 
     test("an open kill card closes once the item is scheduled elsewhere", () => {

@@ -78,6 +78,8 @@ export function optionFor(q: Pick<Question, "key" | "kind" | "options">, op: Exc
   if (q.key === "recheck") return undefined;
   switch (op) {
     case "dispatch":
+      // "Check all for me" checks: a kill card's "send an agent" is a per-card call, not a bulk one.
+      if (deckGroup(q) === "state") return o.find((x) => x.effect.type === "dispatch" && x.effect.action === "verify");
       return o.find((x) => x.effect.type === "dispatch" && BULK_ACTIONS.has(x.effect.action));
     case "done":
       return o.find((x) => setsStatus(x.effect, "done"));

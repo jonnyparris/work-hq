@@ -5,6 +5,7 @@
 import type { ActionKind, AwayBlock, CalendarEvent, Coaching, Item, Job, Question, QuestionOption, QuestionPick } from "../shared/types.ts";
 import { config, sweepOn } from "./config.ts";
 import { isAgentCard } from "../shared/boss.ts";
+import { setsStatus } from "../shared/batch.ts";
 import { isWorkday, nextMonday, nextWorkMorningSlot } from "../shared/workday.ts";
 import { REVIEW_HOLD_MIN, reviewable } from "../shared/meetings.ts";
 import { isOpen } from "./dedupe.ts";
@@ -298,7 +299,8 @@ export class Prompter {
           priority: 90,
           prompt: `It's time: ${it.title}`,
           context: it.when ? `You said ${it.when}.` : undefined,
-          options: dueOptions(act, this.pushesToday(it.id, now), now),
+          // A kill date that's due rides on this card ("Kill it"): one card at the slot, not two (askKill skips it).
+          options: [...dueOptions(act, this.pushesToday(it.id, now), now), ...(killDays(it, now) !== undefined ? [KILL_OPT] : [])],
           // "Scheduled for…" resolves async; don't re-ask this slot while the new time is landing.
           cooldownMin: 15,
         },
@@ -478,8 +480,13 @@ export class Prompter {
       // Scheduled for later ("Extend a week", Scheduled for…): you've answered; ask again once the slot comes.
       // 11-05: "Extend a week" left killDate behind and this card came back the next day.
       if (!kill || ["done", "dropped"].includes(it.status) || slotAhead(it, now)) continue;
-      const days = (Date.parse(`${kill}T23:59:59`) - now.getTime()) / DAY;
-      if (days > 2) continue;
+      const days = killDays(it, now);
+      if (days === undefined) continue;
+      // An agent is on it: its report answers keep-or-kill. The slot came: "It's time" carries "Kill it" instead.
+      if (busy.has(it.id) || (it.scheduledFor && dueKills(store.openQuestionByKey(`due:${it.id}:${it.scheduledFor}`)))) continue;
+      // Proposals and work-shaped items: "do it" on this card sends an agent (quickNote picks the dispatch option).
+      // 11-12 "do it" on it_mw5m4rjjysw1k's kill card became "Do it today"; no agent ran and the card came back 11-18.
+      const work = isProposalItem(it) || actionFor(it)?.action === "work";
       if (
         this.ask({
           kind: "state",
@@ -490,8 +497,9 @@ export class Prompter {
           prompt: it.title,
           context: `${days < 0 ? `Kill date ${kill} has passed` : `Kill date is ${days < 1 ? "today" : "tomorrow"}`} — the reflection set it so this stops carrying over. Keep or kill?`,
           options: [
-            opt("kill", "Kill it", { type: "status", status: "dropped", note: "killed at kill date" }, "danger"),
+            KILL_OPT,
             opt("today", "Do it today", { type: "status", status: "today" }, "primary"),
+            ...(work ? [opt("go", "Do it — send an agent", { type: "dispatch", action: "work" })] : []),
             opt("done", "It's done", { type: "status", status: "done" }, "good"),
             opt("week", "Extend a week", { type: "schedule", at: atLocal(9, 30, 7, now).toISOString(), label: "a week from now" }),
             WHEN_OPT,
@@ -1140,6 +1148,8 @@ export class Prompter {
       else if (q.key.startsWith("due:") && it && (it.status !== "scheduled" || q.key !== `due:${it.id}:${it.scheduledFor}`)) this.hub.expireQuestion(q.id, "rescheduled");
       // A kill card still open when the item got a later slot some other way: it asks again at the slot.
       else if (q.key.startsWith("kill:") && it && slotAhead(it, now)) this.hub.expireQuestion(q.id, "rescheduled");
+      // Kept on another card ("I'm on it", a push, an agent): the kill date moved (Hub.keepKill), this card's date is old.
+      else if (q.key.startsWith("kill:") && it && q.key !== `kill:${it.id}:${it.signals?.killDate}`) this.hub.expireQuestion(q.id, "kill date moved");
       // "Still on it?" once it's off `doing` (answered elsewhere, re-dispatched) or an agent picked it up again.
       else if (q.key.startsWith("doing:") && it && (it.status !== "doing" || this.hub.store.liveJobs().some((j) => j.itemId === it.id))) this.hub.expireQuestion(q.id, "moved on");
       // The one-item merged card is that item's card now (it blocks its other prompts): gone once it's off `waiting`.
@@ -1578,6 +1588,26 @@ export function recheckCard(found: Array<{ it: Pick<Item, "id" | "title" | "stat
 function opt(id: string, label: string, effect: QuestionOption["effect"], tone?: QuestionOption["tone"]): QuestionOption {
   return { id, label, effect, tone };
 }
+
+/** The due card's "Kill it" when the item's kill date is due (killDays). */
+const KILL_OPT = opt("kill", "Kill it", { type: "status", status: "dropped", note: "killed at kill date" }, "danger");
+
+/**
+ * Days left to the end of the kill date when keep-or-kill should be asked, else undefined. Two days ahead for the
+ * reflection's date; a date a keep answer set (Hub.keepKill: the slot's day, the next workday) asks on the day.
+ */
+function killDays(i: Pick<Item, "signals">, now: Date): number | undefined {
+  const kill = i.signals?.killDate;
+  if (!kill) return undefined;
+  const days = (Date.parse(`${kill}T23:59:59`) - now.getTime()) / DAY;
+  return days <= (i.signals?.killKept === kill ? 1 : 2) ? days : undefined;
+}
+
+/** An open due card that carries "Kill it" (asked once the kill date was due): it stands in for the kill card. */
+const dueKills = (q: Pick<Question, "options"> | undefined) => Boolean(q?.options.some((o) => o.id === KILL_OPT.id && setsStatus(o.effect, "dropped")));
+
+/** An item the reflection proposed (its own Proposals row, or one merged into it). */
+const isProposalItem = (i: Pick<Item, "proposalOf" | "source">) => Boolean(i.proposalOf || i.source.label?.startsWith("Proposals"));
 
 /** Scheduled for a time that hasn't come yet. */
 const slotAhead = (i: Pick<Item, "status" | "scheduledFor">, now: Date) =>

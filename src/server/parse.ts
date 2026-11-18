@@ -16,6 +16,8 @@ export interface ParsedItem {
   flags: {
     stateUnknown: boolean;
     killDate?: string; // YYYY-MM-DD
+    /** Never parsed: MemorySync carries a keep answer's kill date (Hub.keepKill) over the re-import. */
+    killKept?: string;
     dueDate?: string; // YYYY-MM-DD
     /** Set when the date came from the Clairic pass, not the text parser. */
     dueFrom?: "clairic";

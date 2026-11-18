@@ -7,6 +7,7 @@ import type {
   QuestionOption, ServerEvent, Snapshot, SyncState, Coaching, CoachOutcome,
 } from "../shared/types.ts";
 import { type BulkRequest, deckGroup, deferHorizon, localDay, optionFor, setsStatus } from "../shared/batch.ts";
+import { nextWorkdayAt } from "../shared/workday.ts";
 import { affirms, claimsDispatch, deadOptions, promisesAction, stallsOptions } from "../shared/dead-button.ts";
 import { AGENT_ASKS, isAgentCard } from "../shared/boss.ts";
 import { asksForIdeas, IDEA_CAP } from "../shared/ideas.ts";
@@ -243,7 +244,9 @@ export class Hub {
    *  `confirm` stamps confirmedAt (defaults to who === "you"; false leaves any earlier stamp alone). `extra` goes in
    *  the same write (Checks.run stamps checkClosed this way). */
   setStatus(id: string, status: ItemStatus, note?: string, who: JournalEntry["who"] = "you", confirm = who === "you", extra: Partial<Item> = {}) {
-    const item = this.updateItem(id, { ...extra, status, confirmedAt: confirm ? nowIso() : undefined });
+    // You're on it today: the kill date can wait until the next workday (it asks again then if it's still open).
+    const keep = who === "you" && (status === "today" || status === "doing") ? this.killPatch(id, localDay(nextWorkdayAt(0))) : {};
+    const item = this.updateItem(id, { ...extra, ...keep, status, confirmedAt: confirm ? nowIso() : undefined });
     this.journal(`${label(status)}: ${item.title}${note ? ` — ${note}` : ""}`, { itemId: id, who });
     // Anything open about this item is now moot.
     if (["done", "dropped"].includes(status)) this.closeQuestionsFor(id, `item ${status}`);
@@ -281,9 +284,30 @@ export class Hub {
   }
 
   schedule(id: string, at: string, labelText: string, who: JournalEntry["who"] = "you") {
-    const item = this.updateItem(id, { status: "scheduled", scheduledFor: at, when: labelText, confirmedAt: nowIso() });
+    // Giving it a slot is a keep answer: the kill date moves with the slot, so the kill card doesn't ask before it
+    // or beside it. 11-04 "Extend a week" on it_mvryad2y4u8nl left 11-04 behind; due + kill cards opened together.
+    const keep = who === "you" && !Number.isNaN(Date.parse(at)) ? this.killPatch(id, localDay(new Date(at))) : {};
+    const item = this.updateItem(id, { ...keep, status: "scheduled", scheduledFor: at, when: labelText, confirmedAt: nowIso() });
     this.journal(`Scheduled ${labelText}: ${item.title}`, { itemId: id, who });
     return item;
+  }
+
+  /**
+   * A keep answer on an item with a kill date: move the kill date to `date` (YYYY-MM-DD, local) when it's earlier,
+   * and remember it in killKept so a memory re-import doesn't pull it back (MemorySync.upsert). Never moves it earlier.
+   */
+  keepKill(id: string, date: string): Item {
+    const keep = this.killPatch(id, date);
+    return keep.signals ? this.updateItem(id, keep) : this.store.item(id) ?? this.updateItem(id, {});
+  }
+
+  /** keepKill's patch, for callers that fold it into their own write. Empty when there's nothing to move. */
+  killPatch(id: string, date: string): Partial<Item> {
+    const it = this.store.item(id);
+    const kill = it?.signals?.killDate;
+    // Already later, or already kept to this day. Same day but not kept yet: stamp it, so it asks on the day.
+    if (!it || !kill || kill > date || (kill === date && it.signals?.killKept === date)) return {};
+    return { signals: { ...it.signals, killDate: date, killKept: date } };
   }
 
   // ── questions ──────────────────────────────────────────────────────────
@@ -819,7 +843,8 @@ export class Hub {
       const item = q.itemId ? this.store.item(q.itemId) : undefined;
       if (op === "defer") {
         if (item?.status === "scheduled") {
-          this.updateItem(item.id, { scheduledFor: until, when: label, confirmedAt: nowIso() });
+          // A push is a keep answer, like Hub.schedule: the kill date moves with the slot.
+          this.updateItem(item.id, { ...this.killPatch(item.id, localDay(new Date(until!))), scheduledFor: until, when: label, confirmedAt: nowIso() });
           this.expireQuestion(q.id, `pushed to ${label}`);
         } else {
           q.notBefore = until;
@@ -844,7 +869,7 @@ export class Hub {
       for (const it of this.store.items()) {
         if (it.kind !== req.kind || it.status !== "scheduled" || done.has(it.id)) continue;
         if (it.scheduledFor && Date.parse(it.scheduledFor) >= Date.parse(until!)) continue;
-        this.updateItem(it.id, { scheduledFor: until, when: label, confirmedAt: nowIso() });
+        this.updateItem(it.id, { ...this.killPatch(it.id, localDay(new Date(until!))), scheduledFor: until, when: label, confirmedAt: nowIso() });
         touched.push(it.title);
       }
     }

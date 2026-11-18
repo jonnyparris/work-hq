@@ -92,7 +92,7 @@ export class MemorySync {
         project: p.project,
         links: p.links.length ? p.links : undefined,
         confidence: p.flags.lowConfidence ? 0.5 : 0.8,
-        signals: p.flags,
+        signals: keptKill(existing, p.flags),
         source: {
           type: "memory",
           label: p.section.startsWith("Proposals") ? p.section : `active-todos · ${p.section}`,
@@ -319,6 +319,14 @@ export function appendArchive(prev: string, overflow: string): string {
     out = out.slice(0, start) + merged + (next < 0 ? "" : "\n") + out.slice(end).replace(/^\n+/, "");
   }
   return `${out.trimEnd()}\n`;
+}
+
+/** Memory's flags, except a kill date your keep answer moved later (Hub.keepKill) stays moved. Memory dropping the
+ *  kill date, or setting a later one, still wins. */
+export function keptKill(existing: Pick<Item, "signals"> | undefined, flags: ParsedItem["flags"]): ParsedItem["flags"] {
+  const kept = existing?.signals?.killKept;
+  if (!kept || !flags.killDate) return flags;
+  return flags.killDate <= kept ? { ...flags, killDate: kept, killKept: kept } : flags;
 }
 
 export function localDate(d: Date) {

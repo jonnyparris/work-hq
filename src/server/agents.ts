@@ -4,6 +4,7 @@
 //   action  — interactive pi in a cmux workspace. Anything the owner dispatches. Highly visible.
 
 import { type BulkRequest, deferHorizon, localDay } from "../shared/batch.ts";
+import { nextWorkdayAt } from "../shared/workday.ts";
 import { isAgentCard, isWaitingSession } from "../shared/boss.ts";
 import { claimsDispatch, claimsStatus, parksDispatch } from "../shared/dead-button.ts";
 import { explainKey, sentences } from "../shared/detail.ts";
@@ -490,10 +491,18 @@ export class Agents implements Dispatcher {
     const useCmux = this.cmuxDeps.available();
     const job = this.newJob("action", action, title, useCmux ? "cmux" : "headless", itemId, { decision, note });
     // Verifying doesn't change what the item *is*; everything else means someone's on it.
+    // Sending an agent is a keep answer too: the kill date waits a workday for the agent's report (Hub.keepKill).
     if (action !== "verify") this.hub.updateItem(itemId, { status: "doing" });
     // Someone's on it: the item's own state cards are answered (Hub.closeStateCards). Only once the worktree and
-    // prompt are built: a build that throws leaves them open.
-    const sent = () => action !== "verify" && this.hub.closeStateCards(itemId, "agent sent");
+    // prompt are built: a build that throws leaves them open. Sending an agent is a keep answer too, so the kill
+    // date waits a workday for the agent's report (Hub.keepKill), from the same point. A job queued behind the run cap
+    // that then fails or is cancelled leaves both done, as the card close always has: worst case the kill card asks a
+    // workday late.
+    const sent = () => {
+      if (action === "verify") return;
+      this.hub.keepKill(itemId, localDay(nextWorkdayAt(0)));
+      this.hub.closeStateCards(itemId, "agent sent");
+    };
     if (config.demo) {
       sent();
       void this.launchDemoAction(job.id, title, demoActionScript(item, action, note), useCmux);

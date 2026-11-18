@@ -115,7 +115,7 @@ and cheap to run every 30 seconds. The model decides what things *mean*. The rul
 | **M5 move** | the coaching card's "one thing to try" time (the last HH:MM in its *when*, else 09:30) | once per reflection: Done / Hand to an agent / Not today, journaled for tonight's reflection |
 | **Meeting soon** | a small meeting or 1-1 starts in ≤ 20 min | offers a brief |
 | **🍍 Captured** | you said pineapple in a meeting transcript | confirm, dispatch, or "not mine" |
-| **Kill date** | ≤ 2 days to a decision deadline; an item scheduled for later waits for its slot | |
+| **Kill date** | ≤ 2 days to a decision deadline; an item scheduled for later waits for its slot. A keep answer moves the date: a slot to its day (the slot's "It's time" card then carries "Kill it"), "Do it today" / an agent to the next workday. Proposals and task-like items get "Do it — send an agent" | |
 | **Today's unrecorded meetings** | with the wrap-up, if meetings with others ended and no notes turned up | "anything come out of them?" — one card, not one per meeting |
 | **State unknown** | your notes admit they don't know | max 3 open |
 | **Still on it?** | an item on *doing* with no agent running and no open card, quiet for 4 work hours | Done / Waiting / Today / Drop; at most daily per item, max 3 open |
