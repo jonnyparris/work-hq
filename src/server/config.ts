@@ -245,7 +245,11 @@ export const config = {
   },
 
   jira: {
-    /** Hosts whose /browse/KEY links are looked up (cloudflared Access token) for the "Ticket done" card. */
+    /**
+     * Hosts whose /browse/KEY links are looked up (cloudflared Access token) for the "Ticket done" card. Their
+     * access-login card (the day's first, or one after a self-close) also waits ACCESS_QUIET_MIN (Hub.accessLoginCard).
+     * The trackerUrl-derived default counts too.
+     */
     hosts: pick<string[]>(undefined, "jira.hosts", jiraHostFromTracker(pick<string>("WORK_HQ_TRACKER_URL", "labels.trackerUrl", ""))),
   },
 

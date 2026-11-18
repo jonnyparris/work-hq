@@ -39,6 +39,14 @@ export const accessReruns = (rerun: string | string[] | undefined) => (Array.isA
 /** The access-login card's last sentence, by how many jobs its login reruns. */
 const accessTail = (n: number) => (n > 1 ? "Log in and the jobs rerun." : n ? "Log in and the job reruns." : "Log in and the job's next run gets through.");
 const ACCESS_LATER = "Later";
+/** How `resolved` closes an access-login card: the job got through with no login from you. */
+const ACCESS_BACK = "session back";
+/**
+ * A JIRA host's (config.jira.hosts) access-login card, the day's first or one after a self-close, stays hidden this
+ * long: its callers retry hourly, and the token often comes back by itself (the after-self-close case is unmeasured). 11-12..11-17: 3 of 5 JIRA cards closed "session back" with no
+ * tap; two at 2h00m25s and 2h00m47s (the `closeable` check's second hourly retry), so 2 h flat would still show them.
+ */
+export const ACCESS_QUIET_MIN = 150;
 /** An item's own state cards (prompter; when-retry: from Agents.scheduleFromWords): closed once an agent is sent on it (closeStateCards). */
 const STATE_CARD = /^(wait|state|inbox|kill|due|when-retry|doing|proposal):/;
 
@@ -420,12 +428,16 @@ export class Hub {
    * A local job (launchd script) found its Cloudflare Access session for `app` lapsed: one "Log in now" card per
    * app per day, key `access-login:<host>:<day>`. Replaces a free-text capture per run (`whq pineapple`, since removed), which sent a triage job each time
    * (10-22..10-29: six of them for a ClickHouse app). Asking again while the card is open, or after "Later" that
-   * day, does nothing; after a login (that failed, or lapsed again) or `resolved`, a lapse asks again. Yesterday's
+   * day, does nothing; after a login (that failed, or lapsed again) or `resolved`, a lapse asks again (a JIRA host's
+   * card may wait first, below). Yesterday's
    * card closes. `resolved`: the job got through, so close any open card for the app instead. `rerun`: the job's
    * launchd label; the card's login kickstarts it once the login works. A `rerun` that reaches the day's open card
    * joins its login (11-16: weekly.sh posted first without one and daily.sh's later label was dropped, so the login
    * re-ran nothing). After "Later" no card is open that day, so a later label has nowhere to go: its job waits for
-   * its next slot, like every other job on that card.
+   * its next slot, like every other job on that card. A JIRA host's (config.jira.hosts) first card of the day waits
+   * ACCESS_QUIET_MIN (notBefore): an `access-ok` inside the window closes it before it shows. When the day's newest
+   * closed card closed by itself ("session back"), the next lapse waits again; after a login ("Log in now", or a
+   * card the login closed) it asks at once.
    */
   accessLoginCard(b: { app: string; reason?: unknown; resolved?: unknown; rerun?: unknown }, now = new Date()) {
     if (typeof b.app !== "string" || !ACCESS_APP.test(b.app)) throw new Error("app must be https://<host>");
@@ -438,7 +450,7 @@ export class Hub {
     const key = `access-login:${host}:${localDay(now)}`;
     if (b.resolved === true) {
       this.settleAccessLoginTodos(host, `Access login for ${host} works again`);
-      return { asked: false, closed: this.closeAccessLoginCards(host, "session back") };
+      return { asked: false, closed: this.closeAccessLoginCards(host, ACCESS_BACK) };
     }
     const closed = this.closeAccessLoginCards(host, "day moved on", key);
     if (this.store.lastAnswered(key)?.answer?.startsWith(ACCESS_LATER)) return { asked: false, closed, key };
@@ -448,9 +460,12 @@ export class Hub {
       if (rerun) this.addAccessRerun(card, rerun);
       return { asked: false, closed, key };
     }
+    const last = this.store.lastAnswered(key);
+    const quiet = config.jira.hosts.includes(host) && (!last || last.answer === ACCESS_BACK);
     const q = this.ask({
       kind: "open",
       key,
+      ...(quiet ? { notBefore: new Date(now.getTime() + ACCESS_QUIET_MIN * 60_000).toISOString() } : {}),
       badge: "Login expired",
       priority: 80,
       prompt: `Your Cloudflare Access login for ${host} lapsed`,

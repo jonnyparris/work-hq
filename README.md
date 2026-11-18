@@ -220,6 +220,7 @@ bin/whq journal "learn: tightened the gchat skill"   # a journal line from any a
 bin/whq access-login https://app.example.com "nightly job skipped"   # one "Log in now" card per app per day, no triage
 bin/whq access-login --rerun com.me.nightly https://app.example.com "…"   # same; the login then kickstarts that launchd job (a later label joins the day's open card)
 bin/whq access-ok https://app.example.com    # the job got through: close that card
+# A login card for a host in jira.hosts waits 150 min first (the day's first, or after a self-close): an access-ok in that window closes it unseen.
 ```
 
 An agent outside a job that changes an item directly sends `who: "agent"`, so the journal doesn't read it as your words:

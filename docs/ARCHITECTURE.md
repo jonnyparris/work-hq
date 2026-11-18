@@ -44,6 +44,10 @@
   A local job that needs another Access app (launchd scripts; first user: browser-run-growth) calls
   `whq access-login <app>` instead of a free-text `whq say`: one "Log in now" card per app per day
   (`access-login:<host>:<day>`, `Hub.accessLoginCard`), no triage job; `whq access-ok <app>` closes it.
+  A JIRA host's (`jira.hosts`) first card of the day waits `ACCESS_QUIET_MIN` (150 min, `notBefore`): its
+  callers retry hourly and the token often comes back, so an `access-ok` inside the window closes it unseen
+  (11-12..11-17: 3 of 5 closed "session back" with no tap). After a login that day a lapse
+  asks at once; after a self-close ("session back") it waits again.
   A "Log in now" that doesn't finish leaves a journal line with why (exit code, signal, timeout, spawn
   error). A login that works (or `whq access-ok`) also marks done the open todo that asks only for that
   login (`Hub.settleAccessLoginTodos`, `accessLoginTodo`: an open task whose title has a re-login phrase and

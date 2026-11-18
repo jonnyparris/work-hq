@@ -1,11 +1,12 @@
 // `whq access-login <app>`: a local job's Cloudflare Access login lapsed. One keyed "Log in now" card per app per day,
 // not a free-text 🍍 that sends a triage job every run (10-22..10-29: six for one ClickHouse app, two failed triages).
-import { expect, test } from "bun:test";
+import { expect, setSystemTime, test } from "bun:test";
 import { Store } from "../src/server/db.ts";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { accessLoginTodo, Hub } from "../src/server/hub.ts";
+import { ACCESS_QUIET_MIN, accessLoginTodo, Hub } from "../src/server/hub.ts";
+import { config } from "../src/server/config.ts";
 import { Agents } from "../src/server/agents.ts";
 
 const APP = "https://analytics.example.com";
@@ -394,3 +395,81 @@ test("a login kickstarts labels from a card posted while it was in flight; a fai
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// it_mwm2cqopzg51b: 11-12..11-17, 3 of 5 JIRA cards closed "session back" 2-5 h later with no tap.
+const JIRA = "https://jira.example.com";
+const shown = (hub: Hub, at: Date) => open(hub).filter((q) => !q.notBefore || Date.parse(q.notBefore) <= at.getTime());
+const withJira = (fn: () => Promise<void> | void) => async () => {
+  const prev = config.jira.hosts;
+  config.jira.hosts = ["jira.example.com"];
+  try {
+    await fn();
+  } finally {
+    config.jira.hosts = prev;
+  }
+};
+
+test("a JIRA host's first lapse of the day waits; an access-ok at 2h00m25s closes it before it ever shows", withJira(() => {
+  const hub = new Hub(new Store(":memory:"));
+  const t0 = day("2026-11-17", 9);
+  expect(hub.accessLoginCard({ app: JIRA }, t0).asked).toBe(true);
+  const [card] = open(hub);
+  expect(Date.parse(card!.notBefore!)).toBe(t0.getTime() + ACCESS_QUIET_MIN * 60_000);
+  // Hourly retries: still lapsed at +1 h (same open card, still hidden), back at 2h00m25s like 11-17.
+  expect(hub.accessLoginCard({ app: JIRA }, day("2026-11-17", 10)).asked).toBe(false);
+  const back = new Date(t0.getTime() + (2 * 60 * 60 + 25) * 1000);
+  expect(shown(hub, back)).toHaveLength(0);
+  expect(hub.accessLoginCard({ app: JIRA, resolved: true }, back)).toMatchObject({ closed: 1 });
+  expect(open(hub)).toHaveLength(0);
+  expect(hub.store.question(card!.id)?.answer).toBe("session back");
+}));
+
+test("a JIRA card that stays lapsed shows after the window; a lapse after you answered asks at once, after a self-close waits", withJira(async () => {
+  const hub = new Hub(new Store(":memory:"));
+  const t0 = day("2026-11-12", 8);
+  hub.accessLoginCard({ app: JIRA }, t0);
+  expect(shown(hub, new Date(t0.getTime() + ACCESS_QUIET_MIN * 60_000 - 1))).toHaveLength(0);
+  expect(shown(hub, new Date(t0.getTime() + ACCESS_QUIET_MIN * 60_000))).toHaveLength(1);
+  await hub.answer(open(hub)[0]!.id, "login");
+  // Lapsed again after the login: no second wait.
+  expect(hub.accessLoginCard({ app: JIRA }, day("2026-11-12", 14)).asked).toBe(true);
+  expect(open(hub)[0]!.notBefore).toBeUndefined();
+  // That card closed by itself ("session back"); the next lapse waits again, like the day's first.
+  hub.accessLoginCard({ app: JIRA, resolved: true }, day("2026-11-12", 15));
+  hub.accessLoginCard({ app: JIRA }, day("2026-11-12", 16));
+  expect(open(hub)[0]!.notBefore).toBe(new Date(day("2026-11-12", 16).getTime() + ACCESS_QUIET_MIN * 60_000).toISOString());
+  // The next day's first lapse waits again; it closes the 16:00 card left open.
+  expect(hub.accessLoginCard({ app: JIRA }, day("2026-11-13", 8))).toMatchObject({ asked: true, closed: 1 });
+  expect(open(hub).map((q) => [q.key, Boolean(q.notBefore)])).toEqual([["access-login:jira.example.com:2026-11-13", true]]);
+}));
+
+test("other Access apps ask at once; a --rerun joins a JIRA card that's still hidden", withJira(() => {
+  const hub = new Hub(new Store(":memory:"));
+  hub.accessLoginCard({ app: APP }, day("2026-11-17", 9));
+  expect(open(hub)[0]!.notBefore).toBeUndefined();
+  hub.accessLoginCard({ app: JIRA }, day("2026-11-17", 9));
+  hub.accessLoginCard({ app: JIRA, rerun: "com.me.nightly" }, day("2026-11-17", 10));
+  const jira = open(hub).find((q) => q.key.includes("jira"))!;
+  expect(jira.notBefore).toBeDefined();
+  expect(jira.options.find((o) => o.id === "login")?.effect).toEqual({ type: "accessLogin", app: JIRA, rerun: "com.me.nightly" });
+}));
+
+test("JIRA: in one frozen millisecond, login then session back then a lapse still waits; a login-closed card asks at once", withJira(async () => {
+  setSystemTime(new Date("2026-11-12T08:00:00Z"));
+  try {
+    const hub = new Hub(new Store(":memory:"));
+    const t = day("2026-11-12", 8);
+    hub.accessLoginCard({ app: JIRA }, t);
+    await hub.answer(open(hub)[0]!.id, "login");
+    hub.accessLoginCard({ app: JIRA }, t);
+    hub.accessLoginCard({ app: JIRA, resolved: true }, t);
+    hub.accessLoginCard({ app: JIRA }, t);
+    expect(open(hub)[0]!.notBefore).toBeDefined();
+    // Agents.accessLogin closes a card posted while its login ran with "logged in": that's a login, not a self-close.
+    hub.closeAccessLoginCards("jira.example.com", "logged in");
+    hub.accessLoginCard({ app: JIRA }, t);
+    expect(open(hub)[0]!.notBefore).toBeUndefined();
+  } finally {
+    setSystemTime();
+  }
+}));

@@ -110,6 +110,7 @@
   "labels": { "tracker": "Linear", "chat": "Slack", "trackerUrl": "https://linear.app/acme/issue/" },
   // jira.hosts: JIRA hosts whose /browse/KEY links are checked (cloudflared Access token) so waiting items whose tickets
   // are all done reach the "Ticket done" card. Default: labels.trackerUrl's host when it ends in /browse/.
+  // A login card for a host in jira.hosts (the day's first, or one after a self-close) also stays hidden 150 min.
   // "jira": { "hosts": ["jira.example.com"] },
 
   // Blog-post scouting and drafting. Leave site.postsDir out if you don't have a public site.

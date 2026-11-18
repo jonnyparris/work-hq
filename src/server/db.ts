@@ -136,7 +136,8 @@ export class Store {
   /** Most recent answered question for a key — used to avoid re-asking too soon. */
   lastAnswered(key: string): Question | undefined {
     const r: any = this.db
-      .query("SELECT doc FROM questions WHERE key = ? AND status != 'open' ORDER BY updated DESC LIMIT 1")
+      // rowid breaks a same-millisecond tie: the card asked later wins (the upsert keeps a row's rowid).
+      .query("SELECT doc FROM questions WHERE key = ? AND status != 'open' ORDER BY updated DESC, rowid DESC LIMIT 1")
       .get(key);
     return r ? JSON.parse(r.doc) : undefined;
   }
