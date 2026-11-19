@@ -91,7 +91,10 @@ export const WORKSPACE_GONE_SPAN_MS = 10_000;
 /** A cmux session only gets the shared gateway token if it has at least this long left (see GatewayToken.env). */
 export const CMUX_TOKEN_TTL_MS = 24 * 3600_000;
 const RESUME_NUDGE = "Your last request failed on a provider rate limit. Carry on from where you stopped.";
-/** A cmux turn that ended on a network blip (isTransient) gets one nudge this long after it settled. */
+/**
+ * A cmux turn that ended on a network blip (isTransient) gets one nudge this long after it settled; a headless action
+ * run gets one more run this long after it failed (Agents.actionBlipRetryMs).
+ */
 export const TRANSIENT_RETRY_MS = 60_000;
 /** A tool-less triage that failed on a network blip waits this long before its one rerun (right after wake, Wi-Fi needs a moment). */
 export const TRIAGE_BLIP_RETRY_MS = 10_000;
@@ -240,6 +243,8 @@ export class Agents implements Dispatcher {
   private promptSent = new Set<string>();
   /** Tests shorten these. */
   triageBlipRetryMs = TRIAGE_BLIP_RETRY_MS;
+  /** A headless action run that ended on a network blip waits this long before its one more run (test hook). */
+  actionBlipRetryMs = TRANSIENT_RETRY_MS;
   triageBlipMaxFirstMs = TRIAGE_BLIP_MAX_FIRST_MS;
   /** Every pi launch goes through here, so bursts can't trip per-minute provider limits. */
   readonly gate = new LaunchGate(() => config.pi.launchSpacingSec * 1000);
@@ -724,7 +729,9 @@ export class Agents implements Dispatcher {
     let settled = false;
     // The stall watchdog (pi.stallMin) catches a hung run; this ceiling only stops a busy one that never ends.
     // 45 min killed two review-heavy jobs mid-review on 10-23 (max event gap ~5 min: busy, not hung).
-    void this.runHeadless(jobId, this.finalPrompt(jobId, prompt), { tools: true, thinking: "medium", perms: false, timeoutMin: 120 })
+    // A network blip gets one more run after actionBlipRetryMs, as a cmux session gets one nudge (11-13: the headless
+    // job died on its first ENOTFOUND while its cmux sibling was retried).
+    void this.runHeadless(jobId, this.finalPrompt(jobId, prompt), { tools: true, thinking: "medium", perms: false, timeoutMin: 120, blipRetryMs: this.actionBlipRetryMs })
       .then((r) => this.finishAction(jobId, r))
       .catch((e) => this.finishAction(jobId, { ok: false, text: "", error: (e as Error).message }))
       .finally(() => (settled = true));
@@ -1015,8 +1022,8 @@ export class Agents implements Dispatcher {
     this.promptSent.delete(jobId);
     const job = this.hub.store.job(jobId);
     if (!job || ["done", "failed"].includes(job.status)) return;
-    // Headless fallback: the final message may itself be the report.
-    if (job.surface === "headless" && !job.reported) {
+    // Headless fallback: the final message may itself be the report (also after a progress `whq report`).
+    if (job.surface === "headless" && awaitsFinalReport(job)) {
       const report = extractJson<AgentReport>(r.text);
       if (report) this.hub.ingestReport({ ...report, jobId }, "agent");
     }
@@ -1576,14 +1583,21 @@ export class Agents implements Dispatcher {
    * Tool runs are spaced by the launch gate. If the run dies on a provider rate limit, wait 60–90 s and
    * try again (up to pi.rateLimitRetries). Tool runs resume their own session so finished
    * tool calls aren't repeated; tool-less runs have no side effects and simply rerun.
+   * `blipRetryMs` set (action jobs): a network blip (isTransient) before the agent reported gets one more run
+   * after that wait, on the same terms; a second blip fails with "(again after one retry)", as in cmux.
    */
   private async runHeadless(
     jobId: string,
     prompt: string,
-    o: { tools: boolean; thinking: string; perms: boolean; timeoutMin: number },
+    o: { tools: boolean; thinking: string; perms: boolean; timeoutMin: number; blipRetryMs?: number },
   ): Promise<RunResult> {
     let resume: string | undefined;
-    for (let attempt = 0; ; attempt++) {
+    let nudge = RESUME_NUDGE;
+    let blipped = false;
+    const finished = () => Boolean(this.hub.store.job(jobId)?.reportedFinal);
+    for (let attempt = 0; ; ) {
+      // Finished while it waited out a blip (or the launch gate after it): that's the job done, don't run it again.
+      if (blipped && finished()) return { ok: true, text: "" };
       // Tool-less triage stays instant: no tool schemas, nothing to compile, and the owner is waiting on it.
       if (o.tools) {
         const wait = this.gate.wait();
@@ -1591,15 +1605,44 @@ export class Agents implements Dispatcher {
         await this.gate.acquire();
       }
       if (this.cancelled(jobId)) return { ok: false, text: "", error: "cancelled" };
-      const r = await this.runHeadlessOnce(jobId, prompt, o, resume);
+      if (blipped && finished()) return { ok: true, text: "" };
+      const r = await this.runHeadlessOnce(jobId, prompt, o, resume, nudge);
       this.noteGateway(r);
-      if (r.ok || this.cancelled(jobId) || attempt >= config.pi.rateLimitRetries) return r;
+      if (r.ok || this.cancelled(jobId)) return r;
+      if (o.blipRetryMs !== undefined && isTransient(r.error)) {
+        // A report as the run's last message (no `whq report`): take it now, or the rerun's text replaces it.
+        const job = this.hub.store.job(jobId);
+        const last = job && awaitsFinalReport(job) ? extractJson<AgentReport>(r.text) : undefined;
+        if (last && typeof last.summary === "string" && (!last.status || ["done", "failed", "progress"].includes(last.status))) {
+          this.hub.ingestReport({ ...last, jobId }, "agent");
+        }
+        // The agent said it finished, then the network dropped: the report wins, as in cmux (pollCmux). A progress
+        // report doesn't count: the work isn't done, so it gets its retry.
+        if (finished()) return { ok: true, text: "" };
+        if (blipped) return { ...r, error: `${r.error} (again after one retry)` };
+        if (o.tools && r.toolsRan && !r.session) return r;
+        blipped = true;
+        // Tools ran: resume, so finished tool calls aren't repeated. None ran: a fresh run is the same run.
+        resume = o.tools && r.toolsRan ? r.session ?? resume : undefined;
+        nudge = TRANSIENT_NUDGE;
+        this.line(jobId, `⏳ ${r.error} — retrying once in ${Math.round(o.blipRetryMs / 1000)} s`);
+        this.patch(jobId, { status: "queued" });
+        // In slices, so a report or a cancel during the wait frees the job's RunCap slot at once.
+        for (const until = Date.now() + o.blipRetryMs; Date.now() < until && !finished() && !this.cancelled(jobId); ) {
+          await sleep(Math.min(250, until - Date.now()));
+        }
+        if (this.cancelled(jobId)) return { ok: false, text: "", error: "cancelled" };
+        continue;
+      }
+      if (attempt >= config.pi.rateLimitRetries) return r;
       if (!isRateLimited(`${r.error ?? ""}\n${r.text}`)) return r;
       // A tool run that already did things must resume, not restart. No session → give up.
       if (o.tools && r.toolsRan && !r.session) return r;
+      attempt++;
       resume = o.tools ? r.session ?? resume : undefined;
+      nudge = RESUME_NUDGE;
       const ms = backoff();
-      this.line(jobId, `⏳ rate limited — retrying in ${Math.round(ms / 1000)} s (${attempt + 1}/${config.pi.rateLimitRetries})`);
+      this.line(jobId, `⏳ rate limited — retrying in ${Math.round(ms / 1000)} s (${attempt}/${config.pi.rateLimitRetries})`);
       this.patch(jobId, { status: "queued" });
       await sleep(ms);
       if (this.cancelled(jobId)) return { ok: false, text: "", error: "cancelled" };
@@ -1765,6 +1808,7 @@ export class Agents implements Dispatcher {
     prompt: string,
     o: { tools: boolean; thinking: string; perms: boolean; timeoutMin: number },
     resume?: string,
+    nudge = RESUME_NUDGE,
   ): Promise<RunResult> {
     // Belt and braces: demo mode never gives pi tools (sweeps and actions are scripted above).
     if (config.demo && o.tools) return { ok: false, text: "", error: "demo mode: no tool runs" };
@@ -1774,7 +1818,7 @@ export class Agents implements Dispatcher {
     this.patch(jobId, { status: "running", startedAt: nowIso() });
     let r: RunResult;
     try {
-      r = config.pi.runner === "print" ? await this.runPrint(jobId, promptPath, o, env, resume) : await this.runRpc(jobId, prompt, o, env, resume);
+      r = config.pi.runner === "print" ? await this.runPrint(jobId, promptPath, o, env, resume, nudge) : await this.runRpc(jobId, prompt, o, env, resume, nudge);
     } catch (e) {
       r = { ok: false, text: "", error: (e as Error).message };
     }
@@ -1834,6 +1878,7 @@ export class Agents implements Dispatcher {
     o: { tools: boolean; thinking: string; perms: boolean; timeoutMin: number },
     env: Record<string, string>,
     resume?: string,
+    nudge = RESUME_NUDGE,
   ): Promise<RunResult> {
     const onEvent = (ev: any) => {
       if (ev.type === "tool_execution_start") this.line(jobId, `▸ ${describeTool(ev.toolName, ev.args)}`);
@@ -1860,7 +1905,7 @@ export class Agents implements Dispatcher {
       try {
         rpc.start();
         const idleMs = o.tools && config.pi.stallMin > 0 ? config.pi.stallMin * 60_000 : undefined;
-        out = await rpc.run(resume ? RESUME_NUDGE : prompt, { timeoutMs, idleMs, onEvent });
+        out = await rpc.run(resume ? nudge : prompt, { timeoutMs, idleMs, onEvent });
       } finally {
         await rpc.stop();
       }
@@ -1882,6 +1927,7 @@ export class Agents implements Dispatcher {
     o: { tools: boolean; thinking: string; perms: boolean; timeoutMin: number },
     env: Record<string, string>,
     resume?: string,
+    nudge = RESUME_NUDGE,
   ): Promise<RunResult> {
     const job = this.hub.store.job(jobId)!;
     const args = ["-p", "--mode", "json", ...modelArgs(), "--thinking", o.thinking];
@@ -1889,7 +1935,7 @@ export class Agents implements Dispatcher {
     else args.push(...TRIAGE_FLAGS);
     if (resume) args.push("--session", resume);
     // Without tools pi can't read the file itself, so attach it with @file. Never put the prompt in argv.
-    if (o.tools) args.push(resume ? RESUME_NUDGE : `Read ${promptPath} and follow the instructions in it exactly.`);
+    if (o.tools) args.push(resume ? nudge : `Read ${promptPath} and follow the instructions in it exactly.`);
     else args.push(`@${promptPath}`, "Follow the instructions in the attached file exactly.");
     assertShortArgs(args);
 
@@ -1983,6 +2029,14 @@ export function runError(r: { code: number | null; signal?: string | null; timed
   if (r.code === null && r.signal === "SIGKILL") return "pi killed by SIGKILL (not us; endpoint security? check `log stream` for sentineld)";
   if (r.code === null && r.signal) return `pi killed by ${r.signal}`;
   return r.lastError ?? `pi exited ${r.code}: ${r.stderr.trim().split("\n").pop() ?? ""}`;
+}
+
+/**
+ * No finished report yet: never reported, or only "progress" ones. A job from before `reportedFinal` existed that
+ * reported counts as finished, as `reported` alone did then.
+ */
+function awaitsFinalReport(job: Job) {
+  return !job.reported || job.reportedFinal === false;
 }
 
 /**

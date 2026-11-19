@@ -315,6 +315,8 @@ export interface Job {
   error?: string;
   /** The agent called `whq report` at least once. */
   reported?: boolean;
+  /** Its latest report wasn't a "progress" one: the agent says it's finished (done or failed). */
+  reportedFinal?: boolean;
   /** Action jobs: new idea items this job has filed (capped at IDEA_CAP across all its reports). */
   ideasFiled?: number;
   /** Action jobs: titles of idea items over the cap, folded into the summary instead of filed. */

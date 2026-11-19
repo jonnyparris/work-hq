@@ -31,10 +31,10 @@ function setup(id: string, sendOk = true) {
 afterEach(() => setSystemTime());
 
 test("isTransient: pi's timeout and connection errors, not rate limits or auth", () => {
-  for (const t of ["Request timed out.", "Connection error.", "terminated", "Anthropic stream ended before message_stop", "fetch failed", "read ECONNRESET"]) {
+  for (const t of ["Request timed out.", "Connection error.", "terminated", "Anthropic stream ended before message_stop", "fetch failed", "read ECONNRESET", "getaddrinfo ENOTFOUND gateway.opencode.cloudflare.dev", "getaddrinfo EAI_AGAIN gateway.opencode.cloudflare.dev", "getaddrinfo ENOTFOUND auth.example.com"]) {
     expect(isTransient(t)).toBe(true);
   }
-  for (const t of [undefined, "", "overloaded", "429 Too Many Requests", "API key auth failed for provider x: connection error", "invalid_request_error", "aborted"]) {
+  for (const t of [undefined, "", "overloaded", "429 Too Many Requests", "API key auth failed for provider x: connection error", "invalid_request_error", "aborted", "npm ERR! code ENOTFOUND"]) {
     expect(isTransient(t)).toBe(false);
   }
 });

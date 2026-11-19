@@ -123,8 +123,9 @@
   (default 2) times. A cmux session is nudged in place ("carry on"); a headless tool run resumes
   its own session so finished tool calls aren't repeated. pi's own retries (2/4/8 s) sit inside
   this and don't outlast a per-minute limit on their own.
-- **Network blips get one retry.** A cmux turn that ends on "Request timed out.", "Connection error."
-  or a cut stream (`isTransient` in `src/server/launch-gate.ts`) leaves pi idle for good. Unless the
+- **Network blips get one retry.** A cmux turn that ends on "Request timed out.", "Connection error.",
+  a failed DNS lookup (`getaddrinfo ENOTFOUND` or `getaddrinfo EAI_AGAIN`) or a cut stream (`isTransient` in
+  `src/server/launch-gate.ts`) leaves pi idle for good. Unless the
   agent already reported, Work HQ nudges the session once after 60 s (`TRANSIENT_RETRY_MS`, through the
   launch gate so a burst of blips doesn't come back at once). If the retried turn blips too, the job
   fails at once with "(again after one retry)" and a notification, instead of sitting out the 3-min
@@ -132,6 +133,14 @@
   between the nudge and its turn waits up to 120 s for that turn rather than failing it as a second
   blip. Nudges sent are kept on the job (`job.nudges`) and `bin/work-hq usage` counts them under
   "Agent runs". 10-19 and 10-22: the owner typed "retry" into 13 stalled sessions by hand.
+  A headless action run (cmux off, or its launch fell back) gets the same one retry: after 60 s
+  (`TRANSIENT_RETRY_MS`), through the launch gate, it resumes its own session with the network
+  "carry on" nudge if a tool ran, reruns fresh if none did, and gives up if tools ran with no session
+  to resume. A finished report (`whq report` with status done/failed, or one as the run's last message)
+  before the blip or during the wait wins: the job ends done, as in cmux. A progress report doesn't
+  count (`job.reportedFinal`). A second blip fails it with "(again after one retry)". Not counted in `job.nudges`; the job log says
+  "retrying once". 11-13: a headless job 12 tool calls in died on its first ENOTFOUND while its cmux
+  sibling was retried.
   Tool-less triage gets one retry too: a blip whose attempt ran under 60 s, machine sleep excluded and
   rate-limit backoff included (`TRIAGE_BLIP_MAX_FIRST_MS`), reruns once after 10 s (`TRIAGE_BLIP_RETRY_MS`); a second failure
   puts the words on a Retry / Drop card. No card on the first blip, just a journal and job-log line;

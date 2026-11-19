@@ -1723,8 +1723,9 @@ export class Hub {
       // A job already marked failed (e.g. a cmux turn errored, then the agent recovered) that now
       // reports a result isn't stopped: mark it done and retire the "Agent stopped" card.
       const recovered = job.status === "failed" && r.status !== "failed" && r.status !== "progress";
+      // reportedFinal follows the latest report: a progress one after "done" means the agent carried on.
       const ideas = capIdeas ? { ideasFiled, ...(folded.length ? { ideasFolded: [...(job.ideasFolded ?? []), ...folded] } : {}) } : {};
-      this.putJob({ ...job, summary: summary ?? job.summary, tail, reported: true, ...ideas, ...(recovered ? { status: "done" as const, error: undefined } : {}) });
+      this.putJob({ ...job, summary: summary ?? job.summary, tail, reported: true, reportedFinal: r.status !== "progress", ...ideas, ...(recovered ? { status: "done" as const, error: undefined } : {}) });
       if (recovered) {
         for (const q of this.store.questions("open").filter((q) => q.key === `after:${job.id}`)) this.expireQuestion(q.id, "agent reported");
       }

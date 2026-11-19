@@ -49,10 +49,18 @@ const TRANSIENT = new RegExp(
 );
 const NOT_BLIP = /auth|api key|\b401\b|\b403\b|unauthori[sz]ed|quota|billing/i;
 
+/**
+ * A DNS lookup that failed (11-13: "getaddrinfo ENOTFOUND gateway.opencode.cloudflare.dev" in a gateway outage). Checked
+ * before NOT_BLIP, which would match a host like auth.example.com. A bare ENOTFOUND (npm: no such package) isn't one.
+ */
+const DNS_BLIP = /\bgetaddrinfo\s+(?:ENOTFOUND|EAI_AGAIN)\b/i;
+
 export function isTransient(text: string | undefined): boolean {
   if (!text) return false;
   const t = text.trim();
-  return TRANSIENT.test(t) && !NOT_BLIP.test(t) && !isRateLimited(t);
+  if (isRateLimited(t)) return false;
+  if (DNS_BLIP.test(t)) return true;
+  return TRANSIENT.test(t) && !NOT_BLIP.test(t);
 }
 
 /** 60–90 s by default, jittered so parallel retries don't land together again. */
