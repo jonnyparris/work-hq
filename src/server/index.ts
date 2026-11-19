@@ -201,10 +201,10 @@ const server = Bun.serve({
     "/api/say": {
       POST: (req) =>
         handle(async () => {
-          const b = await body<{ text: string; mode?: "chat" | "review"; voice?: boolean; eventId?: string }>(req);
+          const b = await body<{ text: string; mode?: "chat" | "review"; voice?: boolean; eventId?: string; from?: unknown }>(req);
           if (!b.text?.trim()) throw new Error("say something");
           const mode = b.mode === "review" ? "review" : "chat";
-          hub.journal(b.text.trim(), { who: "you" });
+          hub.journalSay(b.text.trim(), b.from); // `from`: a script (`whq say --from`), not the owner typing
           const r = await agents.triage(b.text.trim(), mode);
           // A meeting row's words, triaged: that meeting is answered, keep it off the unrecorded-meetings card.
           if (mode === "review" && typeof b.eventId === "string" && b.eventId) hub.markReviewed(b.eventId);

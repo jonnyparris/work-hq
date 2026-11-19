@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { Store } from "../src/server/db.ts";
 import { Hub } from "../src/server/hub.ts";
 
@@ -309,3 +310,47 @@ test("usage digest: a long repeat trail keeps the newest 12 and counts the rest"
   expect(row).toContain("ans2 ");
   expect(row.trim().endsWith("ans13")).toBe(true);
 });
+
+test("usage digest: a script's `whq say --from` isn't typed into the command bar", async () => {
+  const path = `${tmpdir()}/whq-usage-from-${Date.now()}.db`;
+  const hub = new Hub(new Store(path));
+  hub.journalSay("Read the Dodo model A/B for new model x", "dodo-model-watch");
+  hub.journalSay("chase the load test owner");
+  hub.journalSay("empty from counts as you", "");
+  hub.journalSay("blank name", "  ");
+  hub.journalSay("odd name", "🚀!!");
+  hub.journalSay("spaced name", "nightly bench");
+  expect(() => hub.journalSay("x", 123)).toThrow(/script name/);
+  const lines = hub.store.journal();
+  expect(lines.find((j) => j.text.includes("Dodo model A/B"))).toMatchObject({ who: "agent", text: "From dodo-model-watch: Read the Dodo model A/B for new model x" });
+  expect(lines.find((j) => j.text === "empty from counts as you")?.who).toBe("you");
+  expect(lines.find((j) => j.text.endsWith("blank name"))).toMatchObject({ who: "agent", text: "From script: blank name" });
+  expect(lines.find((j) => j.text.endsWith("odd name"))).toMatchObject({ who: "agent", text: "From script: odd name" });
+  expect(lines.find((j) => j.text.endsWith("spaced name"))?.text).toBe("From nightly-bench: spaced name");
+  hub.store.db.close();
+  const out = await digest(path);
+  rmSync(path, { force: true });
+  const [, typed = ""] = out.split("## Typed into the command bar");
+  expect(typed).toContain("chase the load test owner");
+  expect(typed).toContain("empty from counts as you");
+  expect(typed).not.toContain("blank name");
+  expect(typed).not.toContain("Dodo model A/B");
+  expect(typed).not.toContain("odd name");
+});
+
+test("whq say --from sends the script's name; plain say sends none; --from with no name exits 2", async () => {
+  const bodies: unknown[] = [];
+  const server = Bun.serve({ port: 0, fetch: async (req) => (bodies.push(await req.json()), Response.json({})) });
+  const run = async (...args: string[]) => {
+    const proc = Bun.spawn([resolve(import.meta.dir, "../bin/whq"), "say", ...args], { env: { ...process.env, WORK_HQ_URL: `http://127.0.0.1:${server.port}` }, stdout: "pipe", stderr: "pipe" });
+    return proc.exited;
+  };
+  try {
+    expect(await run("--from", "dodo-model-watch", 'bench "x" done')).toBe(0);
+    expect(await run("plain", "words")).toBe(0);
+    expect(await run("--from")).toBe(2);
+    expect(bodies).toEqual([{ text: 'bench "x" done', from: "dodo-model-watch" }, { text: "plain words", from: "" }]);
+  } finally {
+    server.stop(true);
+  }
+}, 30_000);

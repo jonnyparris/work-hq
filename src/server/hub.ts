@@ -1468,6 +1468,19 @@ export class Hub {
     return e;
   }
 
+  /**
+   * Words sent to triage (/api/say). The owner's, unless `from` names the script that sent them (`whq say --from`):
+   * then an agent line, so the digest's "Typed into the command bar" and the reflection don't read it as your words.
+   * Only the journal line changes: triage still files what it makes like any other ask.
+   */
+  journalSay(text: string, from?: unknown) {
+    if (from !== undefined && from !== null && typeof from !== "string") throw new Error("from must be a script name");
+    if (!from) return this.journal(text, { who: "you" });
+    // A name given but blank or all odd characters is still a script, never you.
+    const src = from.trim().replace(/\s+/g, "-").replace(/[^\w.-]/g, "").slice(0, 40) || "script";
+    return this.journal(`From ${src}: ${text}`, { who: "agent" });
+  }
+
   // ── jobs & sync ────────────────────────────────────────────────────────
   putJob(job: Job) {
     this.store.putJob(job);
