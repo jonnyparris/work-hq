@@ -81,6 +81,49 @@ More.
     expect(p[0]!.links).toEqual(["https://x.test/a"]);
     expect(p[0]!.section).toContain("High Priority");
   });
+
+  // 11-11: it_mwcrrhjb97ogt quoted another item's "final kill 2026-11-11" and "by you 10-27"; the import took that
+  // quoted 2026-11-11 (the file's date) as its kill and due date, and the "date passed" card came 27 s later.
+  test("kill date only from the proposal's own bold line, not before the file date; no due date", () => {
+    const p = parseProposals(
+      `## High Priority
+
+### 1. Quotes another item
+**Problem**: "…re-committed by you 10-27 09:58" vs "…final kill 2026-11-11", due 2026-11-12 by Friday.
+**Effort**: Low
+
+### 2. Own kill line
+**Problem**: the old card said kill 2026-11-09.
+**Kill 2026-11-20.**
+
+### 3. Stale bold kill
+**Kill 2026-11-10, final.**
+
+### 4. Final kill
+Test it. **Final kill 2026-11-14.**
+
+### 5. Kill is today; a quoted bold kill after it doesn't count
+**Kill 2026-11-11** if not answered.
+**Kill 2026-11-09.**
+| C1 | blog | **Final kill 2026-11-30, no extension** | quoted |
+> **Kill 2026-11-29.** (quoted)
+The old card said "**final kill 2026-11-28**", "the **Kill 2026-11-25** one", “a **Kill 2026-11-26**” and \`see **Kill 2026-11-27.**\`.
+
+### 6. A closed quote before the own kill
+It said "no extension"**Kill 2026-11-20**
+`,
+      "2026-11-11",
+      new Date(2026, 10, 11),
+    );
+    expect(p.map((x) => [x.flags.killDate, x.flags.dueDate])).toEqual([
+      [undefined, undefined],
+      ["2026-11-20", undefined],
+      [undefined, undefined],
+      ["2026-11-14", undefined],
+      ["2026-11-11", undefined],
+      ["2026-11-20", undefined],
+    ]);
+  });
 });
 
 test("plain", () => {

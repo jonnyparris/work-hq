@@ -120,6 +120,27 @@ function flags(text: string, today = new Date()) {
   };
 }
 
+/**
+ * A proposal's flags. Its bodies quote other items' dates ("final kill 2026-11-11", "by you 10-27"), so it gets no
+ * due date, and its kill date comes only from its own bold kill phrase (`**Kill 2026-11-20.**`, `**Final kill
+ * 2026-11-14, no extension.**`). Skipped: table rows, block quotes, and a phrase inside an open "…" / “…” / `…` span
+ * on its line. A date before `date` (the reflection file's, or the learn section's) is a stale copy; the last one
+ * left wins. 11-11: it_mwcrrhjb97ogt took a quoted kill as its own and was "past" 27 s after import.
+ */
+const OWN_KILL = /\*\*(?:final\s+)?kill\s+(?:fires\s+)?(\d{4}-\d{2}-\d{2})/gi;
+const odd = (s: string, re: RegExp) => (s.match(re)?.length ?? 0) % 2 === 1;
+function proposalFlags(text: string, date: string, today: Date): ParsedItem["flags"] {
+  const own = text
+    .split("\n")
+    .filter((l) => !/^\s*[|>]/.test(l))
+    .flatMap((l) =>
+      [...l.matchAll(OWN_KILL)].filter((m) => !odd(l.slice(0, m.index), /["“”]/g) && !odd(l.slice(0, m.index), /`/g)).map((m) => m[1]!),
+    )
+    .filter((d) => d >= date)
+    .at(-1);
+  return { ...flags(text, today), stateUnknown: false, killDate: own, dueDate: undefined };
+}
+
 /** Parse the to-do list (`memory.todosPath`). Only unchecked checkbox lines become items. */
 export function parseActiveTodos(md: string, file = "active-todos", projects: ProjectRule[] = [], today = new Date()): ParsedItem[] {
   const out: ParsedItem[] = [];
@@ -179,7 +200,7 @@ export function parseProposals(md: string, date: string, today = new Date()): Pa
       section: `Proposals ${date} · ${section}`,
       project: undefined,
       links: links(body),
-      flags: { ...flags(body, today), stateUnknown: false },
+      flags: proposalFlags(body, date, today),
     });
   }
   return out;
@@ -219,7 +240,7 @@ export function parseLearnProposals(md: string, today = new Date()): ParsedItem[
       section: `Proposals ${date} · Learn${tag ? ` (session ${tag})` : ""}`,
       project: undefined,
       links: links(body),
-      flags: { ...flags(body, today), stateUnknown: false },
+      flags: proposalFlags(body, date, today),
     });
   }
   return out;

@@ -42,6 +42,18 @@ describe("learn proposals", () => {
     expect(p[0]!.links).toEqual(["https://chat.google.com/x"]);
   });
 
+  test("parse: a date quoted in the body is not the proposal's kill or due date", () => {
+    const p = parseLearnProposals(
+      "## 2026-10-23 · learn 01a16996\n### 1. Quote\nPR #18 closed by an agent 2026-10-23; kill 2026-10-30 was the old card's.\n\n### 2. Own\n**Kill 2026-10-30.**\n| a | **Kill 2026-11-30** |\n> **Kill 2026-11-29.**\n\n### 3. Stale\n**Kill 2026-10-22.**\n",
+      new Date(2026, 9, 23),
+    );
+    expect(p.map((x) => [x.flags.killDate, x.flags.dueDate])).toEqual([
+      [undefined, undefined],
+      ["2026-10-30", undefined],
+      [undefined, undefined],
+    ]);
+  });
+
   test("memory sync turns them into proposal cards, alongside a missing file being fine", async () => {
     const hub = new Hub(new Store(":memory:"));
     await new MemorySync(hub, fakeMemory({ [config.memory.todosPath]: "# Active Todos\n" })).importAll();

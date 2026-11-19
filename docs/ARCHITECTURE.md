@@ -167,6 +167,10 @@
   ("30 Oct", "10-19", "Friday", "end of next week"), resolved against today. With
   `deadlines.clairic` set, what that leaves unresolved goes to Workers AI's Clairic model in one
   batched call per import (cue clauses only, confidence ≥ 0.9, a date copied from the text refused).
+  Proposals (reflection and /learn) quote other items' dates, so they get no due date and take a kill
+  date only from a bold kill phrase outside tables, block quotes and open quote/backtick spans (`**Kill 2026-11-20.**`, `**Final kill …**`),
+  not before the file's (or learn section's) date (`proposalFlags`; 11-11: it_mwcrrhjb97ogt was
+  "past" 27 s after import). A plain-text "kill 2026-…" in a proposal sets nothing.
 - **Question** — one ask with 2–6 options. Each option has an **Effect** (status, schedule,
   snooze, dispatch). Keyed for dedupe with cooldowns, so answering "Doing it today" doesn't
   bring the same question back tomorrow morning.
