@@ -9,7 +9,7 @@ import type {
 import { type BulkRequest, deckGroup, deferHorizon, localDay, optionFor, setsStatus } from "../shared/batch.ts";
 import { AGENT_NOW_LABEL, agentNowAction, itemAgentAction } from "../shared/explain-option.ts";
 import { PILE_AGENT_MAX, PILE_OPS, type PileOp } from "../shared/pile.ts";
-import { nextWorkdayAt } from "../shared/workday.ts";
+import { carrySlot, nextWorkdayAt } from "../shared/workday.ts";
 import { affirms, claimsDispatch, deadOptions, promisesAction, stallsOptions } from "../shared/dead-button.ts";
 import { AGENT_ASKS, isAgentCard } from "../shared/boss.ts";
 import { asksForIdeas, IDEA_CAP } from "../shared/ideas.ts";
@@ -1561,6 +1561,32 @@ export class Hub {
     }
   }
 
+  /** Days off from the away blocks: `d` is off when out-of-office time covers its working day (OFF_DAY_FROM to
+   *  OFF_DAY_TO local), one block or back-to-back ones. A 45-minute creche pickup or a morning off doesn't count; an
+   *  all-day date-only block or a multi-day 00:00 → 00:00 block does. Reads the list once. */
+  offDays(): (d: Date) => boolean {
+    const spans = this.away()
+      .map((b) => [awayMs(b.start), awayMs(b.end)] as const)
+      .filter(([s, e]) => e > s)
+      .sort((a, b) => a[0] - b[0]);
+    return (d) => {
+      let t = new Date(d).setHours(OFF_DAY_FROM[0], OFF_DAY_FROM[1], 0, 0);
+      const to = new Date(d).setHours(OFF_DAY_TO[0], OFF_DAY_TO[1], 0, 0);
+      for (const [s, e] of spans) {
+        if (s > t) break;
+        if (e > t) t = e;
+        if (t >= to) return true;
+      }
+      return false;
+    };
+  }
+
+  /** Wrap up's Carry: the next work morning that isn't a weekend or a day off, labelled with its day. */
+  carry(id: string, now = new Date()) {
+    const { at, label } = carrySlot(now, this.offDays());
+    return this.schedule(id, at.toISOString(), label);
+  }
+
   /** The out-of-office block covering `now` that ends last (overlapping blocks: the day off wins over a short one). */
   awayAt(now = new Date()): AwayBlock | undefined {
     const t = now.getTime();
@@ -2025,6 +2051,10 @@ export function quickNote(text: string, q: Pick<Question, "options">): NoteDecis
 }
 
 const normTitle = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/** The working day a day off must cover (Hub.offDays), local [hours, minutes]. */
+export const OFF_DAY_FROM = [9, 30] as const;
+export const OFF_DAY_TO = [17, 0] as const;
 
 /** An away block's time: YYYY-MM-DD is local midnight (Date.parse would read it as UTC); anything else is ISO. NaN if neither. */
 export function awayMs(s: string) {

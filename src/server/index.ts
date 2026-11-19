@@ -133,6 +133,11 @@ const server = Bun.serve({
         }),
     },
 
+    // Wrap up's Carry: the server knows the calendar's days off (Hub.carry).
+    "/api/items/:id/carry": {
+      POST: (req) => handle(async () => hub.carry(req.params.id)),
+    },
+
     "/api/items/:id/schedule": {
       POST: (req) =>
         handle(async () => {

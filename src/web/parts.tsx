@@ -6,7 +6,7 @@ import { committedView } from "../shared/committed.ts";
 import { BOSS_MIN, waitingOnYou } from "../shared/boss.ts";
 import { REVIEW_HOLD_MIN, reviewable } from "../shared/meetings.ts";
 import { type PlanGroup, planView, score, searchPlan } from "../shared/plan.ts";
-import { carrySlot, morningButtons } from "../shared/workday.ts";
+import { morningButtons } from "../shared/workday.ts";
 import { CalmScene } from "./calm.tsx";
 import { api } from "./store.ts";
 import { ACTIONS, Icon, KIND_LABEL, Md, Q_BADGE, ago, dictateInto, finishDictation, hhmm, people, shortUrl, stopDictation, ticketKeys, ticketUrl, useStoredFlag, whenLabel } from "./ui.tsx";
@@ -670,10 +670,7 @@ export function Wrap({ items }: { items: Item[] }) {
   );
   if (!rows.length) return <div className="empty" style={{ marginTop: 12 }}>Nothing was committed today. Honest answer — save it anyway.</div>;
   const set = (i: Item, s: "done" | "carry" | "waiting" | "dropped") => {
-    if (s === "carry") {
-      const { at, label } = carrySlot();
-      return api.schedule(i.id, at.toISOString(), label);
-    }
+    if (s === "carry") return api.carry(i.id);
     return api.setStatus(i.id, s as ItemStatus);
   };
   return (

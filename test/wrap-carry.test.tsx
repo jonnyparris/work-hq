@@ -4,9 +4,9 @@ import type { Item } from "../src/shared/types.ts";
 import { Wrap } from "../src/web/parts.tsx";
 import { api } from "../src/web/store.ts";
 
-const realSchedule = api.schedule;
+const realCarry = api.carry;
 afterEach(() => {
-  api.schedule = realSchedule;
+  api.carry = realCarry;
   setSystemTime();
 });
 
@@ -25,14 +25,29 @@ function find(node: ReactNode, text: string): ReactElement<{ onClick: () => unkn
   return find(props.children, text);
 }
 
-// 11-06 22:04: Friday's wrap carried three items to Saturday 09:30.
-test("Wrap's Carry on Friday 22:00 schedules Monday 09:30, labelled once", () => {
-  setSystemTime(new Date(2026, 10, 6, 22, 0));
-  const calls: Array<[string, string, string | undefined]> = [];
-  api.schedule = async (id, at, label) => { calls.push([id, at, label]); return undefined as never; };
+// 11-06 22:04: Friday's wrap carried three items to Saturday 09:30. 11-12 22:43: three more to an all-day OOO
+// Friday, because the browser picked the slot without the calendar. The server picks it now (Hub.carry).
+test("Wrap's Carry asks the server for the slot", () => {
+  const calls: string[] = [];
+  api.carry = async (id) => { calls.push(id); return {}; };
   const it = { id: "it1", title: "Ship it", status: "today" } as Item;
   const carry = find(Wrap({ items: [it] }), "Carry");
   expect(carry).toBeDefined();
   carry!.props.onClick();
-  expect(calls).toEqual([["it1", new Date(2026, 10, 9, 9, 30).toISOString(), "mon 09:30 (carried)"]]);
+  expect(calls).toEqual(["it1"]);
+});
+
+test("api.carry POSTs the item's carry route", async () => {
+  const realFetch = globalThis.fetch;
+  const seen: Array<[string, string | undefined]> = [];
+  globalThis.fetch = (async (path: string, init?: RequestInit) => {
+    seen.push([path, init?.method]);
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  try {
+    await realCarry("it1");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  expect(seen).toEqual([["/api/items/it1/carry", "POST"]]);
 });

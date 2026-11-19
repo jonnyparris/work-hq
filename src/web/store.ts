@@ -107,6 +107,8 @@ export const api = {
   explain: (id: string) => call<Item>("POST", `/api/items/${id}/explain`),
   dispatch: (id: string, action: ActionKind, note?: string) => call("POST", `/api/items/${id}/dispatch`, { action, note }),
   schedule: (id: string, at: string, label?: string) => call("POST", `/api/items/${id}/schedule`, { at, label }),
+  /** Wrap up's Carry: the server picks the next work morning, skipping weekends and calendar days off. */
+  carry: (id: string) => call("POST", `/api/items/${id}/carry`),
   add: (title: string, status: ItemStatus = "today") => call("POST", "/api/items", { title, status }),
   say: (text: string, mode: "chat" | "review" = "chat", eventId?: string) => call<{ reply?: string }>("POST", "/api/say", { text, mode, ...(eventId ? { eventId } : {}) }),
   /** The card's "Agent: deal with it now": a work agent on its item (a brief for a meeting card); the card closes. */

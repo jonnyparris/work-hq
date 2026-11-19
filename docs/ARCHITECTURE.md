@@ -357,7 +357,10 @@ that sweep runs again.
 "Tomorrow 09:30" means the next workday ([`src/shared/workday.ts`](../src/shared/workday.ts)): Wrap up's Carry,
 the When options, the drawer's morning button and the It's time push. From Friday or Saturday it reads "Mon 09:30";
 the separate "Next week · Mon" choice is dropped when it is the same slot. 11-06: Friday's wrap carried three items
-to Saturday 09:30. The bulk defer targets (`deferTargets`, `src/shared/batch.ts`) skip weekends in their own loop, not through `workday.ts`.
+to Saturday 09:30. Carry also skips days off (for now the only slot that does): the server picks its slot (`POST /api/items/:id/carry` →
+`Hub.carry`), passing `Hub.offDays` (calendar away blocks, one or back-to-back, cover that day's 09:30–17:00, so a
+creche pickup or a morning off doesn't count) to `carrySlot`. The label names the day ("mon 09:30 (carried)"), with
+the date more than six days out. The When options, drawer buttons and It's time push don't check days off yet. The bulk defer targets (`deferTargets`, `src/shared/batch.ts`) skip weekends in their own loop, not through `workday.ts`.
 
 ### "Scheduled for…"
 
