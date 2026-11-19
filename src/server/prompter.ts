@@ -26,6 +26,47 @@ const DAY = 86_400_000;
 export { REVIEW_HOLD_MIN };
 /** Why an out-of-office block expired a plan / prep / wrap card (holdForAway). cardDue skips those days: not ignored, just away. */
 export const OOO_EXPIRY = "out of office";
+/** kv: "It's time" cards an out-of-office block holds back: due key → { until (ISO time to ask), start, end (the block) }. */
+export const DUE_HOLD_KEY = "dueAwayHold";
+
+/**
+ * When a due card held by `away` asks. A block that ends during the slot's day (creche pickup) only delays it to the
+ * block's end. One that runs past the day (a day off, a holiday) or into the evening moves it to the slot's time of
+ * day on the first workday that's not over by the block's end, or the block's end if that's later: an 09:30 item on an
+ * all-day OOO asks at 09:30 the next workday, not at midnight.
+ */
+export function dueHoldUntil(away: AwayBlock, slot: string): number {
+  const end = awayMs(away.end);
+  const s = new Date(slot);
+  if (Number.isNaN(s.getTime())) return end;
+  const e = new Date(end);
+  const evening = e.getHours() + e.getMinutes() / 60 >= config.sweeps.workHours[1];
+  if (e.toDateString() === s.toDateString() && !evening) return end;
+  const d = new Date(end);
+  d.setHours(s.getHours(), s.getMinutes(), 0, 0);
+  if (evening && d.getTime() < end) d.setDate(d.getDate() + 1);
+  while (!isWorkday(d)) d.setDate(d.getDate() + 1);
+  return Math.max(d.getTime(), end);
+}
+
+type DueHold = { until: string; start: string; end: string };
+
+/**
+ * The hold on a due card from the away list: the latest dueHoldUntil over blocks that have begun and run past the
+ * slot, still ahead of now. A block overlapping any time since the slot counts, so a day the app slept through
+ * still waits for the next workday.
+ */
+export function dueHoldFor(blocks: AwayBlock[], slot: string, now: Date): { until: number; block: AwayBlock } | undefined {
+  const t = now.getTime();
+  const from = Date.parse(slot);
+  let best: { until: number; block: AwayBlock } | undefined;
+  for (const b of blocks) {
+    if (!(awayMs(b.start) <= t && awayMs(b.end) > (Number.isNaN(from) ? t : from))) continue;
+    const until = dueHoldUntil(b, slot);
+    if (until > t && (!best || until > best.until)) best = { until, block: b };
+  }
+  return best;
+}
 /** Minutes after a meeting ends when the scheduler scans for its notes, once per window, if it's still unscanned. */
 export const NOTES_WINDOWS_MIN: ReadonlyArray<readonly [number, number]> = [[10, 25], [45, REVIEW_HOLD_MIN]];
 
@@ -278,9 +319,29 @@ export class Prompter {
     // It spends steps (firedAt): re-read so the merged card below stops holding them back this tick.
     if (this.nextStepCards(items, busy)) items = store.items();
 
-    // 1. Scheduled items that are due. Always ask — these are promises.
+    // 1. Scheduled items that are due. Always ask — these are promises. Not while you're out of office: the card waits
+    // (dueHoldUntil). 11-13: three "It's time" cards on an all-day OOO.
+    const holds = this.dueHolds(now);
+    const held = new Set<string>();
+    const dueKeys = new Set<string>();
     for (const it of items) {
       if (it.status !== "scheduled" || !it.scheduledFor || Date.parse(it.scheduledFor) > now.getTime()) continue;
+      const dueKey = `due:${it.id}:${it.scheduledFor}`;
+      dueKeys.add(dueKey);
+      const hold = dueHoldFor(holds.blocks, it.scheduledFor, now);
+      const saved = holds.list[dueKey];
+      if (hold && (!saved || Date.parse(saved.until) < hold.until)) {
+        holds.list[dueKey] = { until: new Date(hold.until).toISOString(), start: hold.block.start, end: hold.block.end };
+        holds.dirty = true;
+      }
+      const until = Math.max(hold?.until ?? 0, saved ? Date.parse(saved.until) : 0);
+      if (until > now.getTime()) {
+        held.add(it.id);
+        // Asked before the sweep reported the block: park it until then (holdForAway).
+        const card = store.openQuestionByKey(dueKey);
+        if (card && !(card.notBefore && Date.parse(card.notBefore) >= until)) this.hub.park(card, new Date(until).toISOString());
+        continue;
+      }
       // An agent is on it, or one already asked you something about it: wait for that, don't say "It's time" again.
       // 10-19: a verify job's question landed at 15:31, the 15-min due cooldown re-asked at 15:45.
       // An open kill card doesn't count: keep-or-kill is asked beside "It's time", not instead of it. Counting it let a
@@ -307,6 +368,9 @@ export class Prompter {
         true,
       );
     }
+    // A hold for a slot that isn't due any more (rescheduled, done) goes too.
+    for (const k of Object.keys(holds.list)) if (!dueKeys.has(k)) (delete holds.list[k], (holds.dirty = true));
+    if (holds.dirty) store.setKv(DUE_HOLD_KEY, JSON.stringify(holds.list));
 
     // 2. Meetings: prep is one morning card (askPrep, below); capture is one end-of-day card (unrecordedMeetings above,
     // asked with the wrap-up below). The meeting row takes dictation for REVIEW_HOLD_MIN after it ends (web Timeline).
@@ -483,7 +547,8 @@ export class Prompter {
       const days = killDays(it, now);
       if (days === undefined) continue;
       // An agent is on it: its report answers keep-or-kill. The slot came: "It's time" carries "Kill it" instead.
-      if (busy.has(it.id) || (it.scheduledFor && dueKills(store.openQuestionByKey(`due:${it.id}:${it.scheduledFor}`)))) continue;
+      // Held by an out-of-office block: the due card carries "Kill it" when it asks.
+      if (busy.has(it.id) || held.has(it.id) || (it.scheduledFor && dueKills(store.openQuestionByKey(`due:${it.id}:${it.scheduledFor}`)))) continue;
       // Proposals and work-shaped items: "do it" on this card sends an agent (quickNote picks the dispatch option).
       // 11-12 "do it" on it_mw5m4rjjysw1k's kill card became "Do it today"; no agent ran and the card came back 11-18.
       const work = isProposalItem(it) || actionFor(it)?.action === "work";
@@ -796,6 +861,38 @@ export class Prompter {
   private pushesToday(itemId: string, now: Date) {
     const since = atLocal(0, 0, 0, now).toISOString();
     return this.hub.store.answeredByPrefix(`due:${itemId}:`, since).filter((q) => q.answer?.startsWith(PUSH_1H)).length;
+  }
+
+  /**
+   * Due holds kept in kv (DUE_HOLD_KEY), for when the sweep drops a block that has ended. Drops one whose time has
+   * come, and one whose block left the list before it ended (cancelled or shortened: the list decides again). A card
+   * parked by a dropped hold shows now; a hold that still applies parks it again in the due loop.
+   */
+  private dueHolds(now: Date): { list: Record<string, DueHold>; blocks: AwayBlock[]; dirty: boolean } {
+    const blocks = this.hub.away();
+    let list: Record<string, DueHold> = {};
+    let dirty = false;
+    const raw = this.hub.store.kv(DUE_HOLD_KEY);
+    try {
+      const v = JSON.parse(raw ?? "{}");
+      if (v && typeof v === "object" && !Array.isArray(v)) list = v;
+    } catch (e) {
+      console.warn(`[work-hq] ${DUE_HOLD_KEY} unreadable, holds dropped: ${(e as Error).message}`);
+      dirty = true;
+    }
+    const t = now.getTime();
+    const keep: Record<string, DueHold> = {};
+    for (const [k, h] of Object.entries(list)) {
+      const until = h && typeof h.until === "string" && typeof h.end === "string" ? Date.parse(h.until) : NaN;
+      const live = until > t && (awayMs(h.end) <= t || blocks.some((b) => b.start === h.start && b.end === h.end));
+      if (live) keep[k] = h;
+      else {
+        dirty = true;
+        const card = this.hub.store.openQuestionByKey(k);
+        if (card?.notBefore === h?.until && until > t) this.hub.park(card, now.toISOString());
+      }
+    }
+    return { list: keep, blocks, dirty };
   }
 
   /**

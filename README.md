@@ -111,7 +111,7 @@ and cheap to run every 30 seconds. The model decides what things *mean*. The rul
 | Badge | When | |
 |---|---|---|
 | **Morning plan** | first look before noon; ignored two workdays running → backs off like Wrap up | pick today's commitments |
-| **It's time** | a scheduled item is due | notifies |
+| **It's time** | a scheduled item is due (out of office: waits until you're back, the next workday at the slot's time after a day off) | notifies |
 | **M5 move** | the coaching card's "one thing to try" time (the last HH:MM in its *when*, else 09:30) | once per reflection: Done / Hand to an agent / Not today, journaled for tonight's reflection |
 | **Meeting soon** | a small meeting or 1-1 starts in ≤ 20 min | offers a brief |
 | **🍍 Captured** | you said pineapple in a meeting transcript | confirm, dispatch, or "not mine" |

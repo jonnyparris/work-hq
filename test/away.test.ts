@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { Store } from "../src/server/db.ts";
 import { awayMs, Hub } from "../src/server/hub.ts";
 import { config } from "../src/server/config.ts";
-import { cardDue, OOO_EXPIRY, Prompter } from "../src/server/prompter.ts";
+import { cardDue, DUE_HOLD_KEY, OOO_EXPIRY, Prompter } from "../src/server/prompter.ts";
 import { calendarSweepPrompt } from "../src/server/prompts.ts";
 
 let hub: Hub;
@@ -280,5 +280,170 @@ describe("prep and wrap-up on out-of-office days", () => {
     sweep([{ title: "Out of office", start: at(14).toISOString(), end: at(0, 0, 24).toISOString() }]);
     p.tick(at(14, 5));
     expect(preps()).toHaveLength(0);
+  });
+});
+
+// it_mwfmcy4ohnz4u: "It's time" cards wait out the block too. 11-13's all-day OOO still got three due cards.
+describe("scheduled items on out-of-office days", () => {
+  const dues = () => hub.store.questions("open").filter((q) => q.key.startsWith("due:"));
+  const shown = (now: Date) => dues().filter((q) => !q.notBefore || Date.parse(q.notBefore) <= now.getTime());
+  const item = (h = 9, m = 30, day = 23) => hub.createItem({ title: "ping Kevin", status: "scheduled", scheduledFor: at(h, m, day).toISOString() });
+
+  test("a normal day still asks at the slot", () => {
+    sweep([]);
+    item();
+    p.tick(at(9, 30));
+    expect(dues()).toHaveLength(1);
+  });
+
+  test("an all-day OOO: no card that day, one at the slot's time the next workday", () => {
+    sweep([{ title: "Out of office", start: at(0).toISOString(), end: at(0, 0, 24).toISOString() }]);
+    item();
+    for (const [h, m] of [[9, 30], [12, 0], [17, 0], [23, 55]] as const) p.tick(at(h, m));
+    p.tick(at(0, 1, 24));
+    p.tick(at(9, 29, 24));
+    expect(dues()).toHaveLength(0);
+    p.tick(at(9, 30, 24));
+    expect(dues()).toHaveLength(1);
+    expect(hub.store.kv(DUE_HOLD_KEY)).toBe("{}");
+  });
+
+  test("a date-only all-day block reads the same way", () => {
+    sweep([{ title: "PTO", start: "2026-09-23", end: "2026-09-24" }]);
+    item();
+    p.tick(at(10));
+    p.tick(at(8, 0, 24));
+    expect(dues()).toHaveLength(0);
+    p.tick(at(9, 30, 24));
+    expect(dues()).toHaveLength(1);
+  });
+
+  test("Friday off: the card waits for Monday at the slot's time", () => {
+    sweep([{ title: "Out of office", start: at(0, 0, 25).toISOString(), end: at(0, 0, 26).toISOString() }]);
+    item(9, 30, 25);
+    p.tick(at(9, 30, 25));
+    p.tick(at(9, 30, 26));
+    p.tick(at(9, 30, 27));
+    expect(dues()).toHaveLength(0);
+    p.tick(at(9, 30, 28));
+    expect(dues()).toHaveLength(1);
+  });
+
+  test("a short block (creche pickup) only delays the card to its end", () => {
+    sweep([{ title: "Out of office - creche pickup", start: at(16, 30).toISOString(), end: at(17, 15).toISOString() }]);
+    item(16, 45);
+    p.tick(at(16, 45));
+    p.tick(at(17, 10));
+    expect(dues()).toHaveLength(0);
+    p.tick(at(17, 15));
+    expect(dues()).toHaveLength(1);
+  });
+
+  test("a block that ends late in the next morning: asked when it ends", () => {
+    sweep([{ title: "Out of office", start: at(0).toISOString(), end: at(11, 0, 24).toISOString() }]);
+    item();
+    p.tick(at(10));
+    p.tick(at(10, 59, 24));
+    expect(dues()).toHaveLength(0);
+    p.tick(at(11, 0, 24));
+    expect(dues()).toHaveLength(1);
+  });
+
+  test("a card asked before the sweep reported the block is parked until the hold ends", () => {
+    sweep([]);
+    item();
+    p.tick(at(9, 30));
+    expect(shown(at(9, 30))).toHaveLength(1);
+    sweep([{ title: "Out of office", start: at(0).toISOString(), end: at(0, 0, 24).toISOString() }]);
+    p.tick(at(9, 45));
+    expect(dues()).toHaveLength(1);
+    expect(shown(at(9, 45))).toHaveLength(0);
+    expect(dues().map((q) => q.notBefore)).toEqual([at(9, 30, 24).toISOString()]);
+    p.tick(at(9, 30, 24));
+    expect(shown(at(9, 30, 24))).toHaveLength(1);
+  });
+
+  test("the hold survives the sweep dropping the past block", () => {
+    sweep([{ title: "Out of office", start: at(0).toISOString(), end: at(0, 0, 24).toISOString() }]);
+    item();
+    p.tick(at(10));
+    sweep([]);
+    p.tick(at(8, 0, 24));
+    expect(dues()).toHaveLength(0);
+    p.tick(at(9, 30, 24));
+    expect(dues()).toHaveLength(1);
+  });
+
+  test("a day the app slept through still waits for the next workday's slot", () => {
+    sweep([{ title: "Out of office", start: at(0).toISOString(), end: at(0, 0, 24).toISOString() }]);
+    item();
+    p.tick(at(0, 5, 24));
+    expect(dues()).toHaveLength(0);
+    p.tick(at(9, 30, 24));
+    expect(dues()).toHaveLength(1);
+  });
+
+  test("a block cancelled before it ends drops the hold, and a parked card shows again", () => {
+    sweep([]);
+    item();
+    p.tick(at(9, 30));
+    sweep([{ title: "Out of office", start: at(9, 40).toISOString(), end: at(0, 0, 24).toISOString() }]);
+    p.tick(at(10));
+    expect(shown(at(10))).toHaveLength(0);
+    sweep([]);
+    p.tick(at(11));
+    expect(shown(at(11))).toHaveLength(1);
+  });
+
+  test("a block shortened to a half day: asked at the new end", () => {
+    sweep([{ title: "Out of office", start: at(0).toISOString(), end: at(0, 0, 24).toISOString() }]);
+    item();
+    p.tick(at(10));
+    sweep([{ title: "Out of office", start: at(0).toISOString(), end: at(13).toISOString() }]);
+    p.tick(at(12));
+    expect(dues()).toHaveLength(0);
+    p.tick(at(13));
+    expect(dues()).toHaveLength(1);
+  });
+
+  test("a block that ends in the evening waits for the next workday's slot", () => {
+    const dayEnd = config.sweeps.workHours[1];
+    sweep([{ title: "Out of office", start: at(12).toISOString(), end: at(dayEnd, 30).toISOString() }]);
+    item(13, 0);
+    p.tick(at(13));
+    p.tick(at(dayEnd, 45));
+    expect(dues()).toHaveLength(0);
+    p.tick(at(13, 0, 24));
+    expect(dues()).toHaveLength(1);
+  });
+
+  test("a due kill date waits with the held card: one card, carrying Kill it", () => {
+    sweep([{ title: "Out of office", start: at(0).toISOString(), end: at(0, 0, 24).toISOString() }]);
+    hub.createItem({ title: "ping Kevin", status: "scheduled", scheduledFor: at(9, 30).toISOString(), signals: { killDate: "2026-09-23" } });
+    p.tick(at(10));
+    expect(hub.store.questions("open")).toHaveLength(0);
+    p.tick(at(9, 30, 24));
+    const open = hub.store.questions("open").filter((q) => q.itemId);
+    expect(open.map((q) => q.key.split(":")[0])).toEqual(["due"]);
+    expect(open.flatMap((q) => q.options.map((o) => o.id))).toContain("kill");
+  });
+
+  test("an unreadable slot during a block doesn't throw; it waits for the block's end", () => {
+    sweep([{ title: "Out of office - creche pickup", start: at(16, 30).toISOString(), end: at(17, 15).toISOString() }]);
+    hub.createItem({ title: "odd", status: "scheduled", scheduledFor: "soon" });
+    expect(() => p.tick(at(16, 45))).not.toThrow();
+    expect(dues()).toHaveLength(0);
+    p.tick(at(17, 15));
+    expect(dues()).toHaveLength(1);
+  });
+
+  test("a hold for a slot that moved is dropped", () => {
+    sweep([{ title: "Out of office", start: at(0).toISOString(), end: at(0, 0, 24).toISOString() }]);
+    const it = item();
+    p.tick(at(10));
+    expect(Object.keys(JSON.parse(hub.store.kv(DUE_HOLD_KEY) ?? "{}"))).toHaveLength(1);
+    hub.updateItem(it.id, { scheduledFor: at(9, 30, 29).toISOString() });
+    p.tick(at(10, 5));
+    expect(hub.store.kv(DUE_HOLD_KEY)).toBe("{}");
   });
 });
