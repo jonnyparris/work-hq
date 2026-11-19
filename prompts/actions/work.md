@@ -11,7 +11,8 @@ Aim higher than the literal ask, without doing unasked work:
   Don't do it unasked, and don't file an item for it: put one "Could also: ..." line (what it would take) in your summary.
 Code: follow the repo's conventions; open a draft PR/MR, never merge. Keep working notes in {{jobDir}}: it outlives
 this session, and the check after a stopped job is pointed at it.
-Messages to humans: show {{owner.name}} the draft first. Anything irreversible or high-stakes: ask in this session.
+Messages to humans: show {{owner.name}} the draft first: the full text in the report's updates[].draft, which puts it on a
+"Draft ready" card (he may not be watching this session). Anything irreversible or high-stakes: ask in this session.
 Report: update the item's status and links, and add follow-up items or questions for anything left.
 Handing back a train (the next step waits on an MR/PR merging)? Set `next` on the item in your report (`whq report --help`)
 so the next step is offered once it lands and you have finished.

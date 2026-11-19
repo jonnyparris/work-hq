@@ -94,6 +94,9 @@ export const REPORT_HELP = `whq report <jobId> < report.json   (JSON on stdin; e
   Next step waits on a merge (you hand back a train)? Add "next": { "refs": ["<MR / PR / JIRA URL>"], "prompt": "what the next agent does", "action": "work" }
   and set status "waiting". Once every ref has landed (merged and on its target), ${owner.name} gets one "Send an agent" card with your prompt.
   The prompt must stand alone: the next agent sees only it and the item. "next": null clears it. At most 5 refs; a bad ref or a closed item is refused (output: "Not applied").
+  Something ${owner.name} must read before it goes out (a message or summary to post, a runbook)? Put the full text in "draft":
+  he gets a "Draft ready" card with it. He may not be watching your session, and a note only reaches the journal.
+  Asking your own question about it instead? Put the exact draft in that question's "context", or he gets both cards.
 - items: new items [{ "title", "kind": "task|ticket|message|email|followup|decision|review|meeting|idea",
   "detail", "project", "people": [], "links": [], "status": "inbox",
   "source": { "type": "agent", "label", "url", "quote": "verbatim words", "key": "stable-dedupe-key" } }]
@@ -115,7 +118,8 @@ Full schema and rules: \`${WHQ} report --help\`.
   JSON
 ${IDEA_RULE}
 A button's status only moves the item; one that approves work (Approve, Merge, Land) needs action "work" + note.
-A next step that waits on a merge: updates[].next = { "refs", "prompt" } (see --help), not a "when it merges…" question.`;
+A next step that waits on a merge: updates[].next = { "refs", "prompt" } (see --help), not a "when it merges…" question.
+A draft ${owner.name} must see first: the full text in updates[].draft (a "Draft ready" card), not only in this session or a note.`;
 
 function itemBlock(it: Item) {
   return [

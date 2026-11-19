@@ -1014,7 +1014,8 @@ export class Prompter {
   private expireLanded(open: Question[], items: Item[]) {
     const byId = new Map(items.map((i) => [i.id, i]));
     const busy = new Set(this.hub.store.liveJobs().map((j) => j.itemId).filter(Boolean));
-    const cards = open.filter((q) => isAgentCard(q) && q.itemId && !followsMerge(q));
+    // A Draft ready card is text to read, not work a merge settles.
+    const cards = open.filter((q) => isAgentCard(q) && q.itemId && !followsMerge(q) && !q.key.startsWith("agent:draft:"));
     const done = new Map<string, Landed>();
     for (const q of cards) {
       const it = byId.get(q.itemId!);

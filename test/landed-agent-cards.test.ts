@@ -164,3 +164,10 @@ test("followsMerge reads 'when/once/after … merges' as waiting for a merge, no
   expect(followsMerge({ prompt: "PR #137 is reviewed, conflict-free and green. Land it (mark Ready, merge, deploy)?" })).toBe(false);
   expect(followsMerge({ prompt: "!20 is a draft stacked on !16 (ci/kickstart-move), and CI is green. Mark it ready, or fold it into !16 now?" })).toBe(false);
 });
+
+test("a Draft ready card is text to read: a merge doesn't close it", async () => {
+  const it = hub.createItem({ title: "Post the summary", status: "doing", links: [PR(150)] });
+  hub.ingestReport({ updates: [{ id: it.id, status: "waiting", draft: "the summary" }] });
+  await run();
+  expect(hub.store.questions("open").some((q) => q.key.startsWith("agent:draft:") && q.itemId === it.id)).toBe(true);
+});

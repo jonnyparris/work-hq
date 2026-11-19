@@ -18,7 +18,7 @@ import { newId, nowIso, type Store } from "./db.ts";
 import { findTwin, isOpen } from "./dedupe.ts";
 import { LoadLog, loadNow } from "./load.ts";
 import { stoppedJobNote } from "./prompts.ts";
-import { parseNextStep } from "./next-step.ts";
+import { holdsDone, parseNextStep } from "./next-step.ts";
 import { dropMeeting, isMeeting, pruneReviews } from "./review-fold.ts";
 import { foldRest } from "./stopped-fold.ts";
 
@@ -1089,8 +1089,9 @@ export class Hub {
           // Never apply an empty decision here: a crash is not "you typed background".
           // An agent was sent on the item while this ran: the card closes when the read ends, so don't promise it back.
           if (r.close) {
-            this.journal(`Couldn't read note (${errText(e)}); an agent is already on it, card closed`, { itemId: item?.id, questionId: q.id, who: "hq" });
-            this.toast(`Couldn't read that note (${errText(e)}). It's kept on the item; an agent is already on it, so the card is closed.`, "warn");
+            const why = r.close === REPLACED ? "a newer draft replaced this card" : "an agent is already on it";
+            this.journal(`Couldn't read note (${errText(e)}); ${why}, card closed`, { itemId: item?.id, questionId: q.id, who: "hq" });
+            this.toast(`Couldn't read that note (${errText(e)}). It's kept on the item; ${why}, so the card is closed.`, "warn");
             return;
           }
           this.park(q, new Date(Date.now() + 15 * 60_000).toISOString());
@@ -1569,6 +1570,47 @@ export class Hub {
   }
 
   // ── agent reports ──────────────────────────────────────────────────────
+  /**
+   * One "Draft ready" card per draft, with the full text, unless a card this report raised (or repeats while it's
+   * still open) already shows that text: the agent chose its own buttons. Any other card doesn't count: a hidden draft
+   * is the failure this exists for. The text is kept as the item's one draft note, so the agent a typed "change X"
+   * dispatches sees what it's revising. A new draft closes the item's open draft card (held until a note being read
+   * on it is done, as closeStateCards does); a text closed any other way isn't re-asked: the owner answered it, moved
+   * the item, or a boss check retired it. Only a text a newer draft replaced comes back.
+   */
+  private draftCards(drafts: Array<{ id: string; text: string; note?: string }>, asked: Question[]) {
+    for (const d of drafts) {
+      const it = this.store.item(d.id);
+      if (!it) continue;
+      const key = `agent:draft:${d.id}:${hash(d.text)}`;
+      const last = this.store.lastAnswered(key);
+      // The same text came back while its card's close was held for a note read: it's current again, keep it.
+      const held = this.store.openQuestionByKey(key);
+      const pending = held && this.reading.get(held.id);
+      if (pending && pending.close === REPLACED) pending.close = undefined;
+      const shown = asked.some((q) => q.itemId === d.id && showsDraft(q.context, d.text));
+      const raise = isOpen(it) && !shown && !this.store.openQuestionByKey(key) && (!last || last.answer === REPLACED);
+      if (!d.note?.includes(d.text)) this.journal(`${raise ? "Draft ready" : isOpen(it) ? "Draft" : `Draft (item ${it.status}, no card)`}: ${it.title} \u2014 ${d.text}`, { itemId: d.id, who: "agent" });
+      if (!isOpen(it)) continue;
+      const notes = (it.notes ?? []).filter((n) => !n.draft);
+      this.updateItem(d.id, { notes: [...notes, { at: nowIso(), text: d.text, who: "agent" as const, draft: true as const }].slice(-20) }, { quiet: true });
+      for (const q of this.store.questions("open").filter((q) => q.key.startsWith(`agent:draft:${d.id}:`) && q.key !== key)) {
+        const r = this.reading.get(q.id);
+        if (r) r.close = REPLACED;
+        else this.expireQuestion(q.id, REPLACED);
+      }
+      if (!raise) continue;
+      // A next step that's armed or has its card open fires only on an open item: no button that would close it.
+      const closes = holdsDone(it, new Set(this.store.questions("open").map((q) => q.key)));
+      const options: QuestionOption[] = [
+        ...(closes ? [] : [{ id: "done", label: "Posted it \u2014 done", tone: "good" as const, effect: { type: "status" as const, status: "done" as const } }]),
+        { id: "keep", label: "Keep for later", tone: "quiet", effect: { type: "status", status: "waiting" } },
+        ...(closes ? [] : [{ id: "drop", label: "Not needed", tone: "danger" as const, effect: { type: "status" as const, status: "dropped" as const } }]),
+      ];
+      this.ask({ kind: "open", badge: DRAFT_BADGE, itemId: d.id, prompt: `Draft ready: ${it.title}`, context: d.text, priority: 80, key, options });
+    }
+  }
+
   ingestReport(r: AgentReport, fallbackSource: Item["source"]["type"] = "agent") {
     const job = r.jobId ? this.store.job(r.jobId) : undefined;
     const created: Item[] = [];
@@ -1597,9 +1639,12 @@ export class Hub {
       );
     }
     const warnings: string[] = [];
+    const drafts: Array<{ id: string; text: string; note?: string }> = [];
     for (const u of r.updates ?? []) {
       if (!this.store.item(u.id)) continue;
-      const { id, note, next: rawNext, ...patch } = u;
+      const { id, note, next: rawNext, draft, ...patch } = u;
+      const text = draftText(job, { id, note, draft, status: patch.status, next: rawNext });
+      if (text) drafts.push({ id, text, note: str(note) });
       const after = this.updateItem(id, withoutCheckClosed(patch as Partial<Item>));
       if (rawNext === null) {
         if (after.next) {
@@ -1637,6 +1682,7 @@ export class Hub {
       this.journal(`Closed card: ${q.prompt.slice(0, 120)}${c.reason ? ` — ${c.reason}` : ""}`, { itemId: q.itemId, who: "agent" });
       closed++;
     }
+    const askedCards: Question[] = [];
     for (const q of r.questions ?? []) {
       const opts = q.options?.length ? q.options : ["Yes", "No"];
       const byKey = q.itemKey ? this.store.itemBySourceKey(q.itemKey)?.id : undefined;
@@ -1646,7 +1692,8 @@ export class Hub {
         badge: job ? AGENT_ASKS : undefined,
         itemId,
         prompt: q.prompt,
-        context: q.context,
+        // Agent JSON: a non-string context would break the card and the note reader downstream.
+        context: str(q.context),
         priority: q.priority ?? 72,
         key: q.key ?? `agent:${hash(q.prompt)}`,
         once: q.once,
@@ -1657,11 +1704,15 @@ export class Hub {
         }),
       });
       // Echo what each button will do, so the agent sees a dead or wrong mapping in the same run.
+      // Not raised because the same card is still open from an earlier report: that card is the agent's ask.
+      const open = made ?? this.store.openQuestionByKey(q.key ?? `agent:${hash(q.prompt)}`);
+      if (open) askedCards.push(open);
       if (made) {
         const stalled = new Set(stallsOptions(made).map((o) => o.id));
         asked.push({ prompt: q.prompt, asked: true, options: made.options.map((o) => `${o.label} → ${effectText(o.effect)}${stalled.has(o.id) ? STALLS : ""}`) });
       } else asked.push({ prompt: q.prompt, asked: false, options: [] });
     }
+    this.draftCards(drafts, askedCards);
     for (const line of r.journal ?? []) this.journal(line, { who: "agent" });
     if (r.events) this.setEvents(r.events, r.eventsThrough);
     if (fallbackSource === "calendar" && Array.isArray(r.away)) this.setAway(r.away);
@@ -1681,6 +1732,37 @@ export class Hub {
     return { created: created.map((i) => i.id), ...(asked.length ? { questions: asked } : {}), ...(folded.length ? { folded } : {}), ...(closed ? { closed } : {}), ...(warnings.length ? { warnings } : {}) };
   }
 }
+
+/**
+ * What the owner must read, from one report update: `draft`, or (agents that don't know the field) a job's own item
+ * parked "waiting" with a note that says draft. 11-18: the Kitesurf Eng Sync summary he asked to see first went into a
+ * "Waiting: … Draft ready …" journal note; the cmux session closed idle and no card ever showed it.
+ */
+export function draftText(job: Job | undefined, u: { id: string; note?: unknown; draft?: unknown; status?: ItemStatus; next?: unknown }): string | undefined {
+  const draft = str(u.draft)?.trim();
+  if (draft) return draft;
+  if (job?.kind !== "action" || u.id !== job.itemId || u.status !== "waiting" || u.next) return undefined;
+  const note = str(u.note)?.trim();
+  return note && draftNote().test(note) ? note : undefined;
+}
+
+/** "Draft ready for <owner>…", "draft for you to paste": text handed to the owner. Not "draft MR open" or
+ *  "draft ready for Rui to review". */
+const draftNote = () => {
+  const who = ["you", config.owner.name, ...(config.owner.aliases ?? [])].map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  return new RegExp(`\\bdraft (is )?ready for (${who})\\b|\\bdraft for (${who}) to\\b`, "i");
+};
+export const DRAFT_BADGE = "Draft ready";
+const REPLACED = "newer draft";
+/** An agent's own card shows the draft: the same text (whitespace aside), or a context that quotes a draft long enough
+ *  not to turn up by chance ("ok" is in "Is the booking ok?"). */
+function showsDraft(context: unknown, text: string) {
+  const flat = (v: string) => v.replace(/\s+/g, " ").trim();
+  const c = str(context);
+  if (!c) return false;
+  return flat(c) === flat(text) || (text.length >= 40 && flat(c).includes(flat(text)));
+}
+const str = (v: unknown) => (typeof v === "string" ? v : undefined);
 
 /** Appended to an echoed option that approves work but only moves the status (stallsOptions). */
 export const STALLS = " (no agent starts)";

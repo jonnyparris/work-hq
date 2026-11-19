@@ -143,6 +143,8 @@ export interface ItemNote {
   /** "hq" = Work HQ's own reply to a note (an ELI5, an answer). "agent" = an agent posted it (PATCH with
    *  who "agent"). Absent = the owner typed it. */
   who?: "hq" | "agent";
+  /** The item's current draft (an agent report's updates[].draft). One per item: a newer draft replaces it. */
+  draft?: true;
 }
 
 /** What a typed note on a question means. Produced by the note reader (pi) or the cheap pattern match. */
@@ -483,6 +485,9 @@ export interface AgentReport {
   items?: Array<Partial<Item> & { title: string; kind?: ItemKind }>;
   updates?: Array<{ id: string } & Partial<Pick<Item, "status" | "title" | "detail" | "links" | "when" | "scheduledFor" | "project" | "people" | "post">> & {
     note?: string;
+    /** Text the owner must read before it goes anywhere (a message or summary to post, a runbook). Raises a
+     *  "Draft ready" card with it, so it isn't left in a journal note nobody opens (11-18, Hub.draftCards). */
+    draft?: string;
     /** "When these land, run this": checked and stored as Item.next (server/next-step.ts). null clears it. */
     next?: NextStepInput | null;
   }>;
