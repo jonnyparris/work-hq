@@ -104,13 +104,16 @@ describe("prompter", () => {
       expect(keys()).toEqual(["due"]);
     });
 
-    // A kill card already open (asked before this change, or before the slot was set) mustn't block "It's time".
-    test("an open kill card doesn't hold back the due card", () => {
+    // A kill card already open (asked before this change, or before the slot was set) mustn't block "It's time",
+    // and closes once the due card carries Kill it: one card (it_mwe701wv3fshv).
+    test("an open kill card doesn't hold back the due card, and closes for it", () => {
       const it = hub.createItem({ title: "overdue", status: "scheduled", scheduledFor: at(9, 30).toISOString(), signals: { killDate: "2026-09-22" } });
-      hub.ask({ kind: "state", itemId: it.id, key: `kill:${it.id}:2026-09-22`, priority: 72, prompt: it.title, options: [] });
+      const kill = hub.ask({ kind: "state", itemId: it.id, key: `kill:${it.id}:2026-09-22`, priority: 72, prompt: it.title, options: [] })!;
       tick(at(10));
-      const keys = hub.store.questions("open").filter((q) => q.itemId === it.id).map((q) => q.key.split(":")[0]).sort();
-      expect(keys).toEqual(["due", "kill"]);
+      const open = hub.store.questions("open").filter((q) => q.itemId === it.id);
+      expect(open.map((q) => q.key.split(":")[0])).toEqual(["due"]);
+      expect(open[0]!.options.some((o) => o.id === "kill")).toBe(true);
+      expect(hub.store.question(kill.id)).toMatchObject({ status: "expired", answer: "on It's time" });
     });
 
     test("an open kill card closes once the item is scheduled elsewhere", () => {

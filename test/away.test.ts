@@ -428,6 +428,20 @@ describe("scheduled items on out-of-office days", () => {
     expect(open.flatMap((q) => q.options.map((o) => o.id))).toContain("kill");
   });
 
+  // it_mwe701wv3fshv: the due card stands in for the kill card only once it shows. Parked, it would hide the decision.
+  test("an open kill card stays while the due card is parked for a block; it closes once the due card is back", () => {
+    const it = hub.createItem({ title: "ping Kevin", status: "scheduled", scheduledFor: at(9, 30).toISOString(), signals: { killDate: "2026-09-23" } });
+    const due = hub.ask({ kind: "when", itemId: it.id, key: `due:${it.id}:${it.scheduledFor}`, priority: 90, prompt: it.title, options: [] })!;
+    const kill = hub.ask({ kind: "state", itemId: it.id, key: `kill:${it.id}:2026-09-23`, priority: 72, prompt: it.title, options: [] })!;
+    sweep([{ title: "Out of office", start: at(9).toISOString(), end: at(0, 0, 24).toISOString() }]);
+    p.tick(at(10));
+    expect(Date.parse(hub.store.question(due.id)!.notBefore ?? "")).toBeGreaterThan(at(10).getTime()); // parked
+    expect(hub.store.question(kill.id)?.status).toBe("open");
+    p.tick(at(9, 30, 24));
+    expect(hub.store.question(due.id)!.options.map((o) => o.id)).toContain("kill");
+    expect(hub.store.question(kill.id)).toMatchObject({ status: "expired", answer: "on It's time" });
+  });
+
   test("an unreadable slot during a block doesn't throw; it waits for the block's end", () => {
     sweep([{ title: "Out of office - creche pickup", start: at(16, 30).toISOString(), end: at(17, 15).toISOString() }]);
     hub.createItem({ title: "odd", status: "scheduled", scheduledFor: "soon" });

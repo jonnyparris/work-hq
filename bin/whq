@@ -15,6 +15,7 @@ URL="${WORK_HQ_URL:-http://127.0.0.1:7717}"
 cmd="${1:-}"; shift || true
 post() { curl -sS -X POST "$URL$1" -H 'content-type: application/json' --data-binary @-; echo; }
 jstr() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
+usage() { awk 'NR>1 && /^set -euo pipefail$/ { exit } NR>1' "$0"; }   # the comment block above, however long
 case "$cmd" in
   report)
     case "${1:-}" in
@@ -50,5 +51,6 @@ for w in wa: print("Not applied: "+w)' ;;
   sync)      echo '{}' | post "/api/sync/${1:?name}" ;;
   recheck)   echo '{}' | post /api/recheck ;;
   land)      cd "$ROOT" && exec "${BUN:-$(command -v bun || echo "$HOME/.bun/bin/bun")}" src/cli/land.ts "${1:?usage: whq land <jobId>}" ;;
-  *) sed -n '2,12p' "$0"; exit 2 ;;
+  -h|--help|help) usage ;;
+  *) { [[ -z "$cmd" ]] || echo "whq: unknown verb '$cmd'"; usage; } >&2; exit 2 ;;
 esac

@@ -413,6 +413,15 @@ export class Hub {
     return closed;
   }
 
+  /** Swap an open card's buttons in place: same id and key, and the board shows the new version. */
+  reviseOptions(id: string, options: Question["options"]) {
+    const cur = this.store.question(id);
+    if (!cur || cur.status !== "open") return;
+    const q = { ...cur, options };
+    this.store.putQuestion(q);
+    this.emit({ type: "question", data: q });
+  }
+
   expireQuestion(id: string, reason = "expired") {
     const q = this.store.question(id);
     if (!q || q.status !== "open") return;

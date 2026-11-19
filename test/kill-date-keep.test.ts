@@ -70,6 +70,9 @@ test("a proposal's kill card has Send an agent; a typed 'do it' dispatches work,
     signals: { killDate: "2026-09-23" },
   });
   tick(at(23, 10));
+  // Its proposal card asks first and holds the kill card back; once it has yielded, the kill card asks.
+  hub.expireQuestion(cardsFor(it.id).find((q) => q.key.startsWith("proposal:"))!.id, "yielded");
+  tick(at(23, 10, 5));
   const q = killCard(it.id)!;
   expect(q.options.find((o) => o.id === "go")?.effect).toEqual({ type: "dispatch", action: "work" });
   await hub.note(q.id, "do it");
@@ -124,15 +127,105 @@ test("memory re-import keeps a moved kill date; memory dropping or extending it 
   expect(keptKill(existing, { ...base, killDate: "2026-09-30" })).toMatchObject({ killDate: "2026-09-30", killKept: "2026-09-30" });
 });
 
-test("a due card asked before the kill date was due doesn't hide the kill card", () => {
+// it_mwe701wv3fshv: one decision, one card. 11-11..11-18 it_mvryad2y4u8nl had its due and kill cards open together.
+test("a due card asked before the kill date was due gets Kill it then, and no kill card opens", async () => {
   // Slot Mon 09-21, kill Fri 09-25: the due card (no Kill it) is still open on Thursday.
   const it = hub.createItem({ title: "slot first", status: "scheduled", scheduledFor: at(21, 9, 30).toISOString(), signals: { killDate: "2026-09-25" } });
+  const seen: string[] = [];
+  hub.subscribe((e) => e.type === "question" && e.data.itemId === it.id && seen.push(e.data.options.map((o) => o.id).join(",")));
   tick(at(21, 10));
   const due = cardsFor(it.id);
   expect(due.map((q) => q.key.split(":")[0])).toEqual(["due"]);
   expect(due[0]!.options.some((o) => o.id === "kill")).toBe(false);
   tick(at(24, 10));
-  expect(killCard(it.id)?.key).toBe(`kill:${it.id}:2026-09-25`);
+  expect(killCard(it.id)).toBeUndefined();
+  const now = cardsFor(it.id);
+  expect(now.map((q) => q.id)).toEqual([due[0]!.id]); // the same card, changed in place
+  expect(now[0]!.options.map((o) => o.id)).toEqual([...due[0]!.options.map((o) => o.id), "kill"]);
+  expect(seen.at(-1)).toContain("kill"); // the board got the new version
+  tick(at(26, 10)); // past the kill date, days later: still one card, Kill it once
+  expect(cardsFor(it.id).map((q) => q.options.filter((o) => o.id === "kill").length)).toEqual([1]);
+  await hub.answer(now[0]!.id, "kill");
+  expect(hub.store.item(it.id)!.status).toBe("dropped");
+});
+
+const proposal = (killDate: string) =>
+  hub.createItem({
+    title: "a reflection proposal",
+    kind: "idea",
+    status: "proposed",
+    source: { type: "memory", label: "Proposals 2026-09-20 · Medium Priority", key: `memory:proposals:${killDate}` },
+    signals: { killDate },
+  });
+
+test("an open proposal card holds back the kill card", () => {
+  // 11-05 it_mw470qfbthyrj: proposal and kill cards opened in the same tick.
+  const it = proposal("2026-09-23");
+  tick(at(23, 10));
+  expect(cardsFor(it.id).map((q) => q.key)).toEqual([`proposal:${it.id}`]);
+  tick(at(24, 11));
+  expect(killCard(it.id)).toBeUndefined();
+  // Control: the proposal card gone (answered elsewhere, yielded), the kill card asks.
+  hub.expireQuestion(cardsFor(it.id)[0]!.id, "yielded");
+  tick(at(24, 12));
+  expect(killCard(it.id)?.key).toBe(`kill:${it.id}:2026-09-23`);
+  expect(cardsFor(it.id)).toHaveLength(1);
+});
+
+test("an open kill card holds back the proposal card", () => {
+  // 11-11 it_mwcrrhjb97ogt: its kill card opened first, its proposal card the next day beside it.
+  const it = proposal("2026-09-23");
+  const kill = hub.ask({ kind: "state", itemId: it.id, key: `kill:${it.id}:2026-09-23`, priority: 72, prompt: it.title, options: [] })!;
+  tick(at(23, 10));
+  expect(cardsFor(it.id).map((q) => q.key)).toEqual([`kill:${it.id}:2026-09-23`]);
+  // Control: the kill card closed some other way (the date moved), the proposal card asks.
+  hub.updateItem(it.id, { signals: { killDate: "2026-10-30" } });
+  tick(at(23, 10, 5));
+  expect(hub.store.question(kill.id)?.status).toBe("expired");
+  expect(cardsFor(it.id).map((q) => q.key)).toEqual([`proposal:${it.id}`]);
+});
+
+test("a full board still puts Kill it on the due card", () => {
+  const it = hub.createItem({ title: "slot first", status: "scheduled", scheduledFor: at(21, 9, 30).toISOString(), signals: { killDate: "2026-09-25" } });
+  tick(at(21, 10));
+  for (let i = 0; i < 20; i++) hub.ask({ kind: "state", key: `filler:${i}`, priority: 50, prompt: `filler ${i}`, options: [] });
+  tick(at(24, 10));
+  expect(cardsFor(it.id).map((q) => [q.key.split(":")[0], q.options.some((o) => o.id === "kill")])).toEqual([["due", true]]);
+});
+
+test("an agent on it: the due card doesn't gain Kill it, and no kill card", () => {
+  const it = hub.createItem({ title: "slot first", status: "scheduled", scheduledFor: at(21, 9, 30).toISOString(), signals: { killDate: "2026-09-25" } });
+  tick(at(21, 10));
+  hub.putJob({ id: "j_busy", kind: "action", name: "work", title: "x", surface: "headless", status: "running", itemId: it.id, tail: [], createdAt: at(23, 9).toISOString() } as any);
+  tick(at(24, 10));
+  expect(cardsFor(it.id).map((q) => [q.key.split(":")[0], q.options.some((o) => o.id === "kill")])).toEqual([["due", false]]);
+});
+
+test("a note being read on the due card: no change, and the kill card stays until the button is there", () => {
+  const it = hub.createItem({ title: "slot first", status: "scheduled", scheduledFor: at(21, 9, 30).toISOString(), signals: { killDate: "2026-09-25" } });
+  tick(at(21, 10));
+  const due = cardsFor(it.id)[0]!;
+  const kill = hub.ask({ kind: "state", itemId: it.id, key: `kill:${it.id}:2026-09-25`, priority: 72, prompt: it.title, options: [] })!;
+  const reading = (hub as unknown as { reading: Map<string, { n: number }> }).reading;
+  reading.set(due.id, { n: 1 });
+  tick(at(24, 10));
+  expect(hub.store.question(due.id)!.options.some((o) => o.id === "kill")).toBe(false);
+  expect(hub.store.question(kill.id)?.status).toBe("open");
+  reading.delete(due.id); // the read ended
+  tick(at(24, 10, 5));
+  expect(hub.store.question(due.id)!.options.some((o) => o.id === "kill")).toBe(true);
+  expect(hub.store.question(kill.id)).toMatchObject({ status: "expired", answer: "on It's time" });
+});
+
+test("the kill date moves later: the due card loses Kill it", () => {
+  const it = hub.createItem({ title: "slot first", status: "scheduled", scheduledFor: at(21, 9, 30).toISOString(), signals: { killDate: "2026-09-25" } });
+  tick(at(24, 10));
+  expect(cardsFor(it.id)[0]!.options.some((o) => o.id === "kill")).toBe(true);
+  hub.updateItem(it.id, { signals: { killDate: "2026-10-09" } }); // a memory re-import extended it
+  tick(at(24, 10, 5));
+  const open = cardsFor(it.id);
+  expect(open.map((q) => q.key.split(":")[0])).toEqual(["due"]);
+  expect(open[0]!.options.some((o) => o.id === "kill")).toBe(false);
 });
 
 test("a keep on another card closes the old kill card; no second one the same day", async () => {

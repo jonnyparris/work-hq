@@ -372,6 +372,9 @@ export class Prompter {
     for (const k of Object.keys(holds.list)) if (!dueKeys.has(k)) (delete holds.list[k], (holds.dirty = true));
     if (holds.dirty) store.setKv(DUE_HOLD_KEY, JSON.stringify(holds.list));
 
+    // 1b. Before any budget check: changing a card in place asks nothing new.
+    if (this.syncDueKills(items, busy, now)) open = this.open = store.questions("open");
+
     // 2. Meetings: prep is one morning card (askPrep, below); capture is one end-of-day card (unrecordedMeetings above,
     // asked with the wrap-up below). The meeting row takes dictation for REVIEW_HOLD_MIN after it ends (web Timeline).
 
@@ -448,10 +451,15 @@ export class Prompter {
       .sort((a, b) => propDate(b).localeCompare(propDate(a)) || propRank(a) - propRank(b) || a.createdAt.localeCompare(b.createdAt));
     // A card nobody answers doesn't keep its slot: 11-12..11-18 two cards held both slots for six days and no
     // newer reflection's proposal was asked. It yields after PROPOSAL_YIELD_WORKDAYS, or sooner to a newer one.
-    if (this.yieldProposals(proposals, now)) open = this.open = store.questions("open");
+    // One decision, one card: an open kill card asks the same thing ("Do it — send an agent" or Kill it). 11-12
+    // it_mwcrrhjb97ogt got both. Not a candidate in the yield either, so it can't rank a card out of a slot it won't
+    // take (an open card of its own still ages out as usual).
+    const killing = new Set(open.filter((q) => q.key.startsWith("kill:")).map((q) => q.itemId));
+    const askable = proposals.filter((i) => !killing.has(i.id));
+    if (this.yieldProposals(askable, now)) open = this.open = store.questions("open");
     // Own slots: only open proposal cards count, never the total budget. Full (the usual case): no lookups here.
     let slots = CAP.proposal - openCount("dispatch", isProposalCard);
-    for (const it of proposals) {
+    for (const it of askable) {
       if (slots <= 0) break;
       const asked = this.ask({
         kind: "dispatch",
@@ -538,6 +546,7 @@ export class Prompter {
     }
 
     // 6. Kill dates from the reflection — keep or kill.
+    const openKeys = new Set(open.map((q) => q.key));
     for (const it of items) {
       if (budget <= 0 || openCount("state", (q) => q.key.startsWith("kill:")) >= CAP.kill) break;
       const kill = it.signals?.killDate;
@@ -546,9 +555,12 @@ export class Prompter {
       if (!kill || ["done", "dropped"].includes(it.status) || slotAhead(it, now)) continue;
       const days = killDays(it, now);
       if (days === undefined) continue;
-      // An agent is on it: its report answers keep-or-kill. The slot came: "It's time" carries "Kill it" instead.
-      // Held by an out-of-office block: the due card carries "Kill it" when it asks.
-      if (busy.has(it.id) || held.has(it.id) || (it.scheduledFor && dueKills(store.openQuestionByKey(`due:${it.id}:${it.scheduledFor}`)))) continue;
+      // An agent is on it: its report answers keep-or-kill. Held by an out-of-office block: the due card carries
+      // "Kill it" when it asks.
+      if (busy.has(it.id) || held.has(it.id)) continue;
+      // One decision, one card. An open proposal card already asks do-or-reject (11-05 it_mw470qfbthyrj got both in one
+      // tick); an open It's time card carries "Kill it" (syncDueKills).
+      if (openKeys.has(`proposal:${it.id}`) || (it.scheduledFor && openKeys.has(`due:${it.id}:${it.scheduledFor}`))) continue;
       // Proposals and work-shaped items: "do it" on this card sends an agent (quickNote picks the dispatch option).
       // 11-12 "do it" on it_mw5m4rjjysw1k's kill card became "Do it today"; no agent ran and the card came back 11-18.
       const work = isProposalItem(it) || actionFor(it)?.action === "work";
@@ -1234,6 +1246,39 @@ export class Prompter {
     return closed;
   }
 
+  /**
+   * An open It's time card carries "Kill it" while the item's kill date is due (not added while an agent is on the
+   * item; one already there stays; no change while a typed note on it is being read), and stands in for the kill card
+   * then: a due card asked before the date gets it, one whose date moved later (a keep, a memory re-import) loses it,
+   * and an open kill card beside it closes once it has the button. 11-11..11-18 it_mvryad2y4u8nl had its due and kill cards open side by side.
+   * Returns how many kill cards it closed.
+   */
+  private syncDueKills(items: Item[], busy: Set<string | undefined>, now: Date) {
+    const byId = new Map(items.map((i) => [i.id, i]));
+    let closed = 0;
+    for (const q of this.open) {
+      const it = q.key.startsWith("due:") && q.itemId ? byId.get(q.itemId) : undefined;
+      if (!it || q.key !== `due:${it.id}:${it.scheduledFor}`) continue;
+      // An agent on it answers keep-or-kill in its report: don't add the button meanwhile (one already there stays).
+      const due = killDays(it, now) !== undefined && (dueKills(q) || !busy.has(it.id));
+      // A typed note being read picks from these buttons: leave them until the next tick.
+      if (due !== dueKills(q) && !this.hub.isReading(q.id)) {
+        // Same place the slot's own card puts it: last.
+        q.options = due ? [...q.options, KILL_OPT] : q.options.filter((o) => o.id !== KILL_OPT.id);
+        this.hub.reviseOptions(q.id, q.options);
+      }
+      // Only once it carries the button and shows: a due card parked for later (an out-of-office hold) would hide the
+      // decision, so the kill card stays until then. The store's copy: the due loop above may have just parked it.
+      if (!due || !dueKills(q) || deferred(this.hub.store.question(q.id) ?? q, now)) continue;
+      for (const k of this.open) {
+        if (k.itemId !== it.id || !k.key.startsWith("kill:") || this.hub.isReading(k.id)) continue;
+        this.hub.expireQuestion(k.id, "on It's time");
+        closed++;
+      }
+    }
+    return closed;
+  }
+
   /** Close questions whose item moved on without them. Returns the meeting-ended cards it closed as stale. */
   private expireMoot(open: Question[], items: Item[], now: Date) {
     const byId = new Map(items.map((i) => [i.id, i]));
@@ -1701,7 +1746,7 @@ function killDays(i: Pick<Item, "signals">, now: Date): number | undefined {
   return days <= (i.signals?.killKept === kill ? 1 : 2) ? days : undefined;
 }
 
-/** An open due card that carries "Kill it" (asked once the kill date was due): it stands in for the kill card. */
+/** An open due card that carries "Kill it" (asked or revised once the kill date was due): it stands in for the kill card. */
 const dueKills = (q: Pick<Question, "options"> | undefined) => Boolean(q?.options.some((o) => o.id === KILL_OPT.id && setsStatus(o.effect, "dropped")));
 
 /** An item the reflection proposed (its own Proposals row, or one merged into it). */

@@ -115,7 +115,7 @@ and cheap to run every 30 seconds. The model decides what things *mean*. The rul
 | **M5 move** | the coaching card's "one thing to try" time (the last HH:MM in its *when*, else 09:30) | once per reflection: Done / Hand to an agent / Not today, journaled for tonight's reflection |
 | **Meeting soon** | a small meeting or 1-1 starts in ≤ 20 min | offers a brief |
 | **🍍 Captured** | you said pineapple in a meeting transcript | confirm, dispatch, or "not mine" |
-| **Kill date** | ≤ 2 days to a decision deadline; an item scheduled for later waits for its slot. A keep answer moves the date: a slot to its day (the slot's "It's time" card then carries "Kill it"), "Do it today" / an agent to the next workday. Proposals and task-like items get "Do it — send an agent" | |
+| **Kill date** | ≤ 2 days to a decision deadline; an item scheduled for later waits for its slot. A keep answer moves the date: a slot to its day (the slot's "It's time" card then carries "Kill it"), "Do it today" / an agent to the next workday. Proposals and task-like items get "Do it — send an agent". One card per item: no kill card while its proposal or "It's time" card is open; "It's time" gets "Kill it" once the date is due (not while an agent is on it or a note on it is being read) | |
 | **Today's unrecorded meetings** | with the wrap-up, if meetings with others ended and no notes turned up | "anything come out of them?" — one card, not one per meeting |
 | **State unknown** | your notes admit they don't know | max 3 open |
 | **Still on it?** | an item on *doing* with no agent running and no open card, quiet for 4 work hours | Done / Waiting / Today / Drop; at most daily per item, max 3 open |
@@ -225,6 +225,13 @@ bin/whq access-ok https://app.example.com    # the job got through: close that c
 # A login card for a host in jira.hosts waits 150 min first (the day's first, or after a self-close): an access-ok in that window closes it unseen.
 ```
 
+Scripts call whq best effort (`>/dev/null || true`), so a removed verb makes their cards vanish with no error. An
+unknown verb exits 2 with a message on stderr. List the dirs whose shell scripts call whq in
+`~/.config/work-hq/whq-callers.txt` (one per line; `~/`, relative-to-the-file and `#` comments allowed; override
+with `WORK_HQ_CALLERS_FILE`): `bun test` then fails when one of their `*.sh` files (not `*.test.sh`, not symlinks)
+calls a literal `bin/whq <verb>` whq no longer has. It also fails on a stale list: a named file that's missing, no
+dirs, or a dir that's gone or has no whq calls. No default file: the check is skipped.
+
 An agent outside a job that changes an item directly sends `who: "agent"`, so the journal doesn't read it as your words:
 `curl -X PATCH localhost:7717/api/items/it_… -d '{"status":"dropped","note":"killed 11-07","who":"agent"}'`.
 
@@ -285,5 +292,6 @@ All optional. They override the config file.
 `WORK_HQ_TZ` · `WORK_HQ_WORKSPACE` · `WORK_HQ_PROMPTS` · `WORK_HQ_MODEL` · `WORK_HQ_PI` ·
 `WORK_HQ_SWEEPS=off` · `WORK_HQ_DAY_START` / `_END` · `WORK_HQ_CALENDAR_EVERY` · `WORK_HQ_TRANSCRIPTS_EVERY` ·
 `WORK_HQ_POSTS_EVERY_DAYS` · `WORK_HQ_SWEEP_SURFACE=cmux` · `WORK_HQ_CMUX_PRUNE_HOURS` · `WORK_HQ_CMUX_PRUNE_DONE_MINUTES` · `WORK_HQ_MEMORY_URL` · `WORK_HQ_MEMORY_TOKEN` ·
-`WORK_HQ_MEMORY_TOKEN_FILE` · `WORK_HQ_MEMORY_WRITE` · `WORK_HQ_CA_FILE` · `WORK_HQ_LAUNCHD_LABEL` · `WORK_HQ_TRACKER_URL`
+`WORK_HQ_MEMORY_TOKEN_FILE` · `WORK_HQ_MEMORY_WRITE` · `WORK_HQ_CA_FILE` · `WORK_HQ_LAUNCHD_LABEL` · `WORK_HQ_TRACKER_URL` ·
+`WORK_HQ_CALLERS_FILE` (tests only: the whq caller list)
 </details>
