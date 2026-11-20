@@ -218,6 +218,7 @@ JSON
 bin/whq report --help                      # the full schema and button rules; prompts carry a short form
 bin/whq say "PAY-2198 is closed"           # same as the command bar
 bin/whq say --from nightly-bench "…"      # a script's words: journalled as an agent line, so the digest and reflection don't count them as you typing
+bin/whq say -- "-5 degrees"                # text that starts with a dash goes after --; any other leading flag or blank text exits 2, -h/--help prints usage
 bin/whq journal "learn: tightened the gchat skill"   # a journal line from any agent, no triage
 bin/whq access-login https://app.example.com "nightly job skipped"   # one "Log in now" card per app per day, no triage
 bin/whq access-login --rerun com.me.nightly https://app.example.com "…"   # same; the login then kickstarts that launchd job (a later label joins the day's open card)

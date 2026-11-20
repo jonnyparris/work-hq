@@ -2,7 +2,8 @@
 # whq — tiny client for Work HQ, used by dispatched pi sessions.
 #
 #   whq report <jobId>        # JSON report on stdin → POST /api/agent/report (whq report --help: schema)
-#   whq say [--from <script>] "<text>"  # talk to Work HQ like the command bar does; --from: a script, not you typing
+#   whq say [--from <script>] [--] "<text>"  # talk to Work HQ like the command bar does; --from: a script, not you typing;
+#                             -h/--help: usage; any other leading -flag, or blank text, exits 2 unposted (text starting with -? put -- first)
 #   whq journal "<text>"      # add a line to the journal as an agent (no triage)
 #   whq access-login [--rerun <launchd-label>] <app> ["<why>"]  # Access login lapsed: one "Log in now" card a day; --rerun: its login kickstarts the job
 #   whq access-ok <app>       # the login works again: close that app's card
@@ -40,8 +41,20 @@ try: wa=json.loads(raw).get("warnings") or []
 except Exception: wa=[]
 for w in wa: print("Not applied: "+w)' ;;
   say)
-    from=""; if [[ "${1:-}" == --from ]]; then from="${2:-}"; [[ -n "$from" ]] || { echo "usage: whq say [--from <script>] <text>" >&2; exit 2; }; shift 2; fi
-    echo "{\"text\": $(jstr "$*"), \"from\": $(jstr "$from")}" | post /api/say ;;
+    # A leading flag is never text (only what follows `--` may start with -): 11-19 an agent's `whq say --help` was
+    # journaled as typed by the owner. --from takes one non-flag value, once.
+    say_usage="usage: whq say [--from <script>] [--] <text>"; from=""
+    while [[ "${1:-}" == -* ]]; do
+      case "$1" in
+        -h|--help) echo "$say_usage"; exit 0 ;;
+        --from) [[ -z "$from" && -n "${2:-}" && "${2:-}" != -* ]] || { echo "$say_usage" >&2; exit 2; }; from="$2"; shift 2 ;;
+        --) shift; break ;;
+        *) echo "whq say: unknown flag '$1' (nothing sent; text that starts with - goes after --)" >&2; echo "$say_usage" >&2; exit 2 ;;
+      esac
+    done
+    text="$*" # joined first: ${*//…/} would strip each arg, then rejoin " " " " with a space
+    [[ "$text" == *[![:space:]]* ]] || { echo "whq say: no text (nothing sent)" >&2; echo "$say_usage" >&2; exit 2; }
+    echo "{\"text\": $(jstr "$text"), \"from\": $(jstr "$from")}" | post /api/say ;;
   journal)   echo "{\"text\": $(jstr "$*")}" | post /api/journal ;;
   access-login)
     rerun=""; if [[ "${1:-}" == --rerun ]]; then rerun="${2:-}"; [[ -n "$rerun" ]] || { echo "usage: whq access-login [--rerun <launchd-label>] <app> [why]" >&2; exit 2; }; shift 2; fi

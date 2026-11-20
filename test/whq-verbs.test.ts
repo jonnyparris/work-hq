@@ -211,3 +211,49 @@ test.skipIf(CALLERS === null)("every literal `bin/whq <verb>` in the listed call
   expect(brokenDirs(CALLERS.dirs, files)).toEqual([]);
   expect(unknownCalls(files, verbs())).toEqual([]);
 });
+
+/** Runs `whq say <args>` against a stub Work HQ that records each POST body. Async spawn: a sync one would block
+ *  the stub server's event loop and curl would hang. */
+async function say(args: string[]): Promise<{ code: number; out: string; err: string; posts: unknown[] }> {
+  const posts: unknown[] = [];
+  const server = Bun.serve({ port: 0, fetch: async (req) => (posts.push(await req.json()), Response.json({ ok: true })) });
+  try {
+    const p = Bun.spawn([WHQ, "say", ...args], { env: { ...process.env, WORK_HQ_URL: `http://127.0.0.1:${server.port}` }, stdout: "pipe", stderr: "pipe" });
+    const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    return { code, out, err, posts };
+  } finally {
+    server.stop(true);
+  }
+}
+
+test("whq say --help / -h: usage on stdout, exit 0, nothing posted (11-19: `say --help` was journaled as typed text)", async () => {
+  for (const args of [["--help"], ["-h"], ["--from", "x.sh", "--help"]]) {
+    const r = await say(args);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("usage: whq say");
+    expect(r.posts).toEqual([]);
+  }
+});
+
+test("whq say: any other leading flag exits 2 without posting; -- lets text start with a dash", async () => {
+  const bad = [["--verbose", "hi"], ["-x"], ["--from", "x.sh", "--dry-run", "hi"], ["-"], ["--from"], ["--from", "--help"], ["--from", "--", "hi"], ["--from", "a", "--from", "b", "hi"], ["--from", "-", "hi"]];
+  for (const args of bad) {
+    const r = await say(args);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("usage: whq say");
+    expect(r.posts).toEqual([]);
+  }
+  expect((await say(["--from", "x.sh", "hello", "--help"])).posts).toEqual([{ text: "hello --help", from: "x.sh" }]);
+  expect((await say(["--", "-5 degrees"])).posts).toEqual([{ text: "-5 degrees", from: "" }]);
+  expect((await say(["plain", "text"])).posts).toEqual([{ text: "plain text", from: "" }]);
+});
+
+test("whq say: no or blank text exits 2 without posting; padded text still posts", async () => {
+  for (const args of [[], [""], [" "], ["--"], ["--from", "x.sh"], ["--from", "x.sh", "--"], ["\t\n"], ["", ""], [" ", " "], ["--from", "x.sh", "--", " ", " "]]) {
+    const r = await say(args);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("no text (nothing sent)");
+    expect(r.posts).toEqual([]);
+  }
+  expect((await say([" ", "hi", " "])).posts).toEqual([{ text: "  hi  ", from: "" }]);
+});
