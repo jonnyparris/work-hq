@@ -24,7 +24,7 @@ import { overloaded } from "./load.ts";
 import { assertShortArgs, PiPool, PiRpc, piStamp, type RunOutcome } from "./pi-rpc.ts";
 import {
   actionPrompt, type BossCard, bossPrompt, calendarPrompt, calendarSweepPrompt, explainPrompt, notePrompt, openUrl, postSweepPrompt, schedulePrompt, SITE_LINK, SITE_POSTS,
-  stoppedJobNote, transcriptSweepPrompt, triagePrompt, WIKI_DRAFTS,
+  rejectedTranscriptTitles, stoppedJobNote, transcriptSweepPrompt, triagePrompt, WIKI_DRAFTS,
 } from "./prompts.ts";
 import { cleanupWorktree, createWorktree, repoFor, type WorktreeResult } from "./worktrees.ts";
 import { actionFor, WHEN_OPT } from "./prompter.ts";
@@ -1114,8 +1114,11 @@ export class Agents implements Dispatcher {
         const midnight = new Date(day);
         midnight.setHours(0, 0, 0, 0);
         since = backfillFrom ?? (state.cursor && state.cursor > midnight.toISOString() ? state.cursor : midnight.toISOString());
-        const known = this.hub.store.items().filter((i) => i.source.type === "transcript" || i.status !== "dropped").map((i) => i.title);
-        prompt = transcriptSweepPrompt(job.id, since, known);
+        const items = this.hub.store.items();
+        const rejected = rejectedTranscriptTitles(items);
+        const shown = new Set(rejected);
+        const known = items.filter((i) => (i.source.type === "transcript" || i.status !== "dropped") && !shown.has(i.title)).map((i) => i.title);
+        prompt = transcriptSweepPrompt(job.id, since, known, rejected);
       } else {
         through = deferHorizon(day);
         prompt = calendarSweepPrompt(job.id, dayStr, through);

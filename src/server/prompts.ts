@@ -290,7 +290,27 @@ ${REPORT_CONTRACT(jobId)}
   An update with "status": "done" or "dropped" also closes every open agent card on that item; the owner's own cards stay open.`;
 }
 
-export function transcriptSweepPrompt(jobId: string, since: string, known: string[]) {
+/** How far back, and how many, dropped transcript items the sweep is shown as rejected. */
+export const REJECTED_DAYS = 30;
+export const REJECTED_CAP = 40;
+
+/**
+ * Titles of transcript items dropped with a confirmedAt stamp in the last REJECTED_DAYS, newest first: the owner's
+ * drops ("Not mine / not real", Reject, Drop it), an agent's PATCH drop, a stale-proposal retirement. Merged
+ * duplicates (Hub.dedupeExisting) carry no stamp and stay under Known. 19 of 24 answered transcript cards by 11-10
+ * were dismissals, so the sweep gets these as negative examples. The window reads confirmedAt, not updatedAt, which
+ * any later write bumps. A card note or a title/kind edit re-stamps confirmedAt, so it brings an old drop back in.
+ */
+export function rejectedTranscriptTitles(items: Item[], now = Date.now()): string[] {
+  const from = new Date(now - REJECTED_DAYS * 86_400_000).toISOString();
+  return items
+    .filter((i) => i.source.type === "transcript" && i.status === "dropped" && i.confirmedAt && i.confirmedAt >= from)
+    .sort((a, b) => b.confirmedAt!.localeCompare(a.confirmedAt!))
+    .slice(0, REJECTED_CAP)
+    .map((i) => i.title);
+}
+
+export function transcriptSweepPrompt(jobId: string, since: string, known: string[], rejected: string[] = []) {
   return `You are Work HQ's transcript watcher: a headless, READ-ONLY sweep. ${owner.name} is working; find what they
 committed to or were asked to do in meetings that have produced notes or transcripts since ${since}.
 
@@ -302,6 +322,10 @@ key: "transcript:<docId>:<short-slug>" }; confidence 0-1.
 
 Known items (don't duplicate):
 ${known.slice(0, 120).map((t) => `- ${t}`).join("\n") || "- (none)"}
+
+Rejected, don't re-extract: these were dropped (not ${owner.name}'s, not real, or not being done). Don't
+output them again, reworded or not:
+${rejected.map((t) => `- ${t}`).join("\n") || "- (none)"}
 
 ${toolRoutes()}
 
