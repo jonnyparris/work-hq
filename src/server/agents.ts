@@ -25,7 +25,7 @@ import { overloaded } from "./load.ts";
 import { assertShortArgs, PiPool, PiRpc, piStamp, type RunOutcome } from "./pi-rpc.ts";
 import {
   actionPrompt, type BossCard, bossPrompt, calendarPrompt, calendarSweepPrompt, explainPrompt, notePrompt, openUrl, postSweepPrompt, schedulePrompt, SITE_LINK, SITE_POSTS,
-  rejectedTranscriptTitles, stoppedJobNote, transcriptSweepPrompt, triagePrompt, WIKI_DRAFTS,
+  rejectedTranscriptTitles, stoppedJobNote, takeoverNote, transcriptSweepPrompt, triagePrompt, WIKI_DRAFTS,
 } from "./prompts.ts";
 import { cleanupWorktree, createWorktree, repoFor, type WorktreeResult } from "./worktrees.ts";
 import { actionFor, WHEN_OPT } from "./prompter.ts";
@@ -97,6 +97,11 @@ const RESUME_NUDGE = "Your last request failed on a provider rate limit. Carry o
  * run gets one more run this long after it failed (Agents.actionBlipRetryMs).
  */
 export const TRANSIENT_RETRY_MS = 60_000;
+/** A headless action job's error when a restart killed it (boot fails it; takeOver sends one re-run). */
+const RESTARTED = "server restarted mid-run";
+/** kv: ids of restart-killed jobs whose takeover hasn't been handled yet (Agents.runTakeovers). */
+const TAKEOVER_KV = "takeoverPending";
+
 /** A tool-less triage that failed on a network blip waits this long before its one rerun (right after wake, Wi-Fi needs a moment). */
 export const TRIAGE_BLIP_RETRY_MS = 10_000;
 /**
@@ -302,6 +307,7 @@ export class Agents implements Dispatcher {
     };
     // Pick up jobs that were live when the server restarted. Every live job, oldest first, so queued cmux
     // launches rejoin the cap queue in their old order (a recent-100 window could strand an old one).
+    const takeovers: Job[] = [];
     for (const job of hub.store.liveJobs().sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
       if (job.surface === "cmux" && job.status === "queued" && !job.workspace) {
         // Was waiting on the launch gate; never started, so it's safe to launch again.
@@ -309,13 +315,48 @@ export class Agents implements Dispatcher {
       } else if (job.surface === "cmux" && ["running", "blocked", "queued"].includes(job.status)) {
         this.running.set(job.id, { statusPath: resolve(cmux.jobDir(job.id), "status.json"), seenWork: true });
       } else if (job.surface === "headless" && job.kind === "action" && ["running", "queued"].includes(job.status)) {
-        // Same path as any stopped action: fail the job and, if the item is still on `doing`, ask where it stands.
-        this.finishAction(job.id, { ok: false, text: "", error: "server restarted mid-run" });
+        // Fail the job. The first restart to kill it sends a fresh agent to take over (no session survives to
+        // resume); a takeover killed again, or one that can't be sent, takes the usual path: ask where it stands.
+        const again = this.canTakeOver(job);
+        this.finishAction(job.id, { ok: false, text: "", error: RESTARTED }, { card: !again });
+        if (again) takeovers.push(job);
       } else if (job.surface === "headless" && ["running", "queued"].includes(job.status)) {
-        hub.putJob({ ...job, status: "failed", error: "server restarted mid-run", finishedAt: nowIso() });
-        if (job.kind === "triage") this.reaskTriage(job.id, "server restarted mid-run");
+        hub.putJob({ ...job, status: "failed", error: RESTARTED, finishedAt: nowIso() });
+        if (job.kind === "triage") this.reaskTriage(job.id, RESTARTED);
       }
     }
+    this.runTakeovers(takeovers);
+  }
+
+  /**
+   * After the boot loop, so every job this restart killed is failed first (a takeover can't fold into a dead sibling),
+   * and after the non-blocking boot ping, whose answer picks the surface (dispatch's own check is a blocking ping).
+   * One at a time: each dispatch may build a worktree (git fetch), and the run cap only gates the launch after that.
+   * The ids wait in kv until handled, so a restart before then still sends them (the jobs are no longer live).
+   */
+  private runTakeovers(found: Job[]) {
+    let left: string[] = [];
+    try {
+      const v: unknown = JSON.parse(this.hub.store.kv(TAKEOVER_KV) ?? "[]");
+      if (Array.isArray(v)) left = v.filter((x): x is string => typeof x === "string");
+    } catch {}
+    const jobs = [...new Set([...left, ...found.map((j) => j.id)])].flatMap((id) => this.hub.store.job(id) ?? []);
+    const save = () => this.hub.store.setKv(TAKEOVER_KV, JSON.stringify(jobs.map((j) => j.id)));
+    save();
+    if (!jobs.length) return;
+    void this.cmuxAtBoot().then(async (cmuxUp) => {
+      for (const job of [...jobs]) {
+        try {
+          await this.takeOver(job, cmuxUp);
+        } catch (e) {
+          // Left in kv: the next boot tries again (the already-sent check keeps that from doubling it).
+          console.warn(`[work-hq] takeover of ${job.id} failed:`, e);
+          continue;
+        }
+        jobs.splice(jobs.indexOf(job), 1);
+        save();
+      }
+    });
   }
 
   /**
@@ -414,7 +455,7 @@ export class Agents implements Dispatcher {
       if (claim === "cmux") {
         return void this.adoptCmux(job.id, job.title, "▸ its cmux session started before the restart — tracking it", ok ? find(job.id) : undefined, ok);
       }
-      if (claim) return this.finishAction(job.id, { ok: false, text: "", error: "server restarted mid-run" });
+      if (claim) return this.finishAction(job.id, { ok: false, text: "", error: RESTARTED });
       // No claim yet, but its workspace exists: the restart came while `cmux workspace create` ran or before its
       // launch.sh claimed. Track that one; a second launch would only stand down and leave us tracking the wrong one.
       // (Still being made? startAction re-reads the claim just before it launches.) No cmux: nothing to find.
@@ -451,6 +492,56 @@ export class Agents implements Dispatcher {
         await sleep(Math.min(every, left));
       }
     })());
+  }
+
+  /**
+   * A headless action job a restart kills gets one fresh re-run (11-19: a forced restart killed two long jobs and
+   * nothing re-sent them for six hours): same action, note and decision, plus a "took over from" note. Not for a job
+   * that's a takeover itself (one re-run per chain), one whose agent already said it's finished, or an item nobody's
+   * on any more (moved off `doing`; a verify job, which never moves it, while the item is still open).
+   */
+  private canTakeOver(job: Job): job is Job & { itemId: string; name: ActionKind } {
+    if (job.kind !== "action" || job.takeoverOf || job.reportedFinal || !isActionKind(job.name) || !job.itemId) return false;
+    const status = this.hub.store.item(job.itemId)?.status;
+    if (job.name === "verify") return status !== undefined && status !== "done" && status !== "dropped";
+    return status === "doing";
+  }
+
+  private async takeOver(job: Job, cmuxUp: boolean) {
+    // Sent already, by a boot a restart cut short after dispatch: that one has it (and asks, or got cancelled). One
+    // takeover per job, whatever became of it.
+    if (this.hub.store.jobsOfKind("action").some((j) => j.takeoverOf === job.id)) return;
+    // Read again: the owner may have moved the item while boot waited on cmux. Not ours any more: the usual card
+    // (askAfter asks only while the item is on doing).
+    if (!this.canTakeOver(job)) return this.stoppedAfterAll(job);
+    const ran = Boolean(job.startedAt);
+    // Notes folded into a job that never started never reached an agent: the takeover carries them. A started job's
+    // went into its prompt, its session or the journal (foldInto), so they aren't repeated.
+    const folded = ran ? [] : (job.folded ?? []).map((f) => `Also sent for this job before the restart: ${f}`);
+    const note = [job.note, ...folded, takeoverNote(job)].filter(Boolean).join("\n");
+    let error: string | undefined;
+    try {
+      const next = await this.dispatch(job.itemId, job.name, note, job.decision, { takeoverOf: job.id, cmux: cmuxUp });
+      if (next && next.status !== "failed") {
+        // Another live job on the item took the note (dispatch folded it in): that one reports.
+        const how = next.takeoverOf === job.id ? `sent ${next.id} to take over` : `passed its task to ${next.id}, already on the item`;
+        this.hub.journal(`Restart killed ${job.id} ${ran ? "mid-run" : "before it started"}: ${how} (${job.title})`, { itemId: job.itemId, who: "hq" });
+        return;
+      }
+      error = next ? (next.error ?? `${next.id} failed`) : "item gone";
+    } catch (e) {
+      error = errText(e);
+    }
+    this.hub.journal(`Restart killed ${job.id}; couldn't send an agent to take over (${error})`, { itemId: job.itemId, who: "hq" });
+    this.stoppedAfterAll(job);
+  }
+
+  /** No takeover after all: the card and notice finishAction held back. */
+  private stoppedAfterAll(job: Job) {
+    // What finishAction held back. A started job's folds went into its prompt, its session or the journal (foldInto).
+    this.foldedLost(job.id);
+    this.askAfter(job.id, { ok: false, error: RESTARTED }, job.summary);
+    this.hub.emit({ type: "notify", data: { title: "Agent failed", body: job.title } });
   }
 
   /** Fail a job a restart caught before launch, and hand its item back with a card to send it again. */
@@ -495,7 +586,8 @@ export class Agents implements Dispatcher {
   }
 
   // ── actions (cmux) ─────────────────────────────────────────────────────
-  async dispatch(itemId: string, action: ActionKind, note?: string, decision?: string) {
+  /** `opts.takeoverOf`: this job re-runs one a restart killed (takeOver). `opts.cmux`: cmux is up, already asked. */
+  async dispatch(itemId: string, action: ActionKind, note?: string, decision?: string, opts: { takeoverOf?: string; cmux?: boolean } = {}) {
     const item = this.hub.store.item(itemId);
     if (!item) return undefined;
     const title = `${ACTION_LABEL[action]} · ${item.title}`.slice(0, 80);
@@ -514,8 +606,8 @@ export class Agents implements Dispatcher {
       .filter((j) => j.name === action && now - Date.parse(j.createdAt) < SAME_ACTION_WINDOW_MS)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
     if (recent) return this.foldInto(recent, note, decision);
-    const useCmux = this.cmuxDeps.available();
-    const job = this.newJob("action", action, title, useCmux ? "cmux" : "headless", itemId, { decision, note });
+    const useCmux = opts.cmux ?? this.cmuxDeps.available();
+    const job = this.newJob("action", action, title, useCmux ? "cmux" : "headless", itemId, { decision, note, ...(opts.takeoverOf ? { takeoverOf: opts.takeoverOf } : {}) });
     // Verifying doesn't change what the item *is*; everything else means someone's on it.
     // Sending an agent is a keep answer too: the kill date waits a workday for the agent's report (Hub.keepKill).
     if (action !== "verify") this.hub.updateItem(itemId, { status: "doing" });
@@ -1040,8 +1132,10 @@ export class Agents implements Dispatcher {
     return closed;
   }
 
-  private finishAction(jobId: string, r: { ok: boolean; text: string; error?: string }) {
-    this.foldedLost(jobId);
+  /** `card: false`: no card or notice (a takeover is being sent; takeOver gives both if that fails). */
+  private finishAction(jobId: string, r: { ok: boolean; text: string; error?: string }, o: { card?: boolean } = {}) {
+    // A takeover carries the folded notes (takeOver); stoppedAfterAll says they're lost if it can't be sent.
+    if (o.card !== false) this.foldedLost(jobId);
     this.promptSent.delete(jobId);
     const job = this.hub.store.job(jobId);
     if (!job || ["done", "failed"].includes(job.status)) return;
@@ -1059,6 +1153,16 @@ export class Agents implements Dispatcher {
       finishedAt: nowIso(),
       summary: after.summary ?? (r.ok ? "Finished" : undefined),
     });
+    if (o.card === false) return;
+    this.askAfter(jobId, r, after.summary);
+    this.hub.emit({ type: "notify", data: { title: r.ok ? "Agent finished" : "Agent failed", body: job.title } });
+  }
+
+  /** A job ended without settling its item: if the item is still on `doing`, ask the owner where it stands. */
+  private askAfter(jobId: string, r: { ok: boolean; error?: string }, summary?: string) {
+    const job = this.hub.store.job(jobId);
+    if (!job) return;
+    const after = { ...job, summary };
     const item = job.itemId ? this.hub.store.item(job.itemId) : undefined;
     // If the agent didn't settle the item (and didn't ask its own question), ask the owner.
     const agentAsked = this.hub.store.questions("open").some((q) => q.itemId === item?.id && q.key.startsWith("agent:"));
@@ -1084,7 +1188,6 @@ export class Agents implements Dispatcher {
         options: r.ok ? options : leadWithCheck(options),
       });
     }
-    this.hub.emit({ type: "notify", data: { title: r.ok ? "Agent finished" : "Agent failed", body: job.title } });
   }
 
   // ── sweeps (headless) ──────────────────────────────────────────────────
@@ -2048,6 +2151,8 @@ const ACTION_LABEL: Record<ActionKind, string> = {
   draft: "Draft",
   publish: "Publish",
 };
+
+const isActionKind = (name: string): name is ActionKind => Object.hasOwn(ACTION_LABEL, name);
 
 /** Why a pi run failed, in words that point at the real cause. A timeout is ours, not pi's last stderr line. */
 export function runError(r: { code: number | null; signal?: string | null; timedOut: boolean; timeoutMin: number; lastError?: string; stderr: string }): string {

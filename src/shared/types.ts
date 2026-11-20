@@ -339,6 +339,9 @@ export interface Job {
   };
   /** Headless pi session file, for audit. */
   session?: string;
+  /** Action jobs: the job a restart killed mid-run that this one re-runs (Agents takeover). One re-run per chain:
+   *  a restart that kills this one asks the owner instead. */
+  takeoverOf?: string;
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;

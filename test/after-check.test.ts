@@ -13,17 +13,18 @@ import type { Item, Job } from "../src/shared/types.ts";
 
 const noCmux: CmuxDeps = { available: () => false, launch: () => undefined, bootWaitMs: 10, bootRetryMs: 5 };
 
-function setup(id: string, status: Job["status"]) {
+// A takeover job (`takeoverOf`): a restart that kills one asks, rather than sending a third (restart-takeover.test.ts).
+function setup(id: string, status: Job["status"], extra: Partial<Job> = {}) {
   const hub = new Hub(new Store(":memory:"));
   const item: Item = { id: `it_${id}`, kind: "idea", status: "doing", title: "Fix the thing", source: { type: "manual" }, createdAt: "", updatedAt: "" };
   hub.store.putItem(item);
-  const job: Job = { id: `job_${id}`, kind: "action", name: "work", title: "Work · Fix the thing", surface: "headless", status, itemId: item.id, tail: [], createdAt: new Date().toISOString() };
+  const job: Job = { id: `job_${id}`, kind: "action", name: "work", title: "Work · Fix the thing", surface: "headless", status, itemId: item.id, tail: [], createdAt: new Date().toISOString(), ...extra };
   hub.store.putJob(job);
   return { hub, item, job };
 }
 
 test("a stopped job's after-card offers a verify agent that knows where to look", () => {
-  const { hub, job } = setup("a", "running");
+  const { hub, job } = setup("a", "running", { takeoverOf: "job_before" });
   new Agents(hub, noCmux); // boot fails the headless job mid-run and asks where it stands
   const q = hub.store.questions("open").find((x) => x.key === `after:${job.id}`)!;
   const check = q.options.find((o) => o.id === "check")!;
@@ -78,7 +79,7 @@ test("the transcript search honours PI_CODING_AGENT_DIR", () => {
 });
 
 test("tapping Check for me sends verify with the note and closes the card", async () => {
-  const { hub, item, job } = setup("c", "running");
+  const { hub, item, job } = setup("c", "running", { takeoverOf: "job_before" });
   new Agents(hub, noCmux);
   const sent: Array<{ itemId: string; action: string; note?: string }> = [];
   hub.dispatcher = { dispatch: async (itemId, action, note) => (sent.push({ itemId, action, note }), undefined), scheduleFromWords: async () => {} };
@@ -113,7 +114,7 @@ test("an after-card drawn before the option existed gets it at boot, before Show
 
 // 10-29: five stopped cards answered "Done" in 5s, two hadn't landed. 11-02: same tap closed CF Access, not done.
 test("a stopped job's after-card leads with Check for me; Done goes last and quiet", () => {
-  const { hub, job } = setup("s", "running");
+  const { hub, job } = setup("s", "running", { takeoverOf: "job_before" });
   new Agents(hub, noCmux);
   const q = hub.store.questions("open").find((x) => x.key === `after:${job.id}`)!;
   expect(q.badge).toBe("Agent stopped");

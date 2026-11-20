@@ -257,6 +257,21 @@ Find out if its work is actually done. Its cmux session may be closed already, s
 Propose "Mark done" if the work landed or nothing's left. Otherwise say exactly what's left and who has it.`;
 }
 
+/**
+ * The note a takeover job gets: a restart killed `job` mid-run and no session survives to resume, so a fresh agent
+ * does its task again. Points at what the stopped one left, so the new one carries on instead of doing it twice.
+ */
+export function takeoverNote(job: Pick<Job, "id" | "title" | "session" | "startedAt">) {
+  const how = job.startedAt
+    ? "the server restarted mid-run and killed it; no session survives to resume"
+    : "the server restarted while it was queued; it may never have started, but check";
+  return `Took over from ${job.id} (title: ${JSON.stringify(job.title)}): ${how}. Before you start, see what it already did:
+- its pi transcript: ${job.session?.startsWith("/") ? job.session : `the earliest session naming its id, \`${transcriptSearch(job.id)}\``}.
+- its job folder ${jobPath(job.id)}: worktree.json (repo, dir, branch) if it had a worktree, and any notes it kept (do/notes.md).
+- that branch: commits, pushes, MRs/PRs. Your worktree is a new branch: bring its commits over (cherry-pick or merge) rather than redoing them; don't open a second MR, ticket or message.
+Then finish the task.`;
+}
+
 /** One open card for the boss check, with what's needed to verify it. */
 export interface BossCard {
   q: Question;

@@ -61,9 +61,10 @@ test("job queued before prompts were saved: same hand-back, never a stuck doing"
   expect(hub.store.questions("open")[0]?.key).toBe(`restart:${job.id}`);
 });
 
-test("headless action caught mid-run: fail it and ask where the item stands, never a stuck doing", () => {
+test("headless takeover caught mid-run: fail it and ask where the item stands, never a stuck doing", () => {
   const { hub, item, job } = setup("d");
-  hub.store.putJob({ ...job, surface: "headless", status: "running" });
+  // Already a takeover: a first kill sends one instead (restart-takeover.test.ts).
+  hub.store.putJob({ ...job, surface: "headless", status: "running", takeoverOf: "job_before" });
   new Agents(hub, fakeCmux(true));
   const after = hub.store.job(job.id)!;
   expect(after.status).toBe("failed");

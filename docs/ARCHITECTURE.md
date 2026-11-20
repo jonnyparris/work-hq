@@ -112,6 +112,12 @@
   landing job's own ask, for the rest from the first ask; `src/server/restart.ts`), so a headless work job that runs longer dies on a landing (cmux
   work jobs don't). Boot sweeps only what's due by
   its last good run, so a restart doesn't start a fresh calendar sweep for the next one to kill.
+  A headless action job a restart kills gets one fresh re-run at boot, one job at a time after the cmux ping: same
+  action, note and decision, plus a "took over from `<job id>`" note pointing at its transcript and worktree
+  (`Job.takeoverOf`), and any notes folded into it before it started. Pending ids sit in kv `takeoverPending` until sent, so a restart
+  mid-way still sends them. No takeover when the job is itself a takeover (so never a third run), or its agent had
+  sent a final report. Other than that, a verify job is taken over while its item is open (not done or dropped); other
+  actions need the item still on `doing`. Those get the usual stopped handling: an "Agent stopped" card while the item is still on `doing`.
   A cmux job the restart caught before launch goes back on the gate with its saved prompt. If cmux
   doesn't answer the first ping (busy under load), boot keeps pinging every 3 s for up to 60 s, without
   blocking the server, before failing those jobs. No cmux binary configured: they fail at once. Server
