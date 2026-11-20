@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { config } from "../src/server/config.ts";
 import { Store } from "../src/server/db.ts";
 import { Hub } from "../src/server/hub.ts";
 import { Prompter, staleCard as buildStaleCard, workdaysAgo } from "../src/server/prompter.ts";
+import { workStart } from "../src/shared/workday.ts";
 import { notePrompt } from "../src/server/prompts.ts";
 import type { Question } from "../src/shared/types.ts";
 
@@ -259,6 +261,84 @@ describe("proposal cards yield their slot", () => {
     hub.store.putQuestion({ ...status(qa), answeredAt: new Date(Date.now() - (5 * 24 + 1) * 3600_000).toISOString() });
     p.tick(now);
     expect(openItems()).toEqual([a.id]);
+  });
+
+  // 11-19 09:08:45: the 11-18 reflection's #1 and #2 yielded in the same second two 11-19 Learn proposals took the
+  // slots. The rank compared file date first, so any newer Learn proposal beat an older reflection High/Medium one.
+  test("a newer Learn proposal can't rank a reflection High or Medium card out", () => {
+    const high = prop("high", "2026-09-22");
+    const med = prop("med", "2026-09-22", "Medium Priority");
+    const [qh, qm] = [propCard(high.id, fresh), propCard(med.id, fresh)];
+    prop("learn1", "2026-09-23", "Learn (session 01a1eeda)");
+    prop("learn2", "2026-09-23", "Learn (session 01a1eeda)");
+    p.tick(now);
+    expect(status(qh).status).toBe("open");
+    expect(status(qm).status).toBe("open");
+    expect(openItems()).toEqual([high.id, med.id].sort());
+  });
+
+  test("a newer Learn proposal does rank out a reflection Low card or an older Learn one", () => {
+    const low = prop("low", "2026-09-21", "Low Priority");
+    const old = prop("oldlearn", "2026-09-21", "Learn (session a)");
+    const [ql, qo] = [propCard(low.id, fresh), propCard(old.id, fresh)];
+    const [l1, l2] = [prop("learn1", "2026-09-23", "Learn (session b)"), prop("learn2", "2026-09-23", "Learn (session b)")];
+    p.tick(now);
+    expect(status(ql).answer).toBe("yielded");
+    expect(status(qo).answer).toBe("yielded");
+    expect(openItems()).toEqual([l1.id, l2.id].sort());
+  });
+
+  test("fill order matches: free slots go to an older reflection High before a newer Learn, so nothing churns", () => {
+    const learn = prop("learn", "2026-09-23", "Learn (session b)");
+    const high = prop("high", "2026-09-18");
+    const med = prop("med", "2026-09-16", "Medium Priority");
+    p.tick(now);
+    expect(openItems()).toEqual([high.id, med.id].sort());
+    p.tick(now);
+    expect(openItems()).toEqual([high.id, med.id].sort());
+    expect(hub.store.questions("expired").filter((q) => q.key.startsWith("proposal:"))).toHaveLength(0);
+    expect(openKeys("proposal:").some((q) => q.itemId === learn.id)).toBe(false);
+  });
+
+  test("a card shown overnight starts ageing at the first work-hours moment, not when it was asked", () => {
+    const [dayStart] = config.sweeps.workHours;
+    const a = prop("a", "2026-09-16");
+    const qa = propCard(a.id, new Date(2026, 8, 21, 1, 6).toISOString()); // Mon 01:06
+    p.tick(new Date(2026, 8, 23, dayStart - 1, 30)); // Wed, before work: 2 workdays from Mon 01:06 but not from Mon's start
+    expect(status(qa).status).toBe("open");
+    p.tick(new Date(2026, 8, 23, dayStart, 1)); // Wed just past dayStart: 2 workdays from Mon's start
+    expect(status(qa).answer).toBe("yielded");
+  });
+
+  test("a card shown Friday evening starts ageing Monday morning", () => {
+    const [dayStart, dayEnd] = config.sweeps.workHours;
+    const a = prop("a", "2026-09-16");
+    const qa = propCard(a.id, new Date(2026, 8, 18, dayEnd, 30).toISOString()); // Fri after dayEnd
+    p.tick(new Date(2026, 8, 23, dayStart - 1, 0)); // Wed before Mon-start + 2 workdays
+    expect(status(qa).status).toBe("open");
+    p.tick(new Date(2026, 8, 23, dayStart, 1));
+    expect(status(qa).answer).toBe("yielded");
+  });
+
+  test("workStart: inside work hours stays; before moves to dayStart; after or at the weekend to the next workday's", () => {
+    const at = (d: number, h: number, m = 0) => new Date(2026, 8, d, h, m).getTime();
+    expect(workStart(at(21, 10), [8, 19])).toBe(at(21, 10)); // Mon 10:00
+    expect(workStart(at(21, 1, 6), [8, 19])).toBe(at(21, 8)); // Mon 01:06 → Mon 08:00
+    expect(workStart(at(21, 19), [8, 19])).toBe(at(22, 8)); // Mon 19:00 (end is exclusive) → Tue 08:00
+    expect(workStart(at(18, 22), [8, 19])).toBe(at(21, 8)); // Fri 22:00 → Mon 08:00
+    expect(workStart(at(19, 3), [8, 19])).toBe(at(21, 8)); // Sat 03:00 → Mon 08:00
+    expect(workStart(at(20, 12), [8.5, 19])).toBe(at(21, 8, 30)); // Sun noon, fractional start → Mon 08:30
+    expect(workStart(NaN, [8, 19])).toBeNaN();
+  });
+
+  test("a card snoozed to the weekend starts ageing Monday morning", () => {
+    const [dayStart] = config.sweeps.workHours;
+    const a = prop("a", "2026-09-16");
+    const qa = propCard(a.id, old, { notBefore: new Date(2026, 8, 19, 10, 0).toISOString() }); // back Sat 10:00
+    p.tick(new Date(2026, 8, 23, dayStart - 1, 0)); // Wed before work: the clock starts Mon at dayStart, not Sat 10:00 (which would have yielded it)
+    expect(status(qa).status).toBe("open");
+    p.tick(new Date(2026, 8, 23, dayStart, 1));
+    expect(status(qa).answer).toBe("yielded");
   });
 
   test("a snoozed card keeps its slot; its age counts from when it came back", () => {

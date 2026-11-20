@@ -6,7 +6,7 @@ import type { ActionKind, AwayBlock, CalendarEvent, Coaching, Item, Job, Questio
 import { config, sweepOn } from "./config.ts";
 import { isAgentCard } from "../shared/boss.ts";
 import { setsStatus } from "../shared/batch.ts";
-import { isWorkday, nextMonday, nextWorkMorningSlot } from "../shared/workday.ts";
+import { isWorkday, nextMonday, nextWorkMorningSlot, workStart } from "../shared/workday.ts";
 import { REVIEW_HOLD_MIN, reviewable } from "../shared/meetings.ts";
 import { isOpen } from "./dedupe.ts";
 import { awayMs, type Hub } from "./hub.ts";
@@ -445,10 +445,10 @@ export class Prompter {
     const proposals = items
       // A proposal merged into an existing item (proposalOf) counts too, whatever that item's kind or source.
       .filter((i) => i.status === "proposed" && (i.proposalOf || (i.kind === "idea" && i.source.label?.startsWith("Proposals"))))
-      // Newest reflection first; within it High Priority before Medium/Low, then file order. createdAt is the
+      // propAhead (reflection High/Medium first, then newest file, then section), then file order. createdAt is the
       // file order. memory sync writes rows top to bottom, so `updated` creeps up in file order, and store.items() is
       // ORDER BY updated DESC: without a tiebreak a day's proposals came out last-first (10-18: #9 and #8 asked, #1 never).
-      .sort((a, b) => propDate(b).localeCompare(propDate(a)) || propRank(a) - propRank(b) || a.createdAt.localeCompare(b.createdAt));
+      .sort((a, b) => propAhead(a, b) || a.createdAt.localeCompare(b.createdAt));
     // A card nobody answers doesn't keep its slot: 11-12..11-18 two cards held both slots for six days and no
     // newer reflection's proposal was asked. It yields after PROPOSAL_YIELD_WORKDAYS, or sooner to a newer one.
     // One decision, one card: an open kill card asks the same thing ("Do it — send an agent" or Kill it). 11-12
@@ -1172,10 +1172,10 @@ export class Prompter {
    * Open proposal cards give their slot up ('yielded'; the item stays proposed and is asked again after the card's
    * cooldown, like an answer):
    * - Age: shown PROPOSAL_YIELD_WORKDAYS ago with no answer. Shown = the latest of createdAt, a past notBefore (a
-   *   snooze, a note read or a batch defer parks the card and restarts the clock), plus the time spent away since
-   *   then. Not while you're away.
-   * - Newer: the slots should hold the CAP.proposal best proposals that can be asked, in fill order (newest reflection,
-   *   then High before Medium/Low). A card ranked out by an askable proposal strictly ahead of it yields; on an exact
+   *   snooze, a note read or a batch defer parks the card and restarts the clock), moved on to the first work-hours
+   *   moment (a card asked at 01:06 starts at dayStart), plus the time spent away since then. Not while you're away.
+   * - Newer: the slots should hold the CAP.proposal best proposals that can be asked, in fill order (propAhead:
+   *   reflection High/Medium before Low and Learn, then newest date, then High, Medium, Low, other). A card ranked out by an askable proposal strictly ahead of it yields; on an exact
    *   tie the card stays, so nothing churns. A free slot is used first: a card only yields when the others don't fit.
    * Left alone: a card parked now (notBefore ahead), one whose typed note is being read, and, for the newer rule, one
    * whose item is no longer a proposal (it has no date to rank by). They still hold their slots. Returns how many closed.
@@ -1195,9 +1195,9 @@ export class Prompter {
       .map((b) => [awayMs(b.start), Math.min(awayMs(b.end), now.getTime())] as const)
       .filter(([s, e]) => Number.isFinite(s) && Number.isFinite(e) && s < e)
       .sort((a, b) => a[0] - b[0]);
-    // The age clock's start: when it was shown, pushed forward by the time away since then.
+    // The age clock's start: the first work-hours moment it was shown, pushed forward by the time away since then.
     const ageFrom = (q: Question) => {
-      const from = Math.max(Date.parse(q.createdAt), q.notBefore ? Date.parse(q.notBefore) : 0);
+      const from = workStart(Math.max(Date.parse(q.createdAt), q.notBefore ? Date.parse(q.notBefore) : 0), config.sweeps.workHours);
       let gone = 0;
       let upTo = from;
       for (const [s, e] of blocks) {
@@ -1221,11 +1221,13 @@ export class Prompter {
       .map((q) => ({ q: q as Question | undefined, it: byId.get(q.itemId!)! }));
     if (!ranked.length) return closed;
     const room = CAP.proposal - (left.length - ranked.length);
-    // Fill order's first two keys (the third, file order, only orders same-section proposals: never worth a yield).
-    const ahead = (a: Item, b: Item) => propDate(b).localeCompare(propDate(a)) || propRank(a) - propRank(b);
+    // Fill order without its last key (file order only orders same-section proposals: never worth a yield).
+    const ahead = propAhead;
     const worst = ranked.reduce((m, r) => (ahead(m, r.it) < 0 ? r.it : m), ranked[0]!.it);
     // Only proposals strictly ahead of the worst card can rank one out, and at most `room` of them fit: the usual
-    // board (cards from the newest reflection) stops at the first comparison, with no cooldown lookups.
+    // board (High/Medium cards from the newest reflection) stops at the first comparison, with no cooldown lookups.
+    // A Low or Learn card as the worst looks up each High/Medium proposal ahead of it until `room` fit: a handful,
+    // since kill dates clear proposals within about a week.
     const carded = new Set(cards.map((q) => q.itemId));
     const better: Item[] = [];
     for (const it of proposals) {
@@ -1787,6 +1789,16 @@ function propSource(i: PropLike): string {
 
 function propDate(i: PropLike): string {
   return /\d{4}-\d{2}-\d{2}/.exec(propLabel(i))?.[0] ?? "";
+}
+
+/**
+ * Proposal fill and yield order: negative when `a` goes first. A High/Medium proposal (only reflections have those
+ * sections) comes before a Low or Learn one whatever the dates, then the newest date, then High, Medium, Low, other. 11-19 09:08 two 11-19 Learn
+ * proposals ranked the 11-18 reflection's #1 and #2 off the board because the date came first.
+ */
+function propAhead(a: PropLike, b: PropLike): number {
+  const bucket = (i: PropLike) => (propRank(i) <= 1 ? 0 : 1);
+  return bucket(a) - bucket(b) || propDate(b).localeCompare(propDate(a)) || propRank(a) - propRank(b);
 }
 
 /** "Proposals 2026-10-18 · High Priority (…)" → 0; Medium → 1; Low → 2; anything else → 3. */

@@ -60,3 +60,19 @@ export function morningButtons(now = new Date()): Array<{ label: string; at: Dat
   const mon = nextMonday(now);
   return [{ label: label.toLowerCase(), at }, ...(mon.getTime() === at.getTime() ? [] : [{ label: "Monday 09:30", at: mon }])];
 }
+
+/**
+ * The first work-hours moment at or after `ms` (Mon–Fri, `hours` = [start, end) local, may be fractional): `ms`
+ * itself inside them, else the next workday's start. NaN stays NaN. A proposal card shown at 01:06 on a workday starts ageing at that day's start.
+ */
+export function workStart(ms: number, hours: readonly [number, number]): number {
+  if (!Number.isFinite(ms)) return ms;
+  const d = new Date(ms);
+  const h = d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600 + d.getMilliseconds() / 3_600_000;
+  if (isWorkday(d) && h >= hours[0] && h < hours[1]) return ms;
+  if (h >= hours[0]) d.setDate(d.getDate() + 1);
+  d.setHours(0, 0, 0, 0);
+  while (!isWorkday(d)) d.setDate(d.getDate() + 1);
+  d.setHours(0, Math.round(hours[0] * 60), 0, 0); // local wall clock: a DST day doesn't shift it an hour
+  return d.getTime();
+}
