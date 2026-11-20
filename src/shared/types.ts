@@ -272,6 +272,12 @@ export interface Question {
   answeredAt?: string;
   /** Put back by hub.reopen (keep/snooze): the id of the card it copies. Not a new ask (usage digest skips it). */
   reopenedFrom?: string;
+  /**
+   * An agent report asked it about an item already done or dropped when it was raised (often one the same report
+   * closed): expireMoot keeps it, so the question reaches the owner. Any later status change clears the flag
+   * (Hub.updateItem), so a reopen or a later close treats it as an ordinary card.
+   */
+  askedClosed?: true;
 }
 
 export interface QuestionPick {

@@ -1288,7 +1288,10 @@ export class Prompter {
     const stale: StaleMeeting[] = [];
     for (const q of open) {
       const it = q.itemId ? byId.get(q.itemId) : undefined;
-      if (q.itemId && (!it || ["done", "dropped"].includes(it.status))) this.hub.expireQuestion(q.id, "moot");
+      // An agent's question asked about the item after it closed (Question.askedClosed) is the point, not moot.
+      if (q.itemId && (!it || (!isOpen(it) && !q.askedClosed))) this.hub.expireQuestion(q.id, "moot");
+      // Kept on its closed item: no rule about the item's state applies to it (an agent key may start "doing:" or "due:").
+      else if (q.askedClosed && it && !isOpen(it)) continue;
       // Rescheduled (or started / un-scheduled) since this was asked: the old slot's prompt is stale.
       else if (q.key.startsWith("due:") && it && (it.status !== "scheduled" || q.key !== `due:${it.id}:${it.scheduledFor}`)) this.hub.expireQuestion(q.id, "rescheduled");
       // A kill card still open when the item got a later slot some other way: it asks again at the slot.

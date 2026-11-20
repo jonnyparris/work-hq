@@ -106,6 +106,7 @@ export const REPORT_HELP = `whq report <jobId> < report.json   (JSON on stdin; e
   status: any item status. action: ticket|reply|email|prep|work|verify|draft|publish (dispatches another agent; "note" rides along).
   A button that approves work an agent should do next ("Approve…", "Merge", "Land") needs action "work" and a note.
   status only moves the item; no agent starts. The output says what each button will do; re-report a wrong one under a new key.
+  Closing the item in this report (or asking about a done one)? The question still shows, on that item, until it's answered or the item's status changes again.
 - journal: facts worth remembering, one string each ("PAY-123 closed by ${owner.name} 09-25").`;
 
 export const REPORT_CONTRACT = (jobId: string) => `REPORT to Work HQ (${owner.name}'s dashboard) once at the end ("progress" reports welcome on long runs).

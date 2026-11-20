@@ -264,6 +264,14 @@ export class Hub {
     if (!patch.checkClosed && (next.status !== cur.status || (!opts.quiet && patch.status !== undefined))) delete next.checkClosed;
     this.store.putItem(next);
     this.emit({ type: "item", data: next });
+    // A card kept for the close it was asked after (Question.askedClosed) belongs to that close: a reopen, or a later
+    // close by any path, makes it an ordinary card again, so expireMoot judges it as usual.
+    if (next.status !== cur.status) {
+      for (const q of this.store.openQuestionsFor(id).filter((q) => q.askedClosed)) {
+        const { askedClosed: _a, ...plain } = q;
+        this.emit({ type: "question", data: this.store.putQuestion(plain) });
+      }
+    }
     // A handed-off coaching move's outcome follows its item (coachHistory): re-send the panel when it changes.
     if (next.status !== cur.status && next.source.key?.startsWith("coach:move:")) {
       const c = this.coaching();
@@ -1661,6 +1669,12 @@ export class Hub {
     }
   }
 
+  /** The item a report question is about: its itemKey's item, else its itemId if that exists, else the job's. */
+  private reportTarget(q: { itemKey?: string; itemId?: string }, job?: Job) {
+    const byKey = q.itemKey ? this.store.itemBySourceKey(q.itemKey)?.id : undefined;
+    return byKey ?? (q.itemId && this.store.item(q.itemId) ? q.itemId : job?.itemId);
+  }
+
   ingestReport(r: AgentReport, fallbackSource: Item["source"]["type"] = "agent") {
     const job = r.jobId ? this.store.job(r.jobId) : undefined;
     const created: Item[] = [];
@@ -1695,6 +1709,7 @@ export class Hub {
       const { id, note, next: rawNext, draft, ...patch } = u;
       const text = draftText(job, { id, note, draft, status: patch.status, next: rawNext });
       if (text) drafts.push({ id, text, note: str(note) });
+      const before = this.store.item(id)!.status;
       const after = this.updateItem(id, withoutCheckClosed(patch as Partial<Item>));
       if (rawNext === null) {
         if (after.next) {
@@ -1720,7 +1735,11 @@ export class Hub {
       // agent's "done" shouldn't silently take the owner's own questions with it. Lets the boss check close an item
       // and its stale asks in one update.
       if (patch.status === "done" || patch.status === "dropped") {
-        for (const q of this.store.questions("open").filter((q) => q.itemId === id && isAgentCard(q))) this.expireQuestion(q.id, `item ${patch.status}`);
+        // A card asked after an earlier close stays when this one closes nothing new (a repeat "done").
+        const closing = before !== after.status;
+        // One this report asks again stays too (the questions loop tags it): expiring it would lose a `once` ask.
+        const reasked = new Set((r.questions ?? []).filter((q) => this.reportTarget(q, job) === id).map((q) => q.key ?? `agent:${hash(q.prompt)}`));
+        for (const q of this.store.questions("open").filter((q) => q.itemId === id && isAgentCard(q) && (closing || !q.askedClosed) && !reasked.has(q.key))) this.expireQuestion(q.id, `item ${patch.status}`);
       }
     }
     let closed = 0;
@@ -1735,9 +1754,18 @@ export class Hub {
     const askedCards: Question[] = [];
     for (const q of r.questions ?? []) {
       const opts = q.options?.length ? q.options : ["Yes", "No"];
-      const byKey = q.itemKey ? this.store.itemBySourceKey(q.itemKey)?.id : undefined;
-      const itemId = byKey ?? (q.itemId && this.store.item(q.itemId) ? q.itemId : job?.itemId);
+      const itemId = this.reportTarget(q, job);
+      // Asked about an item that's closed (often by this report's own updates): keep the item, so its buttons act
+      // on it, and tag the card so expireMoot doesn't take it as moot on the next tick.
+      const target = itemId ? this.store.item(itemId) : undefined;
+      // Job reports only: a check (no job) asking about an item it closed keeps the old moot rule.
+      const askedClosed = job && target && !isOpen(target) ? { askedClosed: true as const } : {};
+      // The key's card kept open on another closed item (askedClosed) is that close's ask: this one is about a new item.
+      const kept = this.store.openQuestionByKey(q.key ?? `agent:${hash(q.prompt)}`);
+      const replaced = Boolean(job && itemId && kept?.askedClosed && kept.itemId !== itemId);
+      if (replaced) this.expireQuestion(kept!.id, "asked about another item");
       const made = this.ask({
+        ...askedClosed,
         kind: "open",
         badge: job ? AGENT_ASKS : undefined,
         itemId,
@@ -1746,7 +1774,8 @@ export class Hub {
         context: str(q.context),
         priority: q.priority ?? 72,
         key: q.key ?? `agent:${hash(q.prompt)}`,
-        once: q.once,
+        // The replaced card's expiry would read as an answer to `once`: the new item hasn't been asked yet.
+        once: replaced ? undefined : q.once,
         options: opts.map((o, i) => {
           const label = typeof o === "string" ? o : o.label;
           const effect = typeof o === "string" ? agentStringEffect(o, q.prompt, itemId) : o.url && /^https?:\/\//.test(o.url) ? { type: "open" as const, url: o.url, keep: true } : o.action ? { type: "dispatch" as const, action: o.action, ...(o.note ? { note: o.note } : {}) } : o.status ? { type: "status" as const, status: o.status } : agentStringEffect(o.label, q.prompt, itemId);
@@ -1755,7 +1784,12 @@ export class Hub {
       });
       // Echo what each button will do, so the agent sees a dead or wrong mapping in the same run.
       // Not raised because the same card is still open from an earlier report: that card is the agent's ask.
-      const open = made ?? this.store.openQuestionByKey(q.key ?? `agent:${hash(q.prompt)}`);
+      let open = made ?? this.store.openQuestionByKey(q.key ?? `agent:${hash(q.prompt)}`);
+      // The same card, still open from an earlier report, on an item that's closed now: it's this report's ask.
+      if (open && !made && askedClosed.askedClosed && !open.askedClosed && open.itemId === itemId && isAgentCard(open)) {
+        open = this.store.putQuestion({ ...open, askedClosed: true });
+        this.emit({ type: "question", data: open });
+      }
       if (open) askedCards.push(open);
       if (made) {
         const stalled = new Set(stallsOptions(made).map((o) => o.id));
