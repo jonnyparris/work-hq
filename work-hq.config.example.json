@@ -48,6 +48,10 @@
     "launchSpacingSec": 20,
     // Most action agents working at once; more wait as "queued". Blocked sessions don't count. 0 = off.
     "maxRunningJobs": 8,
+    // Budget for all agents working on the machine: Work HQ's plus agent sessions mid-turn in cmux it didn't launch.
+    // Work HQ runs maxAgents − others, at least minRunningJobs (never under 1), at most maxRunningJobs. 0 = off.
+    "maxAgents": 0,
+    "minRunningJobs": 2,
     // Also hold launches while the 1-minute load average is above this (e.g. 40 on 12 cores). 0 = off.
     // Load is logged every minute regardless: GET /api/load, `bin/work-hq usage`.
     "maxLoad": 0,

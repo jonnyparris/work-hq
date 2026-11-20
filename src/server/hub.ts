@@ -27,6 +27,8 @@ type Listener = (e: ServerEvent) => void;
 
 /** A Cloudflare Access app origin `cloudflared access login` may be run against: https and a bare host, nothing to inject. */
 export const ACCESS_APP = /^https:\/\/[a-z0-9.-]+\/?$/i;
+/** Hosts reserved for examples and tests (RFC 2606): a real Access app never has one. Outside demo mode a lapse for one is refused. */
+const EXAMPLE_HOST = /(^|\.)(example\.(com|net|org)|test|example|invalid)\.*$/i;
 /** The shape of a launchd label (`whq access-login --rerun`); `rerunLabel` is the full gate. */
 export const LAUNCHD_LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 /** Work HQ's own launchd job (`work-hq.dashboard`, `com.example.work-hq`, …): restarts go through POST /api/restart. */
@@ -455,10 +457,16 @@ export class Hub {
    * its next slot, like every other job on that card. A JIRA host's (config.jira.hosts) first card of the day waits
    * ACCESS_QUIET_MIN (notBefore): an `access-ok` inside the window closes it before it shows. When the day's newest
    * closed card closed by itself ("session back"), the next lapse waits again; after a login ("Log in now", or a
-   * card the login closed) it asks at once.
+   * card the login closed) it asks at once. Outside demo mode a lapse for an example/test host (EXAMPLE_HOST) throws.
    */
   accessLoginCard(b: { app: string; reason?: unknown; resolved?: unknown; rerun?: unknown }, now = new Date()) {
     if (typeof b.app !== "string" || !ACCESS_APP.test(b.app)) throw new Error("app must be https://<host>");
+    // 11-18 16:13: an agent's live check posted access-login:rerun-check.example.com to the real board. A resolve for
+    // one still closes its leftover cards, but never settles a real todo that happens to share its first label.
+    const example = !config.demo && EXAMPLE_HOST.test(new URL(b.app).hostname);
+    if (example && b.resolved !== true) {
+      throw new Error(`example hosts are for tests: post to the demo sandbox on :${config.demoPort} (bin/whq report --help says how to start it), not the live board`);
+    }
     if (b.rerun != null && b.rerun !== "") {
       if (typeof b.rerun !== "string" || !LAUNCHD_LABEL.test(b.rerun)) throw new Error("rerun must be a launchd label");
       if (ownLabel(b.rerun)) throw new Error("rerun can't be Work HQ's own launchd job");
@@ -467,7 +475,7 @@ export class Hub {
     const host = new URL(b.app).host;
     const key = `access-login:${host}:${localDay(now)}`;
     if (b.resolved === true) {
-      this.settleAccessLoginTodos(host, `Access login for ${host} works again`);
+      if (!example) this.settleAccessLoginTodos(host, `Access login for ${host} works again`);
       return { asked: false, closed: this.closeAccessLoginCards(host, ACCESS_BACK) };
     }
     const closed = this.closeAccessLoginCards(host, "day moved on", key);

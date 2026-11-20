@@ -113,7 +113,7 @@ describe("Agents with a cap of 2", () => {
     await Bun.sleep(20);
     expect(launched).toEqual([jobs[0]!.id, jobs[1]!.id]);
     expect(hub.store.job(jobs[2]!.id)!.status).toBe("queued");
-    expect(hub.store.job(jobs[2]!.id)!.tail.join("\n")).toContain("waiting for a slot: 2 agents running (cap 2)");
+    expect(hub.store.job(jobs[2]!.id)!.tail.join("\n")).toContain("waiting for a slot: 2 of ours running or starting (cap 2)");
 
     // Stopping a running one frees its slot for the oldest waiter.
     agents.cancel(jobs[0]!.id);

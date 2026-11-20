@@ -188,6 +188,14 @@ export const config = {
      */
     maxRunningJobs: Number(pick("WORK_HQ_MAX_RUNNING_JOBS", "pi.maxRunningJobs", 8)),
     /**
+     * Most agents working at once on the whole machine: Work HQ's action jobs plus agent sessions mid-turn in cmux
+     * that Work HQ didn't launch (src/server/other-agents.ts). Work HQ runs `maxAgents − others`, at least
+     * `minRunningJobs` (never under 1) and at most `maxRunningJobs`. 0 = off: only `maxRunningJobs` applies.
+     */
+    maxAgents: Number(pick("WORK_HQ_MAX_AGENTS", "pi.maxAgents", 0)),
+    /** With `maxAgents` on: Work HQ's slots however many other agents are working, so its queue never stalls. */
+    minRunningJobs: Number(pick("WORK_HQ_MIN_RUNNING_JOBS", "pi.minRunningJobs", 2)),
+    /**
      * Also hold new action launches while the 1-minute load average is above this (at least one job of
      * ours must be running, so outside load can't stall the queue). 0 = off. Load is sampled every minute
      * either way (GET /api/load, `bin/work-hq usage`); pick a value from a week of samples.

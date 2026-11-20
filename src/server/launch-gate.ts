@@ -122,10 +122,15 @@ export class RunCap {
   /** Why a launch now would wait: the job cap, high load, or neither. */
   blocker(): "cap" | "load" | undefined {
     const max = this.max();
-    const busy = this.running() + this.reserved;
+    const busy = this.busy;
     if (max > 0 && busy >= max) return "cap";
     if (busy > 0 && this.overloaded()) return "load";
     return undefined;
+  }
+
+  /** Jobs running plus waiters let through that haven't started yet: what the cap is held against. */
+  get busy() {
+    return this.running() + this.reserved;
   }
 
   /** Jobs waiting for a slot, cancelled ones included until the next pump. */

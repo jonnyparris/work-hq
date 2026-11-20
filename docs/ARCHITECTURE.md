@@ -44,6 +44,8 @@
   A local job that needs another Access app (launchd scripts; first user: browser-run-growth) calls
   `whq access-login <app>` instead of a free-text `whq say`: one "Log in now" card per app per day
   (`access-login:<host>:<day>`, `Hub.accessLoginCard`), no triage job; `whq access-ok <app>` closes it.
+  Outside demo mode a lapse for an example/test host (example.com, `.test`, …) is refused and its access-ok settles no todo (11-18: a live
+  check posted one to the real board); every action prompt says to test against the demo sandbox (`SANDBOX_RULE`).
   A JIRA host's (`jira.hosts`) first card of the day waits `ACCESS_QUIET_MIN` (150 min, `notBefore`): its
   callers retry hourly and the token often comes back, so an `access-ok` inside the window closes it unseen
   (11-12..11-17: 3 of 5 closed "session back" with no tap). After a login that day a lapse
@@ -152,6 +154,18 @@
   running one finishes, fails, is stopped or blocks on you. Blocked and finished-but-open sessions
   don't count; sweeps and triage aren't capped. A blocked session you resume counts again at once,
   so the count can go over the cap until a session finishes; a job stuck on "running" holds its slot until you Stop it.
+- **The cap can be a budget for the whole machine.** `pi.maxAgents` (default 0 = off) counts every agent
+  working, not just ours: Work HQ gets `maxAgents` minus the agent sessions mid-turn in cmux that it didn't
+  launch (your own pi sessions, mr-workflow authors, nightly-reflect), at least `pi.minRunningJobs` (default 2, never
+  under 1, so the queue never stalls) and at most `pi.maxRunningJobs`. `src/server/other-agents.ts` reads cmux's hook
+  records (`~/.cmuxterm/*-hook-sessions.json`, no socket): a surface counts once if any agent process on it
+  (subagents share their session's surface) has a newest record of "running", is alive with the start time
+  cmux recorded (a reused pid doesn't count; without a recorded start, liveness alone), was updated in the last 3 h (cmux only updates a record on prompt submit and Stop, so a working turn's
+  record ages the whole turn; a turn past 3 h stops counting, a lost Stop counts for 3 h), and isn't in a Work HQ job's
+  workspace. The count refreshes in the background, at most every 10 s (the scheduler asks every 15 s, and each queue
+  pump asks while launches wait), and pumps the queue itself when it changes; until the first
+  count after a boot, Work HQ holds to the floor. Idle sessions you left open don't
+  count. 11-20: a fixed cap of 6 kept 16 jobs queued for an hour while load sat under `pi.maxLoad`.
 - **Load is logged, and can gate launches.** The job count is a proxy; load is what hurts. The
   scheduler samples `os.loadavg()` once a minute into the `load` table (8 days kept) with the number
   of action jobs running (`src/server/load.ts`). The Agents header shows the latest 1-min load (gold
@@ -159,7 +173,8 @@
   over the core count, Pearson r between running jobs and load, mean load per job count), and
   `bin/work-hq usage` prints the same as "Machine load". `pi.maxLoad` (default 0 = off) makes
   `RunCap` also hold launches while the 1-min load is above it, but only while one of ours is
-  running, so outside load can't stall an empty queue. A 15 s timer re-checks held launches.
+  running, so outside load can't stall an empty queue. A 15 s timer re-checks held launches (load, or other agents
+  finishing under `pi.maxAgents`).
 - **Human decisions are the source of truth.** `confirmedAt` is set whenever the owner decides
   something. Memory re-imports refresh text but never undo a confirmed status. A check or agent
   re-report (default status inbox) never moves an item an agent settled back to inbox either; only an

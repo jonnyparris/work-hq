@@ -85,6 +85,18 @@ export const IDEA_RULE = `Items for unfinished parts of this job are fine. A new
   for ideas (file, suggest or propose ideas; brainstorm). Anything else: one "Could also: ..." line in summary.
   Unless the note asks for ideas, Work HQ files at most ${IDEA_CAP} new idea items per action job and folds the rest into the summary.`;
 
+/**
+ * Where an agent's test posts go: every action prompt (REPORT_CONTRACT) and \`whq report --help\` carry it.
+ * 11-18 16:13: a live check posted access-login:rerun-check.example.com to the real board (it_mwmunhzfge8xd).
+ */
+export const SANDBOX_RULE = `Testing Work HQ itself (a whq verb, an /api route)? Never post test data to the live board on :${config.port}. Prefer a
+  bun test on an in-memory Hub. Need a server? Use the demo sandbox on :${config.demoPort}. If
+  \`curl -s http://127.0.0.1:${config.demoPort}/api/snapshot | grep -q '"demo":true'\` fails, start it with
+  \`curl -sX POST http://127.0.0.1:${config.port}/api/demo/start\` (it mutes live jobs' cmux notifications while it runs), and
+  POST /api/demo/stop there when done. Never stop one you didn't start. Prefix only the test command, don't export it:
+  WORK_HQ_URL=http://127.0.0.1:${config.demoPort} ${WHQ} …
+  Your own report and \`whq land\` still go to :${config.port}.`;
+
 /** The full report schema and rules: `whq report --help` prints it, so every prompt doesn't carry it. */
 export const REPORT_HELP = `whq report <jobId> < report.json   (JSON on stdin; every top-level field optional, and each entry needs its first field: update id, item title, question prompt)
 
@@ -107,7 +119,8 @@ export const REPORT_HELP = `whq report <jobId> < report.json   (JSON on stdin; e
   A button that approves work an agent should do next ("Approve…", "Merge", "Land") needs action "work" and a note.
   status only moves the item; no agent starts. The output says what each button will do; re-report a wrong one under a new key.
   Closing the item in this report (or asking about a done one)? The question still shows, on that item, until it's answered or the item's status changes again.
-- journal: facts worth remembering, one string each ("PAY-123 closed by ${owner.name} 09-25").`;
+- journal: facts worth remembering, one string each ("PAY-123 closed by ${owner.name} 09-25").
+- ${SANDBOX_RULE}`;
 
 export const REPORT_CONTRACT = (jobId: string) => `REPORT to Work HQ (${owner.name}'s dashboard) once at the end ("progress" reports welcome on long runs).
 Full schema and rules: \`${WHQ} report --help\`.
@@ -120,7 +133,8 @@ Full schema and rules: \`${WHQ} report --help\`.
 ${IDEA_RULE}
 A button's status only moves the item; one that approves work (Approve, Merge, Land) needs action "work" + note.
 A next step that waits on a merge: updates[].next = { "refs", "prompt" } (see --help), not a "when it merges…" question.
-A draft ${owner.name} must see first: the full text in updates[].draft (a "Draft ready" card), not only in this session or a note.`;
+A draft ${owner.name} must see first: the full text in updates[].draft (a "Draft ready" card), not only in this session or a note.
+${SANDBOX_RULE}`;
 
 function itemBlock(it: Item) {
   return [

@@ -47,8 +47,19 @@ export class Scheduler {
     this.timers.push(setInterval(safe("cadence", () => this.cadence()), 60_000));
     // Load average once a minute, for "does load follow job counts?" after the fact (src/server/load.ts).
     this.timers.push(setInterval(safe("load", () => this.hub.sampleLoad(this.agents.runningActions())), 60_000));
-    // Load falls without any job stopping, so launches held by pi.maxLoad need a nudge.
-    this.timers.push(setInterval(safe("load-gate", () => config.pi.maxLoad > 0 && this.agents.cap.pump()), 15_000));
+    // Load falls and other agents finish without any job of ours stopping, so launches held by pi.maxLoad or
+    // pi.maxAgents need a nudge.
+    // working() also keeps the other-agent count warm with nothing queued (a pump only asks while launches wait),
+    // so the first dispatch after a quiet spell doesn't decide on a stale count.
+    this.timers.push(
+      setInterval(
+        safe("load-gate", () => {
+          if (config.pi.maxAgents > 0) this.agents.otherAgents.working();
+          if (config.pi.maxLoad > 0 || config.pi.maxAgents > 0) this.agents.cap.pump();
+        }),
+        15_000,
+      ),
+    );
     // First pass shortly after boot.
     setTimeout(safe("boot", () => this.boot()), 500);
   }

@@ -20,6 +20,7 @@ import { type DemoScript, demoActionScript, demoSweepScript, feedLine } from "./
 import { ACCESS_APP, accessReruns, type Dispatcher, errText, type Hub, isCrash, queuedNote, rerunLabel } from "./hub.ts";
 import { GatewayToken } from "./gateway-token.ts";
 import { backoffMs, isRateLimited, isTransient, LaunchGate, RunCap } from "./launch-gate.ts";
+import { OtherAgents } from "./other-agents.ts";
 import { overloaded } from "./load.ts";
 import { assertShortArgs, PiPool, PiRpc, piStamp, type RunOutcome } from "./pi-rpc.ts";
 import {
@@ -248,14 +249,34 @@ export class Agents implements Dispatcher {
   triageBlipMaxFirstMs = TRIAGE_BLIP_MAX_FIRST_MS;
   /** Every pi launch goes through here, so bursts can't trip per-minute provider limits. */
   readonly gate = new LaunchGate(() => config.pi.launchSpacingSec * 1000);
-  /** At most `pi.maxRunningJobs` action jobs working at once, none while load > `pi.maxLoad`; the rest wait as "queued". */
+  /** Agent sessions mid-turn in cmux that aren't ours (src/server/other-agents.ts). Tests swap it. */
+  otherAgents: { working(): number | undefined } = Object.assign(
+    new OtherAgents(() => new Set(this.hub.store.liveJobs().flatMap((j) => (j.workspace ? [j.workspace] : [])))),
+    { onChange: () => this.cap.pump() },
+  );
+  /** At most `jobCap()` action jobs working at once, none while load > `pi.maxLoad`; the rest wait as "queued". */
   readonly cap = new RunCap(
-    () => config.pi.maxRunningJobs,
+    () => this.jobCap(),
     () => this.runningActions(),
     () => overloaded(config.pi.maxLoad, this.readLoad),
   );
   /** os.loadavg, swappable in tests. */
   readLoad: () => number[] = loadavg;
+
+  /**
+   * Work HQ's share of the machine. `pi.maxAgents` on: what the other working agents leave of it, between
+   * `pi.minRunningJobs` (at least 1) and `pi.maxRunningJobs` (0 = no ceiling). Off: `pi.maxRunningJobs`.
+   */
+  jobCap(): number {
+    const { maxAgents, maxRunningJobs, minRunningJobs } = config.pi;
+    if (!(maxAgents > 0)) return maxRunningJobs; // 0 or NaN: off
+    // At least 1: RunCap reads 0 (or NaN) as "no cap", the opposite of what a full budget means.
+    const floor = Math.max(1, Number.isFinite(minRunningJobs) ? minRunningJobs : 1);
+    const others = this.otherAgents.working();
+    // Not counted yet (just booted): the safe end, until the first count pumps.
+    const share = others === undefined ? floor : Math.max(floor, maxAgents - others);
+    return maxRunningJobs > 0 ? Math.min(maxRunningJobs, share) : share;
+  }
 
   /** Action jobs holding a slot. A headless run waiting out a rate limit sits at "queued" with a startedAt: it keeps its slot for the retry. */
   runningActions() {
@@ -644,9 +665,11 @@ export class Agents implements Dispatcher {
         this.line(jobId, `⏳ holding: load ${l1} is above ${config.pi.maxLoad} (pi.maxLoad), ${ahead} ahead`);
         this.hub.toast(`Queued: ${title} — load ${l1}, holding launches above ${config.pi.maxLoad}`, "info");
       } else {
-        const max = config.pi.maxRunningJobs;
-        this.line(jobId, `⏳ waiting for a slot: ${max} agents running (cap ${max}), ${ahead} ahead`);
-        this.hub.toast(`Queued: ${title} — ${max} agents already running`, "info");
+        const max = this.jobCap();
+        const running = this.cap.busy;
+        const others = config.pi.maxAgents > 0 ? `, ${this.otherAgents.working() ?? "?"} other agents working (pi.maxAgents ${config.pi.maxAgents})` : "";
+        this.line(jobId, `⏳ waiting for a slot: ${running} of ours running or starting (cap ${max}${others}), ${ahead} ahead`);
+        this.hub.toast(`Queued: ${title} — ${running} agents running or starting`, "info");
       }
     }
     const release = await this.cap.acquire(queued);

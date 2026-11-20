@@ -20,3 +20,5 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 process.env.WORK_HQ_STATE = mkdtempSync(join(tmpdir(), "work-hq-test-"));
+// Never count the real cmux sessions on this machine (src/server/other-agents.ts): an empty dir = none working.
+process.env.WORK_HQ_CMUX_HOOKS_DIR = mkdtempSync(join(tmpdir(), "work-hq-hooks-"));

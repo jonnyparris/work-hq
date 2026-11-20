@@ -220,9 +220,10 @@ bin/whq say "PAY-2198 is closed"           # same as the command bar
 bin/whq say --from nightly-bench "…"      # a script's words: journalled as an agent line, so the digest and reflection don't count them as you typing
 bin/whq say -- "-5 degrees"                # text that starts with a dash goes after --; any other leading flag or blank text exits 2, -h/--help prints usage
 bin/whq journal "learn: tightened the gchat skill"   # a journal line from any agent, no triage
-bin/whq access-login https://app.example.com "nightly job skipped"   # one "Log in now" card per app per day, no triage
-bin/whq access-login --rerun com.me.nightly https://app.example.com "…"   # same; the login then kickstarts that launchd job (a later label joins the day's open card)
-bin/whq access-ok https://app.example.com    # the job got through: close that card
+bin/whq access-login https://app.acme.internal "nightly job skipped"   # one "Log in now" card per app per day, no triage
+bin/whq access-login --rerun com.me.nightly https://app.acme.internal "…"   # same; the login then kickstarts that launchd job (a later label joins the day's open card)
+bin/whq access-ok https://app.acme.internal    # the job got through: close that card
+# Outside demo mode access-login refuses example/test hosts (example.com, .test, …): test against the sandbox, not the live board.
 # A login card for a host in jira.hosts waits 150 min first (the day's first, or after a self-close): an access-ok in that window closes it unseen.
 ```
 
@@ -292,7 +293,7 @@ All optional. They override the config file.
 `WORK_HQ_CONFIG` (path, or `none`) · `WORK_HQ_PORT` · `WORK_HQ_DB` · `WORK_HQ_STATE` · `WORK_HQ_OWNER` ·
 `WORK_HQ_TZ` · `WORK_HQ_WORKSPACE` · `WORK_HQ_PROMPTS` · `WORK_HQ_MODEL` · `WORK_HQ_PI` ·
 `WORK_HQ_SWEEPS=off` · `WORK_HQ_DAY_START` / `_END` · `WORK_HQ_CALENDAR_EVERY` · `WORK_HQ_TRANSCRIPTS_EVERY` ·
-`WORK_HQ_POSTS_EVERY_DAYS` · `WORK_HQ_SWEEP_SURFACE=cmux` · `WORK_HQ_CMUX_PRUNE_HOURS` · `WORK_HQ_CMUX_PRUNE_DONE_MINUTES` · `WORK_HQ_MEMORY_URL` · `WORK_HQ_MEMORY_TOKEN` ·
+`WORK_HQ_POSTS_EVERY_DAYS` · `WORK_HQ_MAX_RUNNING_JOBS` · `WORK_HQ_MAX_AGENTS` · `WORK_HQ_MIN_RUNNING_JOBS` · `WORK_HQ_CMUX_HOOKS_DIR` (cmux's hook records, default `~/.cmuxterm`) · `WORK_HQ_MAX_LOAD` · `WORK_HQ_SWEEP_SURFACE=cmux` · `WORK_HQ_CMUX_PRUNE_HOURS` · `WORK_HQ_CMUX_PRUNE_DONE_MINUTES` · `WORK_HQ_MEMORY_URL` · `WORK_HQ_MEMORY_TOKEN` ·
 `WORK_HQ_MEMORY_TOKEN_FILE` · `WORK_HQ_MEMORY_WRITE` · `WORK_HQ_CA_FILE` · `WORK_HQ_LAUNCHD_LABEL` · `WORK_HQ_TRACKER_URL` ·
 `WORK_HQ_CALLERS_FILE` (tests only: the whq caller list)
 </details>
