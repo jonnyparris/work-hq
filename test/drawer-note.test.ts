@@ -99,10 +99,25 @@ describe("drawer notes", () => {
     expect(Date.parse(seen!)).toBeGreaterThan(Date.now());
   });
 
+  test("a question goes to the note reader on a one-off card; a context: question stays background", async () => {
+    const it = today();
+    const r = await hub.itemNote(it.id, "I've got the Zinc bot credentials… What do i do with it next?");
+    await flush();
+    expect(r.routed).toBe(true);
+    expect(reads.map((x) => x.text)).toEqual(["I've got the Zinc bot credentials… What do i do with it next?"]);
+    expect(hub.store.question(reads[0]!.questionId)?.key).toStartWith(`drawer:${it.id}:`);
+    const bg = await hub.itemNote(it.id, "context: why did this stall?");
+    expect(bg.routed).toBe(false);
+    expect(reads).toHaveLength(1);
+  });
+
   test("isInstruction", () => {
-    for (const t of ["do it", "Do it.", "ask Bernardo", "check the logs first", "please chase Joan", "yes, send it", "drop", "done", "verify the MR merged", "follow up with Kevin"])
+    for (const t of ["do it", "Do it.", "ask Bernardo", "check the logs first", "please chase Joan", "yes, send it", "drop", "done", "verify the MR merged", "follow up with Kevin",
+      // 11-06 13:41: a question was filed as context and never answered.
+      "I've got the Zinc bot credentials… What do i do with it next?", "who owns this now?", "Is this still blocked?", "what's the status", "why hasn't this moved", "should we drop it", "How do I get access (wiki link?)"])
       expect([t, isInstruction(t)]).toEqual([t, true]);
-    for (const t of ["context: Bernardo owns this", "fyi: do it later maybe", "Bernardo owns this now", "The MR merged on Tuesday", "not sure this matters", "no, don't send it", "Deploy is blocked by legal", "Merge conflicts were ugly on the MR"])
+    for (const t of ["context: Bernardo owns this", "fyi: do it later maybe", "Bernardo owns this now", "The MR merged on Tuesday", "not sure this matters", "no, don't send it", "Deploy is blocked by legal", "Merge conflicts were ugly on the MR",
+      "context: why did this stall?", "fyi: who owns it?", "When Kevin's back he owns this", "How we fixed it: restarted the box", "What a mess", "Why we chose Kafka: cost"])
       expect([t, isInstruction(t)]).toEqual([t, false]);
   });
 });

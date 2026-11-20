@@ -51,6 +51,14 @@ describe("note reader prompt: change of venue", () => {
     expect(p).toContain("never \"pick\"");
   });
 
+  test("a question dispatches a verify agent before any option or status match (11-06: a drawer question sat unanswered)", () => {
+    const q = p.indexOf("0b. The note is a question");
+    expect(q).toBeGreaterThan(-1);
+    expect(q).toBeLessThan(p.indexOf("1. The note clearly matches an option"));
+    expect(p).toContain("\"should we drop it?\" asks, it doesn't drop");
+    expect(p).toContain("A question about moving it (\"should we post it in X instead?\") is 0b, not this.");
+  });
+
   test("no longer offers \"publish it to Y\" as an example of picking an option", () => {
     expect(p).not.toContain("publish it to Y");
     expect(p).toContain("right action to the same target");

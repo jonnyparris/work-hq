@@ -354,3 +354,52 @@ test("whq say --from sends the script's name; plain say sends none; --from with 
     server.stop(true);
   }
 }, 30_000);
+
+test("usage digest: a question kept as context reads as unanswered, a statement doesn't", async () => {
+  const path = `${tmpdir()}/whq-usage-question-${Date.now()}.db`;
+  const hub = new Hub(new Store(path));
+  const it = hub.createItem({ title: "Zinc: bot credentials", status: "inbox" });
+  const t0 = Date.now() - 20 * 60_000;
+  const put = (ms: number, text: string) => hub.store.putJournal({ id: `j${ms}`, at: new Date(t0 + ms).toISOString(), itemId: it.id, who: "you", text, synced: false });
+  put(0, `Note on ${it.title}: I've got the Zinc bot credentials… What do i do with it next?`);
+  put(60_000, `Note on ${it.title}: Bernardo owns this now`);
+  put(120_000, `Note on ${it.title}: context: why did this stall?`);
+  hub.store.db.close();
+  const out = await digest(path);
+  rmSync(path, { force: true });
+  expect(out).toMatch(/What do i do with it next\? → \*\*unanswered question\*\*/);
+  expect(out).toMatch(/Bernardo owns this now → kept as context/);
+  expect(out).toMatch(/why did this stall\? → kept as context/);
+});
+
+test("usage digest: a question on a since-renamed item is still found through the item's notes", async () => {
+  const path = `${tmpdir()}/whq-usage-renamed-${Date.now()}.db`;
+  const hub = new Hub(new Store(path));
+  const it = hub.createItem({ title: "Zinc: bot", status: "inbox" });
+  await hub.itemNote(it.id, "context: why did this stall?");
+  hub.updateItem(it.id, { notes: [...(hub.store.item(it.id)!.notes ?? []), { at: new Date().toISOString(), text: "What do i do with it next?" }] });
+  hub.journal("Note on Zinc: bot: What do i do with it next?", { itemId: it.id, who: "you" });
+  hub.updateItem(it.id, { title: "Zinc bot setup" });
+  hub.store.db.close();
+  const out = await digest(path);
+  rmSync(path, { force: true });
+  expect(out).toMatch(/What do i do with it next\? → \*\*unanswered question\*\*/);
+  expect(out).toMatch(/why did this stall\? → kept as context/);
+});
+
+test("usage digest: suffix notes, a prefix rename and a done item don't fake an unanswered question", async () => {
+  const path = `${tmpdir()}/whq-usage-edges-${Date.now()}.db`;
+  const hub = new Hub(new Store(path));
+  const a = hub.createItem({ title: "Zinc: bot", status: "inbox" });
+  hub.updateItem(a.id, { notes: [{ at: new Date().toISOString(), text: "why did this stall?" }, { at: new Date().toISOString(), text: "context: why did this stall?" }] });
+  hub.journal("Note on Zinc: bot: context: why did this stall?", { itemId: a.id, who: "you" });
+  hub.updateItem(a.id, { title: "Zinc" }); // new title is a prefix of the old one
+  const b = hub.createItem({ title: "Shipped thing", status: "done" });
+  hub.journal(`Note on ${b.title}: who reviewed it?`, { itemId: b.id, who: "you" });
+  hub.store.db.close();
+  const out = await digest(path);
+  rmSync(path, { force: true });
+  expect(out).toMatch(/context: why did this stall\? → kept as context/);
+  expect(out).toMatch(/who reviewed it\? → kept as context/);
+  expect(out).not.toContain("unanswered question");
+});

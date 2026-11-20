@@ -12,6 +12,7 @@ import { AFFIRMATIVE } from "../shared/dead-button.ts";
 import { type LoadSample, summarise } from "../server/load.ts";
 import { isFoldCard } from "../server/stopped-fold.ts";
 import { AGENT_ASKS } from "../shared/boss.ts";
+import { isBackground, isQuestion } from "../shared/question.ts";
 
 const arg = (name: string) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -181,7 +182,18 @@ function noteFate(j: JournalEntry): string {
   // A drawer note that reads as background, or one added by an agent, with no card on screen, is context by design.
   // Drawer instructions ("do it") go through the note reader on a card since 10-21, so they carry a questionId.
   const onCard = allQuestions.some((q) => q.itemId === j.itemId && q.createdAt <= j.at && (!q.answeredAt || q.answeredAt >= j.at));
-  return parked ? "parked till morning (read as background)" : onCard ? "**nothing happened**" : "kept as context (no card open)";
+  if (parked) return "parked till morning (read as background)";
+  if (onCard) return "**nothing happened**";
+  // A question kept as context got no answer. 11-06 13:41: "What do i do with it next?" read "kept as context".
+  // A note on a done/dropped item is context on purpose (hub.itemNote).
+  const item = items.get(j.itemId);
+  if (!item || ["done", "dropped"].includes(item.status)) return "kept as context (no card open)";
+  // The typed text: the longest of the item's notes the line ends with (survives a rename, and "why?" can't shadow
+  // "context: why?"); else the line minus the current title. Notes keep the newest 20, so an old one may miss.
+  const typed = (item.notes ?? []).filter((n) => !n.who && j.text.endsWith(`: ${n.text}`)).map((n) => n.text).sort((a, b) => b.length - a.length)[0];
+  const prefix = `Note on ${item.title}: `;
+  const body = typed ?? (j.text.startsWith(prefix) ? j.text.slice(prefix.length) : undefined);
+  return body !== undefined && !isBackground(body) && isQuestion(body) ? "**unanswered question** (kept as context, no card open)" : "kept as context (no card open)";
 }
 
 // ── meeting cards ──────────────────────────────────────────────────────────

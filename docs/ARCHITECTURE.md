@@ -499,7 +499,9 @@ JSON can be an agent, anywhere.
 `bin/work-hq usage [--since] [--until] [--db]` reads the database read-only and prints markdown for a reflection
 to work from. The "nothing happened" check looks for a state change, schedule or dispatch on the same item within
 5 minutes of a note typed while its card was open. Notes added from the item drawer with no card open are
-reported as context. Lines an agent posted (`PATCH /api/items/:id` with `who: "agent"`) journal as `agent`, so
+reported as context, except a question (trailing "?" or a question opener, `src/shared/question.ts`) without a
+background opener (`isBackground`: `context:`, `fyi`, `note:`, `bg:`…), which reads **unanswered question**: questions typed in the drawer go to the note reader
+(on an open item; its rule 0b sends a verify agent), so one kept as context slipped through. Lines an agent posted (`PATCH /api/items/:id` with `who: "agent"`) journal as `agent`, so
 the digest's typed-input sections leave them out. "Asked more than once" counts only cards Work HQ itself put
 up; agent follow-ups (`agent:*`, `after:<job>`, and a job's report questions on its own key, badged "Agent asks";
 stopped-run fold cards `after:fold:*` excepted) are different questions from different runs, so they get their own

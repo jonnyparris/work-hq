@@ -465,6 +465,11 @@ How to decide (first match wins):
    action reply (sharing, posting or sending it somewhere) or work (anything else), never "pick". The options were
    written for the old target, so a matching-sounding one ("Publish\u2026", "Send") would go to the wrong place.
    "note" = the new target, what not to do any more (the old target), and every other detail they gave.
+   A question about moving it ("should we post it in X instead?") is 0b, not this.
+0b. The note is a question for someone to answer or find out ("what do I do with it next?", "who owns this now?",
+   "should we drop it?", "is this still blocked?"), not a polite request ("can you send it to X?" is rule 2)
+   \u2192 "dispatch" with action verify, "note" = the question as they asked it, plus what to come back with (the answer
+   and the next step). Never "pick" or set "status" from a question's words: "should we drop it?" asks, it doesn't drop.
 1. The note clearly matches an option ("yes", "they do", "keep that date", "already approved", "not relevant") \u2192 "pick" its id.
    If the note adds instructions on top ("yes, and also\u2026"), still pick it and put the full instruction in "note".
 2. The note asks for something to be done ("send a message to X", "make it shorter first", "improve it", "chase them")

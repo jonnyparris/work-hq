@@ -13,6 +13,7 @@ import { carrySlot, nextWorkdayAt } from "../shared/workday.ts";
 import { affirms, claimsDispatch, deadOptions, promisesAction, stallsOptions } from "../shared/dead-button.ts";
 import { AGENT_ASKS, isAgentCard } from "../shared/boss.ts";
 import { asksForIdeas, IDEA_CAP } from "../shared/ideas.ts";
+import { isBackground, isQuestion } from "../shared/question.ts";
 import { config, memoryOn } from "./config.ts";
 import { newId, nowIso, type Store } from "./db.ts";
 import { findTwin, isOpen } from "./dedupe.ts";
@@ -1127,7 +1128,8 @@ export class Hub {
 
   /**
    * A note typed in the item drawer (PATCH /api/items/:id with a note, no status). Background stays background:
-   * kept on the item, journalled, nothing runs. An instruction ("do it", "ask Bernardo", "check the logs") goes
+   * kept on the item, journalled, nothing runs. An instruction ("do it", "ask Bernardo", "check the logs") or a
+   * question ("what do I do with it next?", answered by the reader's rule 0b) on an open item goes
    * through the same reader as a card note: on the item's open card if it has one, else on a hidden one-off
    * `drawer:` card that expires if the reader calls it context. 10-15 14:58: "do it" on it_mv7a0vsjsewtj was
    * filed as context and the item sat in today for six days. `who: "agent"` (an agent's PATCH) is always context.
@@ -1996,12 +1998,13 @@ const IMPERATIVE = /^(please\s+|can you\s+|could you\s+|pls\s+)?(do|go|ask|check
 
 /**
  * Is a drawer note an instruction? The shared AFFIRMATIVE words ("do it", "send", "verify"…) not opened by a no (affirms),
- * or an imperative first word. "context:", "fyi", "note:" and "bg:" prefixes are background whatever follows.
+ * an imperative first word, or a question (it wants an answer). "context:", "fyi", "note:" and "bg:" prefixes are
+ * background whatever follows.
  */
 export function isInstruction(text: string): boolean {
   const t = text.trim();
-  if (/^(context|fyi|note|bg|background|for context|nb)\b\s*[:\-—,]?/i.test(t)) return false;
-  return affirms(t) || IMPERATIVE.test(t) || quickNote(t, { options: [] }) !== undefined || /^(done|drop)\b/i.test(t);
+  if (isBackground(t)) return false;
+  return affirms(t) || IMPERATIVE.test(t) || isQuestion(t) || quickNote(t, { options: [] }) !== undefined || /^(done|drop)\b/i.test(t);
 }
 
 /** "Sent an agent to send the message: <title>". True as soon as dispatch() returns: the job exists, nothing has run. */
