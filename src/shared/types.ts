@@ -390,6 +390,10 @@ export interface SyncState {
   error?: string;
   /** calendar only: last local day (YYYY-MM-DD) the last good sweep read. */
   through?: string;
+  /** checks only: failed runs per local day (YYYY-MM-DD) and error class ("auth", "timed out", "exit 1", …),
+   *  with the latest message. `error` keeps only the last one and a success clears it, so this is what the usage
+   *  digest counts. Newest 30 days (src/server/checks.ts recordFailure). */
+  failures?: Record<string, Record<string, { n: number; last: string }>>;
 }
 
 /** The nightly reflection's coaching block: this week's signal and the one move to try next. */

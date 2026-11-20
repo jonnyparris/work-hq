@@ -16,16 +16,20 @@
 // `itemKey` (its source.key) and give a stable `key`; they're asked once.
 //
 // The exit code is ignored when stdout parses: "found something" commonly
-// exits 1. No JSON on stdout is a failure, recorded in sync state as an error.
+// exits 1. No JSON on stdout is a failure, recorded in sync state as an error. `error` holds only the latest
+// one and the next success clears it, so each failure is also counted per day and error class
+// (`syncState.failures`); `bin/work-hq usage` prints those counts under "Check failures".
 
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
-import type { AgentReport, Item } from "../shared/types.ts";
+import type { AgentReport, Item, SyncState } from "../shared/types.ts";
+import { localDay } from "../shared/batch.ts";
+import { redact } from "../shared/redact.ts";
 import { config } from "./config.ts";
 import { nowIso } from "./db.ts";
 import type { Hub } from "./hub.ts";
-import { extractJson } from "./agents.ts";
+import { extractJson, gatewayAuthError } from "./agents.ts";
 
 export interface CheckConfig {
   /** Short name; shows as the item's source label. */
@@ -41,6 +45,35 @@ export interface CheckConfig {
 }
 
 const syncName = (c: CheckConfig) => `check:${c.name}`;
+
+/** Days of failure counts kept per check. */
+export const FAILURE_DAYS = 30;
+
+/** Coarse error class for counting: killed by the timeout, an auth/token problem, else the exit code. */
+export function failureClass(code: number | null, timedOut: boolean, text: string): string {
+  if (timedOut) return "timed out";
+  // Letter-bounded, so GITLAB_TOKEN and AUTH_TOKEN match but "author(ed|ity)" and "2 items expired" don't;
+  // 401/403 only as a bare number: not PAY-403, v1.401 or 4030ms ("HTTP 403." is one).
+  if (
+    gatewayAuthError(text) ||
+    /(?<![a-z])(tokens?|log ?in|auth(?:enticat\w*|ori[sz]\w*|_\w*)?|unauthori[sz]ed|credentials?|invalid (?:api )?key)(?![a-z])/i.test(text) ||
+    /(?<![\w.-])40[13](?![\w-]|\.\d)/.test(text)
+  )
+    return "auth";
+  return code === null ? "no exit code" : `exit ${code}`;
+}
+
+/** Count one failure in today's bucket for its class; drop days older than FAILURE_DAYS. Returns a new object. */
+export function recordFailure(failures: SyncState["failures"], cls: string, message: string, now = new Date()): NonNullable<SyncState["failures"]> {
+  const day = localDay(now);
+  const next = { ...(failures ?? {}) };
+  const bucket = { ...(next[day] ?? {}) };
+  bucket[cls] = { n: (bucket[cls]?.n ?? 0) + 1, last: redact(message).slice(0, 300) }; // redact again: callers may pass raw text
+  next[day] = bucket;
+  const oldest = localDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - (FAILURE_DAYS - 1)));
+  for (const d of Object.keys(next)) if (d < oldest) delete next[d];
+  return next;
+}
 
 /** Which of this check's open items the latest run no longer reports. */
 export function staleCheckItems(items: Item[], checkName: string, report: AgentReport): Item[] {
@@ -93,13 +126,19 @@ export class Checks {
     this.running.add(c.name);
     const name = syncName(c);
     this.hub.putSync({ ...this.hub.store.syncState(name), lastRunAt: nowIso() });
+    const fail = (cls: string, raw: string) => {
+      const error = redact(raw);
+      const s = this.hub.store.syncState(name);
+      this.hub.putSync({ ...s, error, failures: recordFailure(s.failures, cls, error) });
+      console.error(`[check ${c.name}]`, error);
+    };
     try {
-      const { stdout, stderr, code } = await exec(c.command, (c.timeoutSec ?? 120) * 1000);
+      const { stdout, stderr, code, timedOut } = await exec(c.command, (c.timeoutSec ?? 120) * 1000);
       const report = extractJson<AgentReport>(stdout);
       if (!report || !Array.isArray(report.items)) {
-        const error = `exit ${code}, no JSON report: ${(stderr || stdout).trim().slice(-200)}`;
-        this.hub.putSync({ ...this.hub.store.syncState(name), error });
-        console.error(`[check ${c.name}]`, error);
+        const raw = (stderr || stdout).trim();
+        const tail = redact(raw).slice(-200); // redact before the cut: a token across it would leak its tail
+        fail(failureClass(code, timedOut, raw.slice(-2000)), `${timedOut ? "timed out" : code === null ? "no exit code" : `exit ${code}`}, no JSON report: ${tail}`);
         return;
       }
       const items = report.items
@@ -117,13 +156,17 @@ export class Checks {
       // Interval checks re-report the same items every few minutes: toast only what's new.
       const fresh = c.everyMin ? items.filter((i) => !wasOpen.has(i.source.key!)).length : items.length;
       if (fresh) this.hub.toast(`${c.name}: ${fresh} ${c.everyMin ? "new " : ""}to look at`, "warn");
+    } catch (e) {
+      // Ingesting the report threw: count it too, then let the scheduler log it as before.
+      fail("threw", redact(`threw: ${e instanceof Error ? e.message : String(e)}`).slice(0, 300));
+      throw e;
     } finally {
       this.running.delete(c.name);
     }
   }
 }
 
-function exec(command: string, timeoutMs: number): Promise<{ stdout: string; stderr: string; code: number | null }> {
+function exec(command: string, timeoutMs: number): Promise<{ stdout: string; stderr: string; code: number | null; timedOut: boolean }> {
   // launchd hands us a bare PATH; checks usually want bun, glab, brew tools.
   const extra = [dirname(process.execPath), `${homedir()}/.local/bin`, "/opt/homebrew/bin", "/usr/local/bin"];
   const env = { ...process.env, PATH: [...extra, process.env.PATH ?? "/usr/bin:/bin"].join(":") };
@@ -133,14 +176,18 @@ function exec(command: string, timeoutMs: number): Promise<{ stdout: string; std
     let stderr = "";
     proc.stdout.on("data", (d) => (stdout += d));
     proc.stderr.on("data", (d) => (stderr += d));
-    const timer = setTimeout(() => proc.kill("SIGTERM"), timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill("SIGTERM");
+    }, timeoutMs);
     proc.on("close", (code) => {
       clearTimeout(timer);
-      resolve({ stdout, stderr, code });
+      resolve({ stdout, stderr, code, timedOut });
     });
     proc.on("error", (e) => {
       clearTimeout(timer);
-      resolve({ stdout, stderr: String(e), code: null });
+      resolve({ stdout, stderr: String(e), code: null, timedOut });
     });
   });
 }

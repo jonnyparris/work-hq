@@ -6,11 +6,12 @@
 // The reflection turns that into fixes (code or config). This only gathers the evidence.
 
 import { Database } from "bun:sqlite";
-import type { Item, Job, JournalEntry, Question } from "../shared/types.ts";
+import type { Item, Job, JournalEntry, Question, SyncState } from "../shared/types.ts";
 import { config } from "../server/config.ts";
 import { AFFIRMATIVE } from "../shared/dead-button.ts";
 import { type LoadSample, summarise } from "../server/load.ts";
 import { isFoldCard } from "../server/stopped-fold.ts";
+import { redact } from "../shared/redact.ts";
 import { AGENT_ASKS } from "../shared/boss.ts";
 import { isBackground, isQuestion } from "../shared/question.ts";
 
@@ -272,6 +273,37 @@ else {
     p("\nJobs that offered more than one idea:");
     for (const j of top.slice(0, 8)) p(`- ${md(cut(j.title, 80))}: ${j.ideasFiled ?? 0} filed, ${j.ideasFolded?.length ?? 0} folded`);
   }
+}
+p();
+
+// ── check failures ─────────────────────────────────────────────────────────
+// A failing check only kept its latest error, and the next success wiped it: 11-16..11-20 jira-mentions and
+// approvals failed every morning and nothing here said so. checks.ts counts each failure per local day and class.
+// Counted per local day, so a window that starts or ends mid-day shows those whole days.
+p("## Check failures (whole local days the window touches)");
+const checkStates = docs<SyncState>("SELECT doc FROM sync WHERE id LIKE 'check:%'");
+const fromDay = day(since);
+const toDay = day(new Date(Date.parse(until) - 1).toISOString());
+const failRows = checkStates.flatMap((s) =>
+  Object.entries(s.failures ?? {})
+    .filter(([d]) => d >= fromDay && d <= toDay)
+    .flatMap(([d, byClass]) => Object.entries(byClass).map(([cls, f]) => ({ d, check: s.name.slice("check:".length), cls, ...f }))),
+);
+if (!failRows.length) p("None counted.");
+else {
+  p("| day | check | error class | failed runs | last error |");
+  p("|---|---|---|---|---|");
+  for (const r of failRows.sort((a, b) => a.d.localeCompare(b.d) || b.n - a.n || a.check.localeCompare(b.check)))
+    p(`| ${r.d} | ${md(r.check)} | ${md(r.cls)} | ${r.n} | ${md(cut(redact(r.last), 110))} |`);
+}
+// Current sync state (each check's last run), whatever the window. Only checks that ran in the last week: a retired
+// or renamed check keeps its old sync row and error forever, and a daily check that failed Friday hasn't run again
+// by Monday morning.
+const ranRecently = (iso?: string) => Boolean(iso && Date.parse(iso) >= Date.now() - 7 * 86400_000);
+const failingNow = checkStates.filter((s) => s.error && ranRecently(s.lastRunAt)).sort((a, b) => (a.lastOkAt ?? "").localeCompare(b.lastOkAt ?? ""));
+if (failingNow.length) {
+  p("\nFailing now (current state; last run errored):");
+  for (const s of failingNow) p(`- **${md(s.name.slice("check:".length))}**: last ok ${s.lastOkAt ? day(s.lastOkAt) : "never"}; ${md(cut(redact(s.error ?? ""), 110))}`);
 }
 p();
 

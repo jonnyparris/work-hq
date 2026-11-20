@@ -403,3 +403,43 @@ test("usage digest: suffix notes, a prefix rename and a done item don't fake an 
   expect(out).toMatch(/who reviewed it\? → kept as context/);
   expect(out).not.toContain("unanswered question");
 });
+
+test("usage digest: check failures per day and class, and checks failing now", async () => {
+  const path = `${tmpdir()}/whq-usage-checks-${Date.now()}.db`;
+  const hub = new Hub(new Store(path));
+  const { Checks } = await import("../src/server/checks.ts");
+  const checks = new Checks(hub);
+  for (let i = 0; i < 3; i++) await checks.run({ name: "fake-fail", command: "echo 'nope' >&2; exit 3" });
+  await checks.run({ name: "fine", command: `echo '{"items":[]}'` });
+  // Outside the window: not counted.
+  hub.store.putSync({ ...hub.store.syncState("check:fine"), failures: { "2020-01-01": { "exit 1": { n: 9, last: "old" } } } });
+  const ago = (days: number) => new Date(Date.now() - days * 86400_000).toISOString();
+  hub.store.putSync({ name: "check:weekend", lastRunAt: ago(3), error: "exit 1, token=hunter2 rejected", failures: {} });
+  // Ran after --until (a historical window): still listed, the section is current state.
+  hub.store.putSync({ name: "check:later", lastRunAt: new Date(Date.now() + 120_000).toISOString(), error: "exit 1, later" });
+  hub.store.putSync({ name: "check:stale", lastRunAt: ago(8), error: "exit 1, stale" });
+  // Retired check: errored long ago and hasn't run since. Not "failing now".
+  hub.store.putSync({ name: "check:retired", lastRunAt: "2020-01-01T08:00:00.000Z", error: "exit 1, gone" });
+  hub.store.db.close();
+  const out = await digest(path);
+  rmSync(path, { force: true });
+  expect(out).toContain("## Check failures (whole local days the window touches)");
+  expect(out).toMatch(/\| \d{4}-\d{2}-\d{2} \| fake-fail \| exit 3 \| 3 \| exit 3, no JSON report: nope \|/);
+  expect(out).not.toContain("| 9 |");
+  expect(out).toMatch(/Failing now[^\n]*\n- \*\*fake-fail\*\*: last ok never; exit 3/);
+  expect(out).not.toContain("**fine**");
+  expect(out).not.toContain("**retired**");
+  expect(out).toContain("**weekend**");
+  expect(out).toContain("**later**");
+  expect(out).not.toContain("hunter2");
+  expect(out).not.toContain("**stale**");
+});
+
+test("usage digest: no check failures reads None counted", async () => {
+  const path = `${tmpdir()}/whq-usage-nochecks-${Date.now()}.db`;
+  const hub = new Hub(new Store(path));
+  hub.store.db.close();
+  const out = await digest(path);
+  rmSync(path, { force: true });
+  expect(out).toMatch(/## Check failures[^\n]*\nNone counted\./);
+});

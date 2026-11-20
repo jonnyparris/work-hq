@@ -527,6 +527,13 @@ the digest's typed-input sections leave them out. "Asked more than once" counts 
 up; agent follow-ups (`agent:*`, `after:<job>`, and a job's report questions on its own key, badged "Agent asks";
 stopped-run fold cards `after:fold:*` excepted) are different questions from different runs, so they get their own
 "Agent follow-ups" list. Each trail entry shows when it was answered (asked, if still open).
+"Check failures" counts failed check runs per local day, check and error class (`syncState.failures`, written by
+`src/server/checks.ts`: "timed out"; "auth" when the output names a token, login, auth/authenticat*/authoriz*/AUTH_*, credentials, "invalid api key", a bare 401 or 403, or a gateway auth error;
+else "exit N", or "no exit code" when it didn't start or was killed; "threw" when ingesting its report failed). Days
+older than 30 drop off the next time that check fails; each class keeps its latest message, token-like strings
+masked (`redact`). Rows are whole local days the window touches. A success clears `error` but keeps the counts.
+"Failing now" is current sync state, whatever the window: checks whose last run, in the past week, errored, oldest
+last-ok first.
 
 ## Files
 
